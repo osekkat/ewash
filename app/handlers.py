@@ -91,19 +91,38 @@ async def _handle_book_name(phone, sess, text=None, **kw):
         return
     sess.booking.name = text.strip()[:60]
     sess.state = "BOOK_VEHICLE"
-    await meta.send_buttons(
+    await meta.send_list(
         phone,
         f"Merci {sess.booking.name} 👋\n\nQuel type de véhicule ?",
-        catalog.VEHICLE_TYPES,
+        button_label="Choisir le véhicule",
+        rows=catalog.VEHICLE_CATEGORIES,
+        section_title="Catégories",
     )
 
 
 async def _handle_book_vehicle(phone, sess, payload_id=None, **kw):
-    if payload_id not in {row[0] for row in catalog.VEHICLE_TYPES}:
-        await meta.send_buttons(phone, "Choisissez le type de véhicule :",
-                                catalog.VEHICLE_TYPES)
+    if payload_id not in catalog.VEHICLE_CATEGORY_KEY:
+        await meta.send_list(
+            phone, "Choisissez le type de véhicule :",
+            "Choisir le véhicule",
+            catalog.VEHICLE_CATEGORIES, "Catégories",
+        )
         return
-    sess.booking.vehicle_type = catalog.label_for(catalog.VEHICLE_TYPES, payload_id)
+    sess.booking.vehicle_type = catalog.label_for(catalog.VEHICLE_CATEGORIES, payload_id)
+    sess.booking.category = catalog.VEHICLE_CATEGORY_KEY[payload_id]
+
+    # Moto lane skips model/color questions — straight to service list.
+    if sess.booking.category == "MOTO":
+        sess.state = "BOOK_SERVICE"
+        await meta.send_list(
+            phone,
+            "Quel type de lavage ?",
+            button_label="Voir les tarifs",
+            rows=catalog.build_moto_service_rows(),
+            section_title="Tarifs moto",
+        )
+        return
+
     sess.state = "BOOK_MODEL"
     await meta.send_text(
         phone,
@@ -117,10 +136,9 @@ async def _handle_book_model(phone, sess, text=None, **kw):
         return
     sess.booking.car_model = text.strip()[:60]
     sess.state = "BOOK_COLOR"
-    buttons = list(catalog.COLORS) + [("col_other_trigger", "Autre")]
-    await meta.send_buttons(phone, "Couleur du véhicule ?", buttons[:3])
-    # Note: WhatsApp caps at 3 buttons so we only show Blanc/Noir/Gris.
-    # "Autre" handling below picks up any free text in BOOK_COLOR state.
+    await meta.send_buttons(phone, "Couleur du véhicule ?", list(catalog.COLORS))
+    # Note: WhatsApp caps at 3 buttons → Blanc/Noir/Gris shown.
+    # Any other color: user just types it and we'll accept free text below.
 
 
 async def _handle_book_color(phone, sess, payload_id=None, text=None, **kw):
@@ -135,21 +153,40 @@ async def _handle_book_color(phone, sess, payload_id=None, text=None, **kw):
         )
         return
     sess.state = "BOOK_SERVICE"
+    # Show services with prices inline for the customer's category.
+    rows = catalog.build_car_service_rows(sess.booking.category)
+    cat_letter = sess.booking.category  # A / B / C
     await meta.send_list(
         phone,
-        "Quel service souhaitez-vous ?",
-        button_label="Voir les services",
-        rows=catalog.SERVICES,
-        section_title="Nos services",
+        f"Quel service souhaitez-vous ?\n_(tarifs pour catégorie {cat_letter})_",
+        button_label="Voir les tarifs",
+        rows=rows,
+        section_title=f"Tarifs catégorie {cat_letter}",
     )
 
 
 async def _handle_book_service(phone, sess, payload_id=None, **kw):
-    if payload_id not in {row[0] for row in catalog.SERVICES}:
-        await meta.send_list(phone, "Choisissez un service :", "Voir les services",
-                             catalog.SERVICES, "Nos services")
+    cat = sess.booking.category
+    # Valid service IDs depend on whether we're in the moto lane or car lane.
+    if cat == "MOTO":
+        valid = {sid for sid, *_ in catalog.SERVICES_MOTO}
+        rows = catalog.build_moto_service_rows()
+        section = "Tarifs moto"
+    else:
+        valid = {sid for sid, *_ in catalog.SERVICES_CAR}
+        rows = catalog.build_car_service_rows(cat)
+        section = f"Tarifs catégorie {cat}"
+
+    if payload_id not in valid:
+        await meta.send_list(phone, "Choisissez un service :", "Voir les tarifs",
+                             rows, section)
         return
-    sess.booking.service = catalog.label_for(catalog.SERVICES, payload_id)
+
+    price = catalog.service_price(payload_id, cat)
+    name = catalog.service_name(payload_id)
+    sess.booking.service = payload_id
+    sess.booking.service_label = f"{name} — {price} DH"
+    sess.booking.price_dh = price or 0
     sess.state = "BOOK_WHERE"
     await meta.send_buttons(
         phone,
@@ -290,11 +327,16 @@ async def _send_recap(phone, sess):
     b = sess.booking
     where = (f"🏢 {b.center}" if b.location_mode == "center"
              else f"🏠 {b.address}")
+    # Moto lane skips model/color — render vehicle line accordingly.
+    if b.category == "MOTO":
+        vehicle_line = f"🏍️ *Véhicule* : {b.vehicle_type}\n"
+    else:
+        vehicle_line = f"🚗 *Véhicule* : {b.vehicle_type} — {b.car_model} ({b.color})\n"
     recap = (
         "📋 *Récapitulatif*\n\n"
         f"👤 *Nom* : {b.name}\n"
-        f"🚗 *Véhicule* : {b.vehicle_type} — {b.car_model} ({b.color})\n"
-        f"🧼 *Service* : {b.service}\n"
+        + vehicle_line +
+        f"🧼 *Service* : {b.service_label or b.service}\n"
         f"📍 *Lieu* : {where}\n"
         f"🗓️ *Date* : {b.date_label}\n"
         f"⏰ *Créneau* : {b.slot}\n"
@@ -302,7 +344,10 @@ async def _send_recap(phone, sess):
     )
     if b.note:
         recap += f"📝 *Note* : {b.note}\n"
-    recap += "\nTout est correct ?"
+    recap += (
+        "\n_Le tarif affiché est indicatif — l'équipe confirme selon l'état "
+        "du véhicule._\n\nTout est correct ?"
+    )
     sess.state = "BOOK_CONFIRM"
     await meta.send_buttons(
         phone, recap,
@@ -356,12 +401,17 @@ async def _send_menu(phone: str, greeting: str | None = None) -> None:
 
 
 async def _show_services_info(phone: str) -> None:
-    lines = ["*🧼 Nos services Ewash :*\n"]
-    for _id, title, desc in catalog.SERVICES:
-        lines.append(f"• *{title}* — {desc}")
-    lines.append(
-        "\n_Les tarifs sont confirmés par l'équipe selon le véhicule et la localisation._"
-    )
+    lines = ["*🧼 Nos services Ewash* _(tarifs A/B/C en DH)_:\n"]
+    for _id, name, desc, prices in catalog.SERVICES_CAR:
+        price_str = f"{prices['A']}/{prices['B']}/{prices['C']} DH"
+        lines.append(f"• *{name}* — {price_str}\n  _{desc}_")
+    lines.append("")
+    lines.append("*🏍️ Moto* :")
+    for _id, name, desc, price in catalog.SERVICES_MOTO:
+        lines.append(f"• *{name}* — {price} DH  _{desc}_")
+    lines.append("")
+    lines.append("*Catégories de véhicule* :")
+    lines.append("A = Citadine · B = Berline/SUV moyen · C = Grande berline/SUV")
     await meta.send_text(phone, "\n".join(lines))
 
 

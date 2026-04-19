@@ -17,10 +17,13 @@ _bookings: list[dict] = []
 class Booking:
     phone: str
     name: str = ""
-    vehicle_type: str = ""      # veh_berline / veh_suv / veh_utility
+    vehicle_type: str = ""      # label, e.g. "A — Citadine" or "🏍️ Moto / Scooter"
+    category: str = ""          # pricing key: "A" / "B" / "C" / "MOTO"
     car_model: str = ""         # free text, e.g. "Dacia Logan"
     color: str = ""             # label, e.g. "Blanc"
-    service: str = ""           # svc_eco / svc_premium / ...
+    service: str = ""           # svc_ext / svc_cpl / svc_sal / svc_pol / svc_scooter / svc_moto
+    service_label: str = ""     # "Le Complet — 125 DH" (what customer saw)
+    price_dh: int = 0           # resolved price in DH at the time of booking
     location_mode: str = ""     # "home" or "center"
     center: str = ""            # ctr_casa / ...
     address: str = ""           # free text when location_mode == "home"
