@@ -22,6 +22,7 @@ class Booking:
     car_model: str = ""         # free text, e.g. "Dacia Logan"
     color: str = ""             # label, e.g. "Blanc"
     service: str = ""           # svc_ext / svc_cpl / svc_sal / svc_pol / svc_scooter / svc_moto
+    service_bucket: str = ""    # "wash" or "detailing" (cars only) — which menu the customer came from
     service_label: str = ""     # "Le Complet — 125 DH" (what customer saw)
     price_dh: int = 0           # resolved price in DH at the time of booking
     location_mode: str = ""     # "home" or "center"

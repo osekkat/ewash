@@ -151,34 +151,84 @@ async def _handle_book_color(phone, sess, payload_id=None, text=None, **kw):
             "Merci d'indiquer la couleur du véhicule (ex: *Blanc*, *Gris*, *Bleu nuit*).",
         )
         return
+    sess.state = "BOOK_SERVICE_TYPE"
+    await _ask_service_type(phone)
+
+
+async def _ask_service_type(phone):
+    """Two-step tariff flow (cars only): ask whether the customer wants
+    a standard wash formula or a premium detailing service."""
+    await meta.send_buttons(
+        phone,
+        "Que souhaitez-vous aujourd'hui ?",
+        [
+            ("svc_type_wash",      "🧼 Lavages"),
+            ("svc_type_detailing", "✨ Esthétique"),
+        ],
+    )
+
+
+async def _handle_book_service_type(phone, sess, payload_id=None, **kw):
+    if payload_id == "svc_type_wash":
+        sess.booking.service_bucket = "wash"
+        body = (
+            f"🧼 *Nos formules de lavage*\n"
+            f"_(tarifs pour catégorie {sess.booking.category})_"
+        )
+        section = f"Lavages · cat. {sess.booking.category}"
+    elif payload_id == "svc_type_detailing":
+        sess.booking.service_bucket = "detailing"
+        body = (
+            f"✨ *Nos offres d'esthétique*\n"
+            f"_(tarifs pour catégorie {sess.booking.category})_"
+        )
+        section = f"Esthétique · cat. {sess.booking.category}"
+    else:
+        await _ask_service_type(phone)
+        return
+
+    rows = catalog.build_car_service_rows(
+        sess.booking.category, bucket=sess.booking.service_bucket,
+    )
     sess.state = "BOOK_SERVICE"
-    # Show services with prices inline for the customer's category.
-    rows = catalog.build_car_service_rows(sess.booking.category)
-    cat_letter = sess.booking.category  # A / B / C
     await meta.send_list(
         phone,
-        f"Quel service souhaitez-vous ?\n_(tarifs pour catégorie {cat_letter})_",
+        body,
         button_label="Voir les tarifs",
         rows=rows,
-        section_title=f"Tarifs catégorie {cat_letter}",
+        section_title=section,
     )
 
 
 async def _handle_book_service(phone, sess, payload_id=None, **kw):
     cat = sess.booking.category
-    # Valid service IDs depend on whether we're in the moto lane or car lane.
+    # Valid service IDs depend on the lane:
+    #   - moto → SERVICES_MOTO
+    #   - car  → only services from the bucket the customer picked at BOOK_SERVICE_TYPE.
+    #           If the session is missing a bucket (shouldn't happen), fall back to "all".
     if cat == "MOTO":
         valid = {sid for sid, *_ in catalog.SERVICES_MOTO}
         rows = catalog.build_moto_service_rows()
         section = "Tarifs moto"
+        body = "Choisissez un service :"
     else:
-        valid = {sid for sid, *_ in catalog.SERVICES_CAR}
-        rows = catalog.build_car_service_rows(cat)
-        section = f"Tarifs catégorie {cat}"
+        bucket = sess.booking.service_bucket or "all"
+        if bucket == "wash":
+            valid = {sid for sid, *_ in catalog.SERVICES_WASH}
+            section = f"Lavages · cat. {cat}"
+            body = f"🧼 *Nos formules de lavage*\n_(cat. {cat})_"
+        elif bucket == "detailing":
+            valid = {sid for sid, *_ in catalog.SERVICES_DETAILING}
+            section = f"Esthétique · cat. {cat}"
+            body = f"✨ *Nos offres d'esthétique*\n_(cat. {cat})_"
+        else:
+            valid = {sid for sid, *_ in catalog.SERVICES_CAR}
+            section = f"Tarifs catégorie {cat}"
+            body = f"Choisissez un service :\n_(cat. {cat})_"
+        rows = catalog.build_car_service_rows(cat, bucket=bucket)
 
     if payload_id not in valid:
-        await meta.send_list(phone, "Choisissez un service :", "Voir les tarifs",
-                             rows, section)
+        await meta.send_list(phone, body, "Voir les tarifs", rows, section)
         return
 
     price = catalog.service_price(payload_id, cat)
@@ -422,8 +472,9 @@ _DISPATCH = {
     "BOOK_NAME":       _handle_book_name,
     "BOOK_VEHICLE":    _handle_book_vehicle,
     "BOOK_MODEL":      _handle_book_model,
-    "BOOK_COLOR":      _handle_book_color,
-    "BOOK_SERVICE":    _handle_book_service,
+    "BOOK_COLOR":        _handle_book_color,
+    "BOOK_SERVICE_TYPE": _handle_book_service_type,
+    "BOOK_SERVICE":      _handle_book_service,
     "BOOK_WHERE":      _handle_book_where,
     "BOOK_CENTER":     _handle_book_center,
     "BOOK_ADDRESS":    _handle_book_address,

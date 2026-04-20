@@ -24,18 +24,39 @@ VEHICLE_CATEGORY_KEY = {
 
 
 # ── Services for cars (A/B/C) ──────────────────────────────────────────────
-# Each row: (id, short_name, description ≤72 chars, prices_dict).
-# prices_dict keys are category letters A/B/C.
-SERVICES_CAR = [
+# Split into 2 buckets, matching the Ewash flyer layout:
+#   (1) LAVAGES — core wash formulas (maintenance / weekly recurring)
+#   (2) ESTHÉTIQUE — premium detailing (polish, ceramic, renovation, lustre)
+# Row format: (id, short_name, description ≤72 chars, prices_dict{A,B,C}).
+
+SERVICES_WASH = [
     ("svc_ext",  "L'Extérieur",  "Carrosserie, vitres, jantes + wax 1 semaine",
         {"A": 60,  "B": 65,   "C": 70}),
     ("svc_cpl",  "Le Complet",   "L'Extérieur + intérieur + aspirateur tapis/sièges",
         {"A": 115, "B": 125,  "C": 135}),
-    ("svc_sal",  "Le Salon",     "Le Complet + injection/extraction sièges et tissus",
+    ("svc_sal",  "Le Salon",     "Le Complet + injection/extraction sièges & tissus",
         {"A": 490, "B": 540,  "C": 590}),
-    ("svc_pol",  "Le Polissage", "Rénov. carrosserie + protection hydrophobe 4 sem.",
-        {"A": 990, "B": 1070, "C": 1150}),
 ]
+
+SERVICES_DETAILING = [
+    ("svc_pol",      "Le Polissage",        "Rénov. carrosserie + protection hydrophobe 4 sem.",
+        {"A": 990, "B": 1070, "C": 1150}),
+    ("svc_cer6m",    "Céramique 6m",        "Protection céramique longue durée (6 mois)",
+        {"A": 800, "B": 800,  "C": 800}),
+    ("svc_cer6w",    "Céramique 6s",        "Protection céramique express (6 semaines)",
+        {"A": 200, "B": 200,  "C": 200}),
+    ("svc_cuir",     "Rénov. Cuir",         "Nettoyage & nourrissage des sièges et garnitures cuir",
+        {"A": 250, "B": 250,  "C": 250}),
+    ("svc_plastq",   "Rénov. Plast.",       "Rénovation & protection plastiques (6 mois)",
+        {"A": 150, "B": 150,  "C": 250}),
+    ("svc_optq",     "Rénov. Optiques",     "Ponçage + polissage des optiques de phares",
+        {"A": 150, "B": 150,  "C": 150}),
+    ("svc_lustre",   "Lustrage",            "Lustrage carrosserie (sans polissage)",
+        {"A": 600, "B": 600,  "C": 700}),
+]
+
+# Backward-compat: flat list used by price/name lookups that scan everything.
+SERVICES_CAR = SERVICES_WASH + SERVICES_DETAILING
 
 # ── Services for moto/scooter ──────────────────────────────────────────────
 # Single flat price, no category. Row: (id, label, description, price).
@@ -79,19 +100,32 @@ def label_for(pairs, rid: str) -> str:
     return rid
 
 
-def build_car_service_rows(category: str) -> list[tuple[str, str, str]]:
-    """Render SERVICES_CAR as WhatsApp list rows (id, title, description).
+def build_car_service_rows(category: str, bucket: str = "all") -> list[tuple[str, str, str]]:
+    """Render car services as WhatsApp list rows (id, title, description).
 
     Title embeds the price for the customer's category inline, e.g.:
       "Le Complet — 125 DH"
     Description is the short feature list from the flyer.
 
+    `bucket` selects which services to show:
+      - "wash"       → SERVICES_WASH (L'Extérieur / Le Complet / Le Salon)
+      - "detailing"  → SERVICES_DETAILING (Polissage / Céramique / Rénovations / Lustrage)
+      - "all"        → both (legacy behaviour, kept for safety)
+
     WhatsApp limits:
       - title ≤ 24 chars (we stay under)
       - description ≤ 72 chars
+      - max 10 rows per section → detailing has 7, still well under cap
     """
+    if bucket == "wash":
+        source = SERVICES_WASH
+    elif bucket == "detailing":
+        source = SERVICES_DETAILING
+    else:
+        source = SERVICES_CAR
+
     rows = []
-    for sid, name, desc, prices in SERVICES_CAR:
+    for sid, name, desc, prices in source:
         price = prices.get(category)
         title = f"{name} — {price} DH" if price is not None else name
         rows.append((sid, title[:24], desc[:72]))

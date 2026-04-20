@@ -2,10 +2,13 @@
 
 State machine:
   IDLE → MENU → (book path | services info | handoff)
-  BOOK_NAME → BOOK_VEHICLE → BOOK_MODEL → BOOK_COLOR → (BOOK_COLOR_TEXT)?
+  BOOK_NAME → BOOK_VEHICLE → BOOK_MODEL → BOOK_COLOR
+  → BOOK_SERVICE_TYPE (🧼 Lavages | ✨ Esthétique)     ← car lane only
   → BOOK_SERVICE → BOOK_WHERE → (BOOK_ADDRESS | BOOK_CENTER)
   → BOOK_WHEN → BOOK_SLOT → BOOK_NOTE → (BOOK_NOTE_TEXT)?
   → BOOK_CONFIRM → DONE
+
+Moto lane: goes straight from BOOK_VEHICLE to BOOK_SERVICE (single menu).
 
 On any unexpected input we gracefully re-prompt the current step.
 """
