@@ -75,7 +75,7 @@ COLORS: list[tuple[str, str]] = []
 # ── Centers ────────────────────────────────────────────────────────────────
 # TODO(omar): confirm exact addresses if more centers open later.
 CENTERS = [
-    ("ctr_casa", "Centre Ewash Casablanca", "Adresse à confirmer"),
+    ("ctr_casa", "Stand physique", "Mall Triangle Vert, Bouskoura · 7j/7 · 09h-22h30"),
 ]
 
 

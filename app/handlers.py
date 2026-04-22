@@ -13,6 +13,15 @@ from .booking import Booking
 
 log = logging.getLogger(__name__)
 
+# Locale-independent French weekday names. Railway's Linux container defaults
+# to the C locale, so strftime("%A") would yield English ("Wednesday" etc.).
+_JOURS_FR = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"]
+
+
+def _jour_fr(d: date) -> str:
+    """Return the capitalized French weekday name for a date (e.g. 'Mercredi')."""
+    return _JOURS_FR[d.weekday()].capitalize()
+
 
 # ── Top-level entry ────────────────────────────────────────────────────────
 async def handle_message(message: dict, contact: dict | None = None) -> None:
@@ -204,8 +213,11 @@ async def _handle_book_service(phone, sess, payload_id=None, **kw):
     sess.state = "BOOK_WHERE"
     await meta.send_buttons(
         phone,
-        "Où souhaitez-vous le lavage ?",
-        [("where_center", "🏢 Centre Ewash"), ("where_home", "🏠 À domicile")],
+        "Où souhaitez-vous le lavage ?\n\n"
+        "🚗 *Service à domicile* — Casablanca, sur RDV\n"
+        "📍 *Stand physique* — Mall Triangle Vert, Bouskoura | 7j/7 · 09h-22h30",
+        [("where_home",   "🚗 À domicile"),
+         ("where_center", "📍 Au stand")],
     )
 
 
@@ -214,7 +226,8 @@ async def _handle_book_where(phone, sess, payload_id=None, **kw):
         sess.booking.location_mode = "center"
         if len(catalog.CENTERS) == 1:
             # Only one center → auto-pick and skip selection.
-            sess.booking.center = catalog.CENTERS[0][1]
+            row = catalog.CENTERS[0]
+            sess.booking.center = f"{row[1]} — {row[2]}"
             await _ask_when(phone, sess)
         else:
             sess.state = "BOOK_CENTER"
@@ -231,9 +244,14 @@ async def _handle_book_where(phone, sess, payload_id=None, **kw):
             "*Envoyer ma position actuelle*, ou épinglez un lieu sur la carte.",
         )
         return
-    await meta.send_buttons(phone, "Choisissez un lieu :",
-                            [("where_center", "🏢 Centre Ewash"),
-                             ("where_home", "🏠 À domicile")])
+    await meta.send_buttons(
+        phone,
+        "Choisissez un lieu :\n\n"
+        "🚗 *Service à domicile* — Casablanca, sur RDV\n"
+        "📍 *Stand physique* — Mall Triangle Vert, Bouskoura | 7j/7 · 09h-22h30",
+        [("where_home",   "🚗 À domicile"),
+         ("where_center", "📍 Au stand")],
+    )
 
 
 async def _handle_book_center(phone, sess, payload_id=None, **kw):
@@ -284,13 +302,14 @@ async def _handle_book_address(phone, sess, text=None, **kw):
 async def _ask_when(phone, sess):
     sess.state = "BOOK_WHEN"
     today = date.today()
+    dates = [today + timedelta(days=i) for i in range(6)]
     rows = [
-        ("when_today",    "Aujourd'hui",   today.strftime("%d/%m/%Y")),
-        ("when_tomorrow", "Demain",        (today + timedelta(days=1)).strftime("%d/%m/%Y")),
-        ("when_plus2",    f"{(today + timedelta(days=2)).strftime('%a %d/%m')}", ""),
-        ("when_plus3",    f"{(today + timedelta(days=3)).strftime('%a %d/%m')}", ""),
-        ("when_plus4",    f"{(today + timedelta(days=4)).strftime('%a %d/%m')}", ""),
-        ("when_plus5",    f"{(today + timedelta(days=5)).strftime('%a %d/%m')}", ""),
+        ("when_today",    "Aujourd'hui",  dates[0].strftime("%d/%m/%Y")),
+        ("when_tomorrow", "Demain",       dates[1].strftime("%d/%m/%Y")),
+        ("when_plus2",    f"{_jour_fr(dates[2])} {dates[2].strftime('%d/%m')}", ""),
+        ("when_plus3",    f"{_jour_fr(dates[3])} {dates[3].strftime('%d/%m')}", ""),
+        ("when_plus4",    f"{_jour_fr(dates[4])} {dates[4].strftime('%d/%m')}", ""),
+        ("when_plus5",    f"{_jour_fr(dates[5])} {dates[5].strftime('%d/%m')}", ""),
     ]
     await meta.send_list(phone, "Quel jour ?", "Choisir la date", rows, "Dates disponibles")
 
@@ -309,9 +328,7 @@ async def _handle_book_when(phone, sess, payload_id=None, **kw):
         return
     label, delta = mapping[payload_id]
     d = date.today() + timedelta(days=delta)
-    sess.booking.date_label = label or d.strftime("%A %d/%m/%Y")
-    if not label:  # for +2..+5 use the actual date as label
-        sess.booking.date_label = d.strftime("%A %d/%m/%Y")
+    sess.booking.date_label = label or f"{_jour_fr(d)} {d.strftime('%d/%m/%Y')}"
     sess.state = "BOOK_SLOT"
     await meta.send_list(phone, "À quelle heure ?", "Choisir un créneau",
                          catalog.SLOTS, "Créneaux")
@@ -450,7 +467,7 @@ async def _handle_upsell_detailing(phone, sess, payload_id=None, **kw):
         await meta.send_list(
             phone,
             f"✨ *Esthétique à -10%*\n_(remise déjà appliquée, catégorie {cat})_",
-            button_label="Choisir la prestation",
+            button_label="Choisir prestation",
             rows=_build_detailing_upsell_rows(cat),
             section_title=f"Esthétique -10% · cat. {cat}",
         )
