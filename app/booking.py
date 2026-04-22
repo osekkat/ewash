@@ -33,6 +33,9 @@ class Booking:
     note: str = ""              # optional customer note
     ref: str = ""               # assigned at confirmation
     created_at: str = ""        # ISO timestamp when confirmed
+    addon_service: str = ""        # svc_pol / svc_cer6m / … if customer accepted the -10% Esthétique upsell
+    addon_service_label: str = ""  # "Le Polissage — 891 DH (-10%)"
+    addon_price_dh: int = 0        # discounted DH price of the addon
 
     def assign_ref(self) -> str:
         global _counter
@@ -49,3 +52,14 @@ class Booking:
 def all_bookings() -> list[dict]:
     """For /bookings debug endpoint."""
     return list(_bookings)
+
+
+def update_booking(ref: str, **fields) -> None:
+    """Patch an already-persisted booking in place — used when the customer
+    accepts a post-confirmation upsell (e.g. the -10% Esthétique add-on)."""
+    for b in _bookings:
+        if b.get("ref") == ref:
+            b.update(fields)
+            log.info("booking updated ref=%s fields=%s", ref, fields)
+            return
+    log.warning("update_booking: ref=%s not found", ref)

@@ -151,52 +151,17 @@ async def _handle_book_color(phone, sess, payload_id=None, text=None, **kw):
             "Merci d'indiquer la couleur du véhicule (ex: *Blanc*, *Gris*, *Bleu nuit*).",
         )
         return
-    sess.state = "BOOK_SERVICE_TYPE"
-    await _ask_service_type(phone)
-
-
-async def _ask_service_type(phone):
-    """Two-step tariff flow (cars only): ask whether the customer wants
-    a standard wash formula or a premium detailing service."""
-    await meta.send_buttons(
-        phone,
-        "Que souhaitez-vous aujourd'hui ?",
-        [
-            ("svc_type_wash",      "🧼 Lavages"),
-            ("svc_type_detailing", "✨ Esthétique"),
-        ],
-    )
-
-
-async def _handle_book_service_type(phone, sess, payload_id=None, **kw):
-    if payload_id == "svc_type_wash":
-        sess.booking.service_bucket = "wash"
-        body = (
-            f"🧼 *Nos formules de lavage*\n"
-            f"_(tarifs pour catégorie {sess.booking.category})_"
-        )
-        section = f"Lavages · cat. {sess.booking.category}"
-    elif payload_id == "svc_type_detailing":
-        sess.booking.service_bucket = "detailing"
-        body = (
-            f"✨ *Nos offres d'esthétique*\n"
-            f"_(tarifs pour catégorie {sess.booking.category})_"
-        )
-        section = f"Esthétique · cat. {sess.booking.category}"
-    else:
-        await _ask_service_type(phone)
-        return
-
-    rows = catalog.build_car_service_rows(
-        sess.booking.category, bucket=sess.booking.service_bucket,
-    )
+    # Cars go straight to the Lavages catalog. Esthétique is offered as a -10%
+    # upsell after the booking is confirmed (see _handle_book_confirm).
+    sess.booking.service_bucket = "wash"
     sess.state = "BOOK_SERVICE"
+    cat = sess.booking.category
     await meta.send_list(
         phone,
-        body,
+        f"🧼 *Nos formules de lavage*\n_(tarifs pour catégorie {cat})_",
         button_label="Voir les tarifs",
-        rows=rows,
-        section_title=section,
+        rows=catalog.build_car_service_rows(cat, bucket="wash"),
+        section_title=f"Lavages · cat. {cat}",
     )
 
 
@@ -204,8 +169,8 @@ async def _handle_book_service(phone, sess, payload_id=None, **kw):
     cat = sess.booking.category
     # Valid service IDs depend on the lane:
     #   - moto → SERVICES_MOTO
-    #   - car  → only services from the bucket the customer picked at BOOK_SERVICE_TYPE.
-    #           If the session is missing a bucket (shouldn't happen), fall back to "all".
+    #   - car  → SERVICES_WASH (bucket is pre-set to "wash" in _handle_book_color;
+    #           Esthétique is handled separately via the post-confirmation upsell).
     if cat == "MOTO":
         valid = {sid for sid, *_ in catalog.SERVICES_MOTO}
         rows = catalog.build_moto_service_rows()
@@ -416,7 +381,18 @@ async def _handle_book_confirm(phone, sess, payload_id=None, **kw):
             f"L'équipe Ewash vous contactera très prochainement pour confirmer "
             f"le créneau et le tarif. Merci de votre confiance ! 🙏",
         )
-        state.reset(phone)
+        # Moto customers have no Esthétique catalog — skip the upsell and end here.
+        if sess.booking.category == "MOTO":
+            state.reset(phone)
+            return
+        sess.state = "UPSELL_DETAILING"
+        await meta.send_buttons(
+            phone,
+            "🎁 *Offre du jour*\n\nAjoutez une prestation d'*Esthétique* à votre "
+            "rendez-vous et profitez de *-10%* — aujourd'hui seulement.",
+            [("upsell_yes", "✨ Voir l'offre"),
+             ("upsell_no",  "Non merci")],
+        )
         return
     if payload_id == "confirm_edit":
         # Simple approach: restart the flow, keeping the phone as key.
@@ -431,6 +407,79 @@ async def _handle_book_confirm(phone, sess, payload_id=None, **kw):
         return
     # Unknown payload — re-show recap
     await _send_recap(phone, sess)
+
+
+def _build_detailing_upsell_rows(category: str) -> list[tuple[str, str, str]]:
+    """Render SERVICES_DETAILING as WhatsApp list rows with prices already
+    discounted by 10% (rounded to nearest DH)."""
+    rows = []
+    for sid, name, desc, prices in catalog.SERVICES_DETAILING:
+        base = prices.get(category)
+        if base is None:
+            continue
+        disc = round(base * 0.9)
+        title = f"{name} — {disc} DH"
+        rows.append((sid, title[:24], desc[:72]))
+    return rows
+
+
+async def _handle_upsell_detailing(phone, sess, payload_id=None, **kw):
+    if payload_id == "upsell_yes":
+        cat = sess.booking.category
+        sess.state = "UPSELL_DETAILING_PICK"
+        await meta.send_list(
+            phone,
+            f"✨ *Esthétique à -10%*\n_(remise déjà appliquée, catégorie {cat})_",
+            button_label="Choisir la prestation",
+            rows=_build_detailing_upsell_rows(cat),
+            section_title=f"Esthétique -10% · cat. {cat}",
+        )
+        return
+    if payload_id == "upsell_no":
+        await meta.send_text(phone, "Parfait, à très vite chez Ewash ! 🙂")
+        state.reset(phone)
+        return
+    # Unknown → re-prompt
+    await meta.send_buttons(
+        phone,
+        "Souhaitez-vous ajouter l'Esthétique à -10% ?",
+        [("upsell_yes", "✨ Voir l'offre"), ("upsell_no", "Non merci")],
+    )
+
+
+async def _handle_upsell_detailing_pick(phone, sess, payload_id=None, **kw):
+    cat = sess.booking.category
+    valid = {sid for sid, *_ in catalog.SERVICES_DETAILING}
+    if payload_id not in valid:
+        await meta.send_list(
+            phone,
+            f"✨ *Esthétique à -10%*\n_(remise déjà appliquée, catégorie {cat})_",
+            "Choisir la prestation",
+            _build_detailing_upsell_rows(cat),
+            f"Esthétique -10% · cat. {cat}",
+        )
+        return
+    base = catalog.service_price(payload_id, cat)
+    disc = round(base * 0.9) if base is not None else 0
+    name = catalog.service_name(payload_id)
+    label = f"{name} — {disc} DH (-10%)"
+    sess.booking.addon_service = payload_id
+    sess.booking.addon_service_label = label
+    sess.booking.addon_price_dh = disc
+    from .booking import update_booking
+    update_booking(
+        sess.booking.ref,
+        addon_service=payload_id,
+        addon_service_label=label,
+        addon_price_dh=disc,
+    )
+    await meta.send_text(
+        phone,
+        f"✨ *Ajouté à votre réservation {sess.booking.ref}* :\n"
+        f"{label}\n\n"
+        f"L'équipe Ewash confirmera lors de l'intervention. À très vite ! 🙏",
+    )
+    state.reset(phone)
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -466,21 +515,22 @@ async def _show_services_info(phone: str) -> None:
 
 # ── Dispatch table ─────────────────────────────────────────────────────────
 _DISPATCH = {
-    "IDLE":            _handle_idle,
-    "MENU":            _handle_menu,
-    "HANDOFF":         _handle_handoff,
-    "BOOK_NAME":       _handle_book_name,
-    "BOOK_VEHICLE":    _handle_book_vehicle,
-    "BOOK_MODEL":      _handle_book_model,
-    "BOOK_COLOR":        _handle_book_color,
-    "BOOK_SERVICE_TYPE": _handle_book_service_type,
-    "BOOK_SERVICE":      _handle_book_service,
-    "BOOK_WHERE":      _handle_book_where,
-    "BOOK_CENTER":     _handle_book_center,
-    "BOOK_ADDRESS":    _handle_book_address,
-    "BOOK_WHEN":       _handle_book_when,
-    "BOOK_SLOT":       _handle_book_slot,
-    "BOOK_NOTE":       _handle_book_note,
-    "BOOK_NOTE_TEXT":  _handle_book_note_text,
-    "BOOK_CONFIRM":    _handle_book_confirm,
+    "IDLE":                  _handle_idle,
+    "MENU":                  _handle_menu,
+    "HANDOFF":               _handle_handoff,
+    "BOOK_NAME":             _handle_book_name,
+    "BOOK_VEHICLE":          _handle_book_vehicle,
+    "BOOK_MODEL":            _handle_book_model,
+    "BOOK_COLOR":            _handle_book_color,
+    "BOOK_SERVICE":          _handle_book_service,
+    "BOOK_WHERE":            _handle_book_where,
+    "BOOK_CENTER":           _handle_book_center,
+    "BOOK_ADDRESS":          _handle_book_address,
+    "BOOK_WHEN":             _handle_book_when,
+    "BOOK_SLOT":             _handle_book_slot,
+    "BOOK_NOTE":             _handle_book_note,
+    "BOOK_NOTE_TEXT":        _handle_book_note_text,
+    "BOOK_CONFIRM":          _handle_book_confirm,
+    "UPSELL_DETAILING":      _handle_upsell_detailing,
+    "UPSELL_DETAILING_PICK": _handle_upsell_detailing_pick,
 }
