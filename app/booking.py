@@ -27,7 +27,8 @@ class Booking:
     price_dh: int = 0           # resolved price in DH at the time of booking
     location_mode: str = ""     # "home" or "center"
     center: str = ""            # ctr_casa / ...
-    address: str = ""           # free text when location_mode == "home"
+    geo: str = ""               # WhatsApp location pin (home only) — "name | address | 📍 lat, lng"
+    address: str = ""           # free-text address + access notes (home only)
     date_label: str = ""        # "Aujourd'hui" / "Demain" / "2026-04-19"
     slot: str = ""              # slot_9_11 / ...
     note: str = ""              # optional customer note

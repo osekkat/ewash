@@ -223,12 +223,12 @@ async def _handle_book_where(phone, sess, payload_id=None, **kw):
         return
     if payload_id == "where_home":
         sess.booking.location_mode = "home"
-        sess.state = "BOOK_ADDRESS"
+        sess.state = "BOOK_GEO"
         await meta.send_text(
             phone,
-            "📍 Partagez votre *adresse* :\n\n"
-            "• Envoyez-la en texte\n"
-            "• Ou utilisez 📎 → Position pour envoyer une épingle",
+            "📍 *Partagez votre localisation*\n\n"
+            "Appuyez sur *+* → *Position* (ou *Location*) puis "
+            "*Envoyer ma position actuelle*, ou épinglez un lieu sur la carte.",
         )
         return
     await meta.send_buttons(phone, "Choisissez un lieu :",
@@ -245,23 +245,39 @@ async def _handle_book_center(phone, sess, payload_id=None, **kw):
     await _ask_when(phone, sess)
 
 
-async def _handle_book_address(phone, sess, text=None, location=None, **kw):
-    if location:
-        parts = []
-        if location.get("name"):
-            parts.append(location["name"])
-        if location.get("address"):
-            parts.append(location["address"])
-        parts.append(f"📍 {location.get('latitude')}, {location.get('longitude')}")
-        sess.booking.address = " | ".join(parts)
-    elif text and len(text.strip()) >= 5:
-        sess.booking.address = text.strip()[:200]
-    else:
+async def _handle_book_geo(phone, sess, location=None, **kw):
+    if not location:
         await meta.send_text(
             phone,
-            "Pouvez-vous envoyer une adresse plus précise ? (texte ou 📍 position)",
+            "Je n'ai pas reçu de position 📍\n\n"
+            "Appuyez sur *+* → *Position* puis *Envoyer ma position actuelle*, "
+            "ou épinglez un lieu sur la carte.",
         )
         return
+    parts = []
+    if location.get("name"):
+        parts.append(location["name"])
+    if location.get("address"):
+        parts.append(location["address"])
+    parts.append(f"📍 {location.get('latitude')}, {location.get('longitude')}")
+    sess.booking.geo = " | ".join(parts)
+    sess.state = "BOOK_ADDRESS"
+    await meta.send_text(
+        phone,
+        "Merci 🙏\n\nIndiquez maintenant votre *adresse* et toute information utile "
+        "pour vous trouver (nom d'immeuble/villa, étage, code portail, repères…).",
+    )
+
+
+async def _handle_book_address(phone, sess, text=None, **kw):
+    if not text or len(text.strip()) < 5:
+        await meta.send_text(
+            phone,
+            "Pouvez-vous me donner plus de détails en texte ? "
+            "Adresse précise + infos d'accès (immeuble, étage, code, repères…).",
+        )
+        return
+    sess.booking.address = text.strip()[:300]
     await _ask_when(phone, sess)
 
 
@@ -339,8 +355,12 @@ async def _handle_book_note_text(phone, sess, text=None, **kw):
 
 async def _send_recap(phone, sess):
     b = sess.booking
-    where = (f"🏢 {b.center}" if b.location_mode == "center"
-             else f"🏠 {b.address}")
+    if b.location_mode == "center":
+        where_block = f"📍 *Lieu* : 🏢 {b.center}\n"
+    else:
+        where_block = f"📍 *Lieu* : 🏠 {b.address}\n"
+        if b.geo:
+            where_block += f"🗺️ *Géoloc.* : {b.geo}\n"
     # Moto lane skips model/color — render vehicle line accordingly.
     if b.category == "MOTO":
         vehicle_line = f"🏍️ *Véhicule* : {b.vehicle_type}\n"
@@ -351,7 +371,7 @@ async def _send_recap(phone, sess):
         f"👤 *Nom* : {b.name}\n"
         + vehicle_line +
         f"🧼 *Service* : {b.service_label or b.service}\n"
-        f"📍 *Lieu* : {where}\n"
+        + where_block +
         f"🗓️ *Date* : {b.date_label}\n"
         f"⏰ *Créneau* : {b.slot}\n"
         f"📞 *Téléphone* : +{b.phone}\n"
@@ -525,6 +545,7 @@ _DISPATCH = {
     "BOOK_SERVICE":          _handle_book_service,
     "BOOK_WHERE":            _handle_book_where,
     "BOOK_CENTER":           _handle_book_center,
+    "BOOK_GEO":              _handle_book_geo,
     "BOOK_ADDRESS":          _handle_book_address,
     "BOOK_WHEN":             _handle_book_when,
     "BOOK_SLOT":             _handle_book_slot,

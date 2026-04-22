@@ -5,7 +5,8 @@ State machine:
   BOOK_NAME → BOOK_VEHICLE → BOOK_MODEL → BOOK_COLOR
   → BOOK_SERVICE (Lavages catalog — Esthétique is removed from the main flow
                   and offered as a post-confirmation -10% upsell instead)
-  → BOOK_WHERE → (BOOK_ADDRESS | BOOK_CENTER)
+  → BOOK_WHERE → (BOOK_GEO → BOOK_ADDRESS  ← home: pin first, then address+notes
+                  | BOOK_CENTER)
   → BOOK_WHEN → BOOK_SLOT → BOOK_NOTE → (BOOK_NOTE_TEXT)?
   → BOOK_CONFIRM
   → UPSELL_DETAILING (🎁 offer -10% Esthétique)        ← cars only
