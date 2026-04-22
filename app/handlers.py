@@ -493,10 +493,16 @@ async def _handle_upsell_detailing_pick(phone, sess, payload_id=None, **kw):
         addon_service_label=label,
         addon_price_dh=disc,
     )
+    main = sess.booking.service_label or sess.booking.service or "—"
+    total = (sess.booking.price_dh or 0) + disc
     await meta.send_text(
         phone,
-        f"✨ *Ajouté à votre réservation {sess.booking.ref}* :\n"
-        f"{label}\n\n"
+        f"✅ *Add-on enregistré !*\n\n"
+        f"Votre réservation *{sess.booking.ref}* a bien été mise à jour :\n\n"
+        f"🧼 *Lavage* : {main}\n"
+        f"✨ *Esthétique (-10%)* : {label}\n"
+        f"💰 *Total indicatif* : {total} DH\n\n"
+        f"_Le tarif reste indicatif — l'équipe confirme selon l'état du véhicule._\n\n"
         f"L'équipe Ewash confirmera lors de l'intervention. À très vite ! 🙏",
     )
     state.reset(phone)
