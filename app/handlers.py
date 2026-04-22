@@ -265,7 +265,7 @@ async def _handle_book_geo(phone, sess, location=None, **kw):
     await meta.send_text(
         phone,
         "Merci 🙏\n\nIndiquez maintenant votre *adresse* et toute information utile "
-        "pour vous trouver (nom d'immeuble/villa, étage, code portail, repères…).",
+        "pour vous trouver (nom d'immeuble/villa, place de parking, repères…).",
     )
 
 
