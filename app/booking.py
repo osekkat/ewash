@@ -38,6 +38,12 @@ class Booking:
     addon_service_label: str = ""  # "Le Polissage — 891 DH (-10%)"
     addon_price_dh: int = 0        # discounted DH price of the addon
 
+    # Transient state for the paginated date picker (BOOK_WHEN). Not persisted
+    # into `_bookings` in any meaningful way — just survives the round-trip
+    # between "Voir plus" taps.
+    when_page: int = 0
+    when_dates: list[str] = field(default_factory=list)  # ISO dates currently offered
+
     def assign_ref(self) -> str:
         global _counter
         _counter += 1

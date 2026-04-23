@@ -3,17 +3,21 @@
 State machine:
   IDLE → MENU → (book path | services info | handoff)
   BOOK_NAME → BOOK_VEHICLE → BOOK_MODEL → BOOK_COLOR
-  → BOOK_SERVICE (Lavages catalog — Esthétique is removed from the main flow
-                  and offered as a post-confirmation -10% upsell instead)
   → BOOK_WHERE → (BOOK_GEO → BOOK_ADDRESS  ← home: pin first, then address+notes
                   | BOOK_CENTER)
+  → BOOK_SERVICE (Lavages catalog — Esthétique is removed from the main flow
+                  and offered as a post-confirmation -10% upsell instead)
   → BOOK_WHEN → BOOK_SLOT → BOOK_NOTE → (BOOK_NOTE_TEXT)?
   → BOOK_CONFIRM
   → UPSELL_DETAILING (🎁 offer -10% Esthétique)        ← cars only
   → (UPSELL_DETAILING_PICK)? → DONE
 
-Moto lane: goes straight from BOOK_VEHICLE to BOOK_SERVICE (single menu),
+Moto lane: goes from BOOK_VEHICLE → BOOK_WHERE → BOOK_SERVICE (single menu),
 and skips the UPSELL_DETAILING step (no Esthétique catalog for 2-wheels).
+
+Rationale for BOOK_WHERE before BOOK_SERVICE: the customer commits to
+home-vs-stand before seeing prices, and the service prompt can hint the
+chosen lieu in its header.
 
 On any unexpected input we gracefully re-prompt the current step.
 """

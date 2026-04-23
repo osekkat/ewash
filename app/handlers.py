@@ -120,16 +120,9 @@ async def _handle_book_vehicle(phone, sess, payload_id=None, **kw):
     sess.booking.vehicle_type = catalog.label_for(catalog.VEHICLE_CATEGORIES, payload_id)
     sess.booking.category = catalog.VEHICLE_CATEGORY_KEY[payload_id]
 
-    # Moto lane skips model/color questions — straight to service list.
+    # Moto lane skips model/color questions — straight to location, then service.
     if sess.booking.category == "MOTO":
-        sess.state = "BOOK_SERVICE"
-        await meta.send_list(
-            phone,
-            "Quel type de lavage ?",
-            button_label="Voir les tarifs",
-            rows=catalog.build_moto_service_rows(),
-            section_title="Tarifs moto",
-        )
+        await _ask_where(phone, sess)
         return
 
     sess.state = "BOOK_MODEL"
@@ -160,14 +153,54 @@ async def _handle_book_color(phone, sess, payload_id=None, text=None, **kw):
             "Merci d'indiquer la couleur du véhicule (ex: *Blanc*, *Gris*, *Bleu nuit*).",
         )
         return
-    # Cars go straight to the Lavages catalog. Esthétique is offered as a -10%
-    # upsell after the booking is confirmed (see _handle_book_confirm).
-    sess.booking.service_bucket = "wash"
+    # Ask location BEFORE showing the service menu — so customers commit to
+    # home vs stand before seeing prices (and so the prompt can reflect lieu).
+    await _ask_where(phone, sess)
+
+
+async def _ask_where(phone, sess):
+    """Send the home-vs-stand location prompt. Used from both the car lane
+    (after color) and the moto lane (after vehicle category)."""
+    sess.state = "BOOK_WHERE"
+    await meta.send_buttons(
+        phone,
+        "Où souhaitez-vous le lavage ?\n\n"
+        "🚗 *Service à domicile* — Casablanca, sur RDV\n"
+        "📍 *Stand physique* — Mall Triangle Vert, Bouskoura | 7j/7 · 09h-22h30",
+        [("where_home",   "🚗 À domicile"),
+         ("where_center", "📍 Au stand")],
+    )
+
+
+async def _ask_service(phone, sess):
+    """Show the car-wash or moto service list, depending on category.
+
+    Called AFTER location is known — so we can hint the chosen lieu in the
+    prompt header and avoid surprising the customer later in the flow.
+    """
     sess.state = "BOOK_SERVICE"
     cat = sess.booking.category
+    where_tag = ""
+    if sess.booking.location_mode == "home":
+        where_tag = " · 🚗 à domicile"
+    elif sess.booking.location_mode == "center":
+        where_tag = " · 📍 au stand"
+
+    if cat == "MOTO":
+        await meta.send_list(
+            phone,
+            f"Quel type de lavage ?{where_tag}",
+            button_label="Voir les tarifs",
+            rows=catalog.build_moto_service_rows(),
+            section_title="Tarifs moto",
+        )
+        return
+
+    # Car lane — Lavages catalog (Esthétique is post-confirmation upsell)
+    sess.booking.service_bucket = "wash"
     await meta.send_list(
         phone,
-        f"🧼 *Nos formules de lavage*\n_(tarifs pour catégorie {cat})_",
+        f"🧼 *Nos formules de lavage*\n_(tarifs pour catégorie {cat}{where_tag})_",
         button_label="Voir les tarifs",
         rows=catalog.build_car_service_rows(cat, bucket="wash"),
         section_title=f"Lavages · cat. {cat}",
@@ -178,7 +211,7 @@ async def _handle_book_service(phone, sess, payload_id=None, **kw):
     cat = sess.booking.category
     # Valid service IDs depend on the lane:
     #   - moto → SERVICES_MOTO
-    #   - car  → SERVICES_WASH (bucket is pre-set to "wash" in _handle_book_color;
+    #   - car  → SERVICES_WASH (bucket is pre-set to "wash" in _ask_service;
     #           Esthétique is handled separately via the post-confirmation upsell).
     if cat == "MOTO":
         valid = {sid for sid, *_ in catalog.SERVICES_MOTO}
@@ -210,15 +243,8 @@ async def _handle_book_service(phone, sess, payload_id=None, **kw):
     sess.booking.service = payload_id
     sess.booking.service_label = f"{name} — {price} DH"
     sess.booking.price_dh = price or 0
-    sess.state = "BOOK_WHERE"
-    await meta.send_buttons(
-        phone,
-        "Où souhaitez-vous le lavage ?\n\n"
-        "🚗 *Service à domicile* — Casablanca, sur RDV\n"
-        "📍 *Stand physique* — Mall Triangle Vert, Bouskoura | 7j/7 · 09h-22h30",
-        [("where_home",   "🚗 À domicile"),
-         ("where_center", "📍 Au stand")],
-    )
+    # Location is already captured — go straight to date/slot selection.
+    await _ask_when(phone, sess)
 
 
 async def _handle_book_where(phone, sess, payload_id=None, **kw):
@@ -228,7 +254,7 @@ async def _handle_book_where(phone, sess, payload_id=None, **kw):
             # Only one center → auto-pick and skip selection.
             row = catalog.CENTERS[0]
             sess.booking.center = f"{row[1]} — {row[2]}"
-            await _ask_when(phone, sess)
+            await _ask_service(phone, sess)
         else:
             sess.state = "BOOK_CENTER"
             await meta.send_list(phone, "Quel centre Ewash ?", "Choisir le centre",
@@ -260,7 +286,7 @@ async def _handle_book_center(phone, sess, payload_id=None, **kw):
                              catalog.CENTERS, "Centres disponibles")
         return
     sess.booking.center = catalog.label_for(catalog.CENTERS, payload_id)
-    await _ask_when(phone, sess)
+    await _ask_service(phone, sess)
 
 
 async def _handle_book_geo(phone, sess, location=None, **kw):
@@ -296,42 +322,92 @@ async def _handle_book_address(phone, sess, text=None, **kw):
         )
         return
     sess.booking.address = text.strip()[:300]
-    await _ask_when(phone, sess)
+    await _ask_service(phone, sess)
 
 
-async def _ask_when(phone, sess):
+async def _ask_when(phone, sess, page: int = 0):
+    """Show a paginated list of the next 15 open days.
+
+    Page 0 → 8 dates + 'Voir plus' row   (total 9 rows)
+    Page 1 → remaining open dates + 'Retour' row (max 8 rows)
+
+    Closed days (Eids, see `catalog.CLOSED_DATES`) are skipped. We scan up to
+    25 calendar days forward to find 15 *open* ones — enough cushion for two
+    closed days in any reasonable window.
+    """
     sess.state = "BOOK_WHEN"
-    today = date.today()
-    dates = [today + timedelta(days=i) for i in range(6)]
-    rows = [
-        ("when_today",    "Aujourd'hui",  dates[0].strftime("%d/%m/%Y")),
-        ("when_tomorrow", "Demain",       dates[1].strftime("%d/%m/%Y")),
-        ("when_plus2",    f"{_jour_fr(dates[2])} {dates[2].strftime('%d/%m')}", ""),
-        ("when_plus3",    f"{_jour_fr(dates[3])} {dates[3].strftime('%d/%m')}", ""),
-        ("when_plus4",    f"{_jour_fr(dates[4])} {dates[4].strftime('%d/%m')}", ""),
-        ("when_plus5",    f"{_jour_fr(dates[5])} {dates[5].strftime('%d/%m')}", ""),
-    ]
-    await meta.send_list(phone, "Quel jour ?", "Choisir la date", rows, "Dates disponibles")
+    sess.booking.when_page = page
+    open_dates = []
+    scan = 0
+    while len(open_dates) < 15 and scan < 25:
+        d = date.today() + timedelta(days=scan)
+        if d.isoformat() not in catalog.CLOSED_DATES:
+            open_dates.append(d)
+        scan += 1
+    sess.booking.when_dates = [d.isoformat() for d in open_dates]
+
+    per_page = 8
+    start = page * per_page
+    chunk = open_dates[start:start + per_page]
+    rows = []
+    for i, d in enumerate(chunk):
+        idx = start + i
+        if page == 0 and i == 0:
+            title, desc = "Aujourd'hui", d.strftime("%d/%m/%Y")
+        elif page == 0 and i == 1:
+            title, desc = "Demain", d.strftime("%d/%m/%Y")
+        else:
+            title = f"{_jour_fr(d)} {d.strftime('%d/%m')}"
+            desc = ""
+        rows.append((f"when_d{idx}", title[:24], desc[:72]))
+
+    more = len(open_dates) > start + per_page
+    if page == 0 and more:
+        rows.append(("when_more", "→ Voir plus de dates", "7 jours supplémentaires"))
+    if page > 0:
+        rows.append(("when_back", "← Retour", "Revenir aux premières dates"))
+
+    header = "Quel jour ?" if page == 0 else "Plus de dates :"
+    section = "Dates disponibles" if page == 0 else "Suite des dates"
+    await meta.send_list(phone, header, "Choisir la date", rows, section)
 
 
 async def _handle_book_when(phone, sess, payload_id=None, **kw):
-    mapping = {
-        "when_today":    ("Aujourd'hui",  0),
-        "when_tomorrow": ("Demain",        1),
-        "when_plus2":    ("",              2),
-        "when_plus3":    ("",              3),
-        "when_plus4":    ("",              4),
-        "when_plus5":    ("",              5),
-    }
-    if payload_id not in mapping:
-        await _ask_when(phone, sess)
+    # Pagination: "Voir plus" / "Retour" — re-render without advancing state.
+    if payload_id == "when_more":
+        await _ask_when(phone, sess, page=1)
         return
-    label, delta = mapping[payload_id]
-    d = date.today() + timedelta(days=delta)
-    sess.booking.date_label = label or f"{_jour_fr(d)} {d.strftime('%d/%m/%Y')}"
-    sess.state = "BOOK_SLOT"
-    await meta.send_list(phone, "À quelle heure ?", "Choisir un créneau",
-                         catalog.SLOTS, "Créneaux")
+    if payload_id == "when_back":
+        await _ask_when(phone, sess, page=0)
+        return
+
+    # Real date pick — payload format: when_d{index} into sess.booking.when_dates
+    if payload_id and payload_id.startswith("when_d"):
+        try:
+            idx = int(payload_id[len("when_d"):])
+        except ValueError:
+            await _ask_when(phone, sess, page=sess.booking.when_page)
+            return
+        stored = sess.booking.when_dates or []
+        if idx < 0 or idx >= len(stored):
+            await _ask_when(phone, sess, page=sess.booking.when_page)
+            return
+        d = date.fromisoformat(stored[idx])
+        today = date.today()
+        if d == today:
+            label = "Aujourd'hui"
+        elif d == today + timedelta(days=1):
+            label = "Demain"
+        else:
+            label = f"{_jour_fr(d)} {d.strftime('%d/%m/%Y')}"
+        sess.booking.date_label = label
+        sess.state = "BOOK_SLOT"
+        await meta.send_list(phone, "À quelle heure ?", "Choisir un créneau",
+                             catalog.SLOTS, "Créneaux")
+        return
+
+    # Unknown payload — re-render current page
+    await _ask_when(phone, sess, page=sess.booking.when_page)
 
 
 async def _handle_book_slot(phone, sess, payload_id=None, **kw):
@@ -448,7 +524,11 @@ async def _handle_book_confirm(phone, sess, payload_id=None, **kw):
 
 def _build_detailing_upsell_rows(category: str) -> list[tuple[str, str, str]]:
     """Render SERVICES_DETAILING as WhatsApp list rows with prices already
-    discounted by 10% (rounded to nearest DH)."""
+    discounted by 10% (rounded to nearest DH).
+
+    A trailing "Aucune, merci" row lets the customer decline the upsell
+    without ghosting the conversation.
+    """
     rows = []
     for sid, name, desc, prices in catalog.SERVICES_DETAILING:
         base = prices.get(category)
@@ -457,6 +537,8 @@ def _build_detailing_upsell_rows(category: str) -> list[tuple[str, str, str]]:
         disc = round(base * 0.9)
         title = f"{name} — {disc} DH"
         rows.append((sid, title[:24], desc[:72]))
+    # Escape hatch: always offered as the last row
+    rows.append(("upsell_none", "❌ Aucune, merci", "Passer l'offre cette fois"))
     return rows
 
 
@@ -486,6 +568,11 @@ async def _handle_upsell_detailing(phone, sess, payload_id=None, **kw):
 
 async def _handle_upsell_detailing_pick(phone, sess, payload_id=None, **kw):
     cat = sess.booking.category
+    # Escape hatch: user picked "Aucune, merci" — thank & end politely
+    if payload_id == "upsell_none":
+        await meta.send_text(phone, "Pas de souci, à très vite chez Ewash ! 🙂")
+        state.reset(phone)
+        return
     valid = {sid for sid, *_ in catalog.SERVICES_DETAILING}
     if payload_id not in valid:
         await meta.send_list(

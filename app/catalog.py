@@ -72,6 +72,15 @@ SERVICES_MOTO = [
 COLORS: list[tuple[str, str]] = []
 
 
+# ── Closed days (Eids, etc.) ───────────────────────────────────────────────
+# ISO dates (YYYY-MM-DD) the shop is closed — skipped when proposing dates.
+# Update yearly: Eid dates shift ~10-11 days earlier each year.
+CLOSED_DATES: set[str] = {
+    "2026-05-27",  # Eid al-Adha 2026 day 1 — CONFIRM closer to the date
+    "2026-05-28",  # Eid al-Adha 2026 day 2 — CONFIRM closer to the date
+}
+
+
 # ── Centers ────────────────────────────────────────────────────────────────
 # TODO(omar): confirm exact addresses if more centers open later.
 CENTERS = [
