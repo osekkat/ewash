@@ -11,7 +11,7 @@ import logging
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import PlainTextResponse
 
-from . import booking, handlers, meta
+from . import admin, booking, handlers, meta
 from .config import settings
 
 logging.basicConfig(
@@ -21,6 +21,7 @@ logging.basicConfig(
 log = logging.getLogger("ewash")
 
 app = FastAPI(title="Ewash WhatsApp Agent", version="0.2.1")
+app.include_router(admin.router)
 
 
 @app.get("/health")

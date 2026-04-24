@@ -16,5 +16,13 @@ class Settings(BaseSettings):
     port: int = 8000
     log_level: str = "INFO"
 
+    # v0.3 persistence/admin portal
+    database_url: str = ""
+    admin_password: str = ""
+    admin_session_secret: str = ""
+    admin_session_ttl_seconds: int = 60 * 60 * 24 * 7
+    internal_cron_secret: str = ""
+    admin_default_locale: str = "fr"
+
 
 settings = Settings()
