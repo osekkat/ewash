@@ -87,6 +87,37 @@ def test_admin_entrypoint_accepts_configured_password_without_username(monkeypat
     assert "Les pages opérationnelles arrivent dans les prochains lots" in dashboard.text
     assert "class=\"metric-grid\"" in dashboard.text
     assert "class=\"empty-panel\"" in dashboard.text
+    assert 'href="/admin/bookings"' in dashboard.text
+    assert 'href="/admin/customers"' in dashboard.text
+    assert 'href="/admin/prices"' in dashboard.text
+
+
+def test_admin_sidebar_pages_are_clickable_placeholders(monkeypatch):
+    monkeypatch.setattr(settings, "admin_password", "secret-pass")
+    client = TestClient(app)
+    client.post(
+        "/admin",
+        content="password=secret-pass",
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+
+    expected_pages = {
+        "/admin/bookings": "Réservations",
+        "/admin/customers": "Clients",
+        "/admin/prices": "Prix",
+        "/admin/promos": "Promos",
+        "/admin/reminders": "Rappels",
+        "/admin/closed-dates": "Fermetures",
+        "/admin/time-slots": "Créneaux",
+        "/admin/centers": "Centres",
+        "/admin/copy": "Textes",
+    }
+    for path, title in expected_pages.items():
+        response = client.get(path)
+        assert response.status_code == 200
+        assert title in response.text
+        assert "Cette page arrive dans le prochain lot" in response.text
+        assert f'href="{path}"' in response.text
 
 
 def test_admin_logout_clears_password_session(monkeypatch):

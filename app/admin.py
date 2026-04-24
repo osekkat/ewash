@@ -15,12 +15,25 @@ from urllib.parse import parse_qs
 from fastapi import APIRouter, Query, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from .admin_i18n import SUPPORTED_LOCALES, admin_nav_labels, normalize_locale, t
+from .admin_i18n import SUPPORTED_LOCALES, normalize_locale, t
 from .config import settings
 from .persistence import admin_dashboard_summary
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 _SESSION_COOKIE = "ewash_admin_session"
+_NAV_ITEMS = (
+    ("dashboard", "nav.dashboard", "/admin"),
+    ("bookings", "nav.bookings", "/admin/bookings"),
+    ("customers", "nav.customers", "/admin/customers"),
+    ("prices", "nav.prices", "/admin/prices"),
+    ("promos", "nav.promos", "/admin/promos"),
+    ("reminders", "nav.reminders", "/admin/reminders"),
+    ("closed_dates", "nav.closed_dates", "/admin/closed-dates"),
+    ("time_slots", "nav.time_slots", "/admin/time-slots"),
+    ("centers", "nav.centers", "/admin/centers"),
+    ("copy", "nav.copy", "/admin/copy"),
+)
+_PAGE_BY_SLUG = {path.rsplit("/", 1)[-1]: (page_id, key, path) for page_id, key, path in _NAV_ITEMS if path != "/admin"}
 
 
 def _session_signature(timestamp: str) -> str:
@@ -59,8 +72,13 @@ def _language_switch(locale: str) -> str:
     return " | ".join(links)
 
 
-def _layout(*, locale: str, title: str, body: str) -> str:
-    nav = "".join(f"<a href=\"#\">{escape(label)}</a>" for label in admin_nav_labels(locale))
+def _layout(*, locale: str, title: str, body: str, active_path: str = "/admin") -> str:
+    nav = "".join(
+        f'<a href="{escape(path)}" class="active" aria-current="page">{escape(t(key, locale))}</a>'
+        if path == active_path else
+        f'<a href="{escape(path)}">{escape(t(key, locale))}</a>'
+        for _, key, path in _NAV_ITEMS
+    )
     return f"""<!doctype html>
 <html lang="{escape(locale)}">
 <head>
@@ -107,7 +125,7 @@ def _layout(*, locale: str, title: str, body: str) -> str:
     .brand-mark {{ width: 30px; height: 30px; border-radius: 9px; background: linear-gradient(135deg, var(--accent-bg), #8b5cf6); display: grid; place-items: center; box-shadow: 0 0 30px rgba(113,112,255,0.35); }}
     nav {{ display: grid; gap: 6px; }}
     nav a {{ padding: 9px 10px; border: 1px solid transparent; border-radius: 8px; color: var(--muted); font-size: 14px; font-weight: 510; }}
-    nav a:first-child {{ color: var(--text); background: rgba(255,255,255,0.05); border-color: var(--border); }}
+    nav a.active {{ color: var(--text); background: rgba(255,255,255,0.05); border-color: var(--border); }}
     .lang {{ margin-top: 24px; color: var(--muted); font-size: 13px; }}
     .lang strong, .lang a {{ display: inline-flex; padding: 5px 8px; border: 1px solid var(--border); border-radius: 999px; margin-right: 6px; }}
     .lang strong {{ background: rgba(255,255,255,0.05); color: var(--text); }}
@@ -202,7 +220,7 @@ def _dashboard(*, locale: str) -> HTMLResponse:
     <h1>{escape(title)}</h1>
     <p>{escape(t('admin.dashboard.placeholder', locale))}</p>
   </div>
-  <div class="version-pill"><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> v0.3.0-alpha6</div>
+  <div class="version-pill"><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> v0.3.0-alpha7</div>
 </section>
 
 <section class="metric-grid" aria-label="Résumé opérationnel">
@@ -251,6 +269,34 @@ def _dashboard(*, locale: str) -> HTMLResponse:
 """
     return HTMLResponse(content=_layout(locale=locale, title=title, body=body), status_code=200)
 
+
+def _placeholder_page(*, locale: str, page_key: str, active_path: str) -> HTMLResponse:
+    title = t(page_key, locale)
+    body = f"""
+<section class="hero">
+  <div>
+    <div class="eyebrow">Ewash Ops</div>
+    <h1>{escape(title)}</h1>
+    <p>{escape(t('admin.page.placeholder', locale))}</p>
+  </div>
+  <div class="version-pill"><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> v0.3.0-alpha7</div>
+</section>
+<section class="dashboard-grid">
+  <article class="empty-panel">
+    <h2>{escape(t('admin.page.what_is_ready', locale))}</h2>
+    <p>{escape(t('admin.page.ready_body', locale))}</p>
+  </article>
+  <aside class="empty-panel">
+    <h2>{escape(t('admin.panel.next_steps', locale))}</h2>
+    <p>{escape(t('admin.page.next_body', locale))}</p>
+    <p><a href="/admin">{escape(t('nav.dashboard', locale))}</a></p>
+  </aside>
+</section>
+"""
+    return HTMLResponse(
+        content=_layout(locale=locale, title=title, body=body, active_path=active_path),
+        status_code=200,
+    )
 
 @router.get("", response_class=HTMLResponse)
 async def admin_index(request: Request, lang: str | None = Query(default=None)) -> HTMLResponse:
@@ -303,3 +349,26 @@ async def admin_logout() -> RedirectResponse:
     response = RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
     response.delete_cookie(_SESSION_COOKIE)
     return response
+
+
+@router.get("/{page_slug}", response_class=HTMLResponse)
+async def admin_section(request: Request, page_slug: str, lang: str | None = Query(default=None)) -> HTMLResponse:
+    locale = normalize_locale(lang or settings.admin_default_locale)
+    page = _PAGE_BY_SLUG.get(page_slug)
+    if page is None:
+        return HTMLResponse(content="Not found", status_code=status.HTTP_404_NOT_FOUND)
+
+    page_id, page_key, active_path = page
+    if not settings.admin_password:
+        title = t("admin.not_configured.title", locale)
+        body = (
+            f"<h1>{escape(title)}</h1>"
+            f"<p>{escape(t('admin.not_configured.body', locale))}</p>"
+        )
+        return HTMLResponse(
+            content=_layout(locale=locale, title=title, body=body, active_path=active_path),
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+    if not _valid_session_token(request.cookies.get(_SESSION_COOKIE)):
+        return _password_form(locale=locale)
+    return _placeholder_page(locale=locale, page_key=page_key, active_path=active_path)
