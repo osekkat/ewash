@@ -16,7 +16,7 @@ from typing import Iterable
 
 from sqlalchemy import Engine, func, select
 
-from .booking import Booking
+from .booking import Booking, all_bookings
 from .config import settings
 from .db import init_db, make_engine, session_scope
 from .models import (
@@ -232,10 +232,30 @@ def persist_booking_addon(
         row.addon_price_dh = addon_price_dh
 
 
+def _booking_dict_to_admin_item(row: dict) -> AdminBookingListItem:
+    vehicle_label = " — ".join(str(row.get(part, "")).strip() for part in ("car_model", "color") if str(row.get(part, "")).strip())
+    if not vehicle_label:
+        vehicle_label = str(row.get("vehicle_type") or "")
+    location_mode = str(row.get("location_mode") or "")
+    location_label = str(row.get("center") or "") if location_mode == "center" else str(row.get("address") or row.get("geo") or location_mode)
+    return AdminBookingListItem(
+        ref=str(row.get("ref") or ""),
+        customer_name=str(row.get("name") or row.get("phone") or ""),
+        customer_phone=str(row.get("phone") or ""),
+        vehicle_label=vehicle_label,
+        service_label=str(row.get("service_label") or row.get("service") or ""),
+        status="confirmed" if row.get("ref") else "draft",
+        date_label=str(row.get("date_label") or ""),
+        slot=str(row.get("slot") or ""),
+        location_label=location_label,
+        price_dh=int(row.get("price_dh") or 0),
+    )
+
+
 def admin_booking_list(*, engine: Engine | None = None, limit: int = 100) -> tuple[AdminBookingListItem, ...]:
     db_engine = _engine_or_configured(engine)
     if db_engine is None:
-        return ()
+        return tuple(_booking_dict_to_admin_item(row) for row in reversed(all_bookings()[-limit:]))
     try:
         with session_scope(db_engine) as session:
             rows = session.scalars(
@@ -268,7 +288,30 @@ def admin_booking_list(*, engine: Engine | None = None, limit: int = 100) -> tup
 def admin_customer_list(*, engine: Engine | None = None, limit: int = 100) -> tuple[AdminCustomerListItem, ...]:
     db_engine = _engine_or_configured(engine)
     if db_engine is None:
-        return ()
+        grouped: dict[str, dict] = {}
+        for row in all_bookings():
+            phone = str(row.get("phone") or "")
+            if not phone:
+                continue
+            item = grouped.setdefault(
+                phone,
+                {"display_name": str(row.get("name") or phone), "booking_count": 0, "vehicle_labels": set()},
+            )
+            item["booking_count"] += 1
+            vehicle_label = " — ".join(str(row.get(part, "")).strip() for part in ("car_model", "color") if str(row.get(part, "")).strip())
+            if not vehicle_label:
+                vehicle_label = str(row.get("vehicle_type") or "")
+            if vehicle_label:
+                item["vehicle_labels"].add(vehicle_label)
+        return tuple(
+            AdminCustomerListItem(
+                phone=phone,
+                display_name=data["display_name"],
+                booking_count=data["booking_count"],
+                vehicle_labels=tuple(sorted(data["vehicle_labels"])),
+            )
+            for phone, data in list(grouped.items())[:limit]
+        )
     try:
         with session_scope(db_engine) as session:
             customers = session.scalars(

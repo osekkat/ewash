@@ -1,6 +1,7 @@
 from fastapi.testclient import TestClient
 
 from app.booking import Booking
+import app.booking as booking_store
 from app.config import settings
 from app.db import init_db, make_engine
 from app.main import app
@@ -170,6 +171,59 @@ def test_admin_customers_page_renders_persisted_clients(monkeypatch, tmp_path):
     assert "Porsche — Gris" in response.text
     assert "1 réservation" in response.text
     assert "Cette page arrive dans le prochain lot" not in response.text
+    _configured_engine.cache_clear()
+
+
+def test_admin_bookings_page_falls_back_to_live_memory_when_database_is_missing(monkeypatch):
+    booking_store._bookings.clear()
+    monkeypatch.setattr(booking_store, "_counter", 0)
+    monkeypatch.setattr(settings, "database_url", "")
+    _configured_engine.cache_clear()
+    booking = _sample_booking()
+    monkeypatch.setattr(settings, "admin_password", "secret-pass")
+    client = TestClient(app)
+    client.post(
+        "/admin",
+        content="password=secret-pass",
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+
+    response = client.get("/admin/bookings")
+
+    assert response.status_code == 200
+    assert "Mode temporaire" in response.text
+    assert "Railway Postgres" in response.text
+    assert booking.ref in response.text
+    assert "Sam" not in response.text
+    assert "Sekkat" in response.text
+    assert "Porsche" in response.text
+    booking_store._bookings.clear()
+    _configured_engine.cache_clear()
+
+
+def test_admin_customers_page_falls_back_to_live_memory_when_database_is_missing(monkeypatch):
+    booking_store._bookings.clear()
+    monkeypatch.setattr(booking_store, "_counter", 0)
+    monkeypatch.setattr(settings, "database_url", "")
+    _configured_engine.cache_clear()
+    _sample_booking()
+    monkeypatch.setattr(settings, "admin_password", "secret-pass")
+    client = TestClient(app)
+    client.post(
+        "/admin",
+        content="password=secret-pass",
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+
+    response = client.get("/admin/customers")
+
+    assert response.status_code == 200
+    assert "Mode temporaire" in response.text
+    assert "Sekkat" in response.text
+    assert "212665883062" in response.text
+    assert "Porsche — Gris" in response.text
+    assert "1 réservation" in response.text
+    booking_store._bookings.clear()
     _configured_engine.cache_clear()
 
 

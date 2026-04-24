@@ -222,7 +222,7 @@ def _dashboard(*, locale: str) -> HTMLResponse:
     <h1>{escape(title)}</h1>
     <p>{escape(t('admin.dashboard.placeholder', locale))}</p>
   </div>
-  <div class="version-pill"><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> v0.3.0-alpha9</div>
+  <div class="version-pill"><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> v0.3.0-alpha10</div>
 </section>
 
 <section class="metric-grid" aria-label="Résumé opérationnel">
@@ -281,7 +281,7 @@ def _placeholder_page(*, locale: str, page_key: str, active_path: str) -> HTMLRe
     <h1>{escape(title)}</h1>
     <p>{escape(t('admin.page.placeholder', locale))}</p>
   </div>
-  <div class="version-pill"><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> v0.3.0-alpha9</div>
+  <div class="version-pill"><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> v0.3.0-alpha10</div>
 </section>
 <section class="dashboard-grid">
   <article class="empty-panel">
@@ -316,9 +316,13 @@ def _bookings_page(*, locale: str) -> HTMLResponse:
             "</div>"
             for item in bookings
         )
-        intro = f"{len(bookings)} réservation(s) confirmée(s) persistée(s)."
     else:
         rows = '<div class="table-row booking-row"><span>—</span><span>—</span><span>—</span><span>—</span><span>—</span><span>—</span><span>—</span></div>'
+    if not settings.database_url:
+        intro = "Mode temporaire : Railway Postgres / DATABASE_URL n'est pas configuré. Les réservations affichées ici viennent de la mémoire live et disparaissent au redéploiement."
+    elif bookings:
+        intro = f"{len(bookings)} réservation(s) confirmée(s) persistée(s)."
+    else:
         intro = t("admin.panel.no_bookings", locale)
 
     body = f"""
@@ -328,7 +332,7 @@ def _bookings_page(*, locale: str) -> HTMLResponse:
     <h1>{escape(title)}</h1>
     <p>{escape(intro)}</p>
   </div>
-  <div class="version-pill"><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> v0.3.0-alpha9</div>
+  <div class="version-pill"><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> v0.3.0-alpha10</div>
 </section>
 <section class="empty-panel">
   <h2>{escape(t('admin.panel.recent_bookings', locale))}</h2>
@@ -357,9 +361,13 @@ def _customers_page(*, locale: str) -> HTMLResponse:
             "</div>"
             for item in customers
         )
-        intro = f"{len(customers)} client(s) persisté(s) en base."
     else:
         rows = '<div class="table-row customer-row"><span>—</span><span>—</span><span>—</span><span>—</span></div>'
+    if not settings.database_url:
+        intro = "Mode temporaire : Railway Postgres / DATABASE_URL n'est pas configuré. Les clients affichés ici viennent de la mémoire live et disparaissent au redéploiement."
+    elif customers:
+        intro = f"{len(customers)} client(s) persisté(s) en base."
+    else:
         intro = "Aucun client persisté pour le moment. Les clients apparaissent ici après une réservation WhatsApp confirmée."
 
     body = f"""
@@ -369,7 +377,7 @@ def _customers_page(*, locale: str) -> HTMLResponse:
     <h1>{escape(title)}</h1>
     <p>{escape(intro)}</p>
   </div>
-  <div class="version-pill"><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> v0.3.0-alpha9</div>
+  <div class="version-pill"><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> v0.3.0-alpha10</div>
 </section>
 <section class="empty-panel">
   <h2>{escape(title)}</h2>
