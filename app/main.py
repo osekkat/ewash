@@ -14,19 +14,21 @@ from fastapi.responses import PlainTextResponse
 from . import admin, booking, handlers, meta
 from .config import settings
 
+APP_VERSION = "v0.3.0-alpha10"
+
 logging.basicConfig(
     level=settings.log_level,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 log = logging.getLogger("ewash")
 
-app = FastAPI(title="Ewash WhatsApp Agent", version="0.2.1")
+app = FastAPI(title="Ewash WhatsApp Agent", version=APP_VERSION.removeprefix("v"))
 app.include_router(admin.router)
 
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "0.2.1"}
+    return {"status": "ok", "version": APP_VERSION}
 
 
 @app.get("/bookings")

@@ -252,10 +252,42 @@ def _booking_dict_to_admin_item(row: dict) -> AdminBookingListItem:
     )
 
 
+def _memory_booking_items(limit: int = 100) -> tuple[AdminBookingListItem, ...]:
+    return tuple(_booking_dict_to_admin_item(row) for row in reversed(all_bookings()[-limit:]))
+
+
+def _memory_customer_items(limit: int = 100) -> tuple[AdminCustomerListItem, ...]:
+    grouped: dict[str, dict] = {}
+    for row in all_bookings():
+        phone = str(row.get("phone") or "")
+        if not phone:
+            continue
+        item = grouped.setdefault(
+            phone,
+            {"display_name": str(row.get("name") or phone), "booking_count": 0, "vehicle_labels": set()},
+        )
+        item["booking_count"] += 1
+        vehicle_label = " — ".join(str(row.get(part, "")).strip() for part in ("car_model", "color") if str(row.get(part, "")).strip())
+        if not vehicle_label:
+            vehicle_label = str(row.get("vehicle_type") or "")
+        if vehicle_label:
+            item["vehicle_labels"].add(vehicle_label)
+    return tuple(
+        AdminCustomerListItem(
+            phone=phone,
+            display_name=data["display_name"],
+            booking_count=data["booking_count"],
+            vehicle_labels=tuple(sorted(data["vehicle_labels"])),
+        )
+        for phone, data in list(grouped.items())[:limit]
+    )
+
+
 def admin_booking_list(*, engine: Engine | None = None, limit: int = 100) -> tuple[AdminBookingListItem, ...]:
+    memory_items = _memory_booking_items(limit)
     db_engine = _engine_or_configured(engine)
     if db_engine is None:
-        return tuple(_booking_dict_to_admin_item(row) for row in reversed(all_bookings()[-limit:]))
+        return memory_items
     try:
         with session_scope(db_engine) as session:
             rows = session.scalars(
@@ -279,39 +311,19 @@ def admin_booking_list(*, engine: Engine | None = None, limit: int = 100) -> tup
                         price_dh=row.price_dh,
                     )
                 )
-            return tuple(items)
+            db_refs = {item.ref for item in items if item.ref}
+            items.extend(item for item in memory_items if item.ref not in db_refs)
+            return tuple(items[:limit])
     except Exception:
-        log.exception("admin_booking_list failed")
-        return ()
+        log.exception("admin_booking_list failed; falling back to live memory")
+        return memory_items
 
 
 def admin_customer_list(*, engine: Engine | None = None, limit: int = 100) -> tuple[AdminCustomerListItem, ...]:
+    memory_items = _memory_customer_items(limit)
     db_engine = _engine_or_configured(engine)
     if db_engine is None:
-        grouped: dict[str, dict] = {}
-        for row in all_bookings():
-            phone = str(row.get("phone") or "")
-            if not phone:
-                continue
-            item = grouped.setdefault(
-                phone,
-                {"display_name": str(row.get("name") or phone), "booking_count": 0, "vehicle_labels": set()},
-            )
-            item["booking_count"] += 1
-            vehicle_label = " — ".join(str(row.get(part, "")).strip() for part in ("car_model", "color") if str(row.get(part, "")).strip())
-            if not vehicle_label:
-                vehicle_label = str(row.get("vehicle_type") or "")
-            if vehicle_label:
-                item["vehicle_labels"].add(vehicle_label)
-        return tuple(
-            AdminCustomerListItem(
-                phone=phone,
-                display_name=data["display_name"],
-                booking_count=data["booking_count"],
-                vehicle_labels=tuple(sorted(data["vehicle_labels"])),
-            )
-            for phone, data in list(grouped.items())[:limit]
-        )
+        return memory_items
     try:
         with session_scope(db_engine) as session:
             customers = session.scalars(
@@ -334,10 +346,12 @@ def admin_customer_list(*, engine: Engine | None = None, limit: int = 100) -> tu
                         vehicle_labels=tuple(label for label in labels if label),
                     )
                 )
-            return tuple(items)
+            db_phones = {item.phone for item in items if item.phone}
+            items.extend(item for item in memory_items if item.phone not in db_phones)
+            return tuple(items[:limit])
     except Exception:
-        log.exception("admin_customer_list failed")
-        return ()
+        log.exception("admin_customer_list failed; falling back to live memory")
+        return memory_items
 
 
 def admin_dashboard_summary(*, engine: Engine | None = None, recent_limit: int = 5) -> DashboardSummary:
