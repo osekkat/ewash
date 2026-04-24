@@ -59,21 +59,105 @@ def _language_switch(locale: str) -> str:
 
 
 def _layout(*, locale: str, title: str, body: str) -> str:
-    nav = "".join(f"<li>{escape(label)}</li>" for label in admin_nav_labels(locale))
+    nav = "".join(f"<a href=\"#\">{escape(label)}</a>" for label in admin_nav_labels(locale))
     return f"""<!doctype html>
 <html lang="{escape(locale)}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{escape(title)} · Ewash Admin</title>
+  <style>
+    :root {{
+      --bg: #08090a;
+      --panel: #0f1011;
+      --surface: #191a1b;
+      --surface-2: #202124;
+      --border: rgba(255,255,255,0.08);
+      --border-soft: rgba(255,255,255,0.05);
+      --text: #f7f8f8;
+      --muted: #8a8f98;
+      --soft: #d0d6e0;
+      --accent: #7170ff;
+      --accent-bg: #5e6ad2;
+      --good: #10b981;
+      --warn: #f59e0b;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      min-height: 100vh;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, rgba(113,112,255,0.16), transparent 34rem),
+        linear-gradient(135deg, #08090a 0%, #101114 55%, #08090a 100%);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-feature-settings: "cv01", "ss03";
+    }}
+    a {{ color: var(--soft); text-decoration: none; }}
+    a:hover {{ color: var(--text); }}
+    .shell {{ display: grid; grid-template-columns: 260px 1fr; min-height: 100vh; }}
+    header {{
+      padding: 24px 18px;
+      background: rgba(15,16,17,0.82);
+      border-right: 1px solid var(--border-soft);
+      backdrop-filter: blur(12px);
+    }}
+    .brand {{ display: flex; align-items: center; gap: 10px; margin-bottom: 28px; font-weight: 590; letter-spacing: -0.2px; }}
+    .brand-mark {{ width: 30px; height: 30px; border-radius: 9px; background: linear-gradient(135deg, var(--accent-bg), #8b5cf6); display: grid; place-items: center; box-shadow: 0 0 30px rgba(113,112,255,0.35); }}
+    nav {{ display: grid; gap: 6px; }}
+    nav a {{ padding: 9px 10px; border: 1px solid transparent; border-radius: 8px; color: var(--muted); font-size: 14px; font-weight: 510; }}
+    nav a:first-child {{ color: var(--text); background: rgba(255,255,255,0.05); border-color: var(--border); }}
+    .lang {{ margin-top: 24px; color: var(--muted); font-size: 13px; }}
+    .lang strong, .lang a {{ display: inline-flex; padding: 5px 8px; border: 1px solid var(--border); border-radius: 999px; margin-right: 6px; }}
+    .lang strong {{ background: rgba(255,255,255,0.05); color: var(--text); }}
+    main {{ padding: 42px; max-width: 1180px; width: 100%; }}
+    h1 {{ margin: 0; font-size: clamp(32px, 5vw, 52px); line-height: 1; letter-spacing: -1.05px; font-weight: 510; }}
+    h2 {{ margin: 0 0 14px; font-size: 18px; letter-spacing: -0.24px; }}
+    p {{ color: var(--soft); line-height: 1.6; }}
+    .eyebrow {{ color: var(--accent); font-size: 12px; font-weight: 590; letter-spacing: .12em; text-transform: uppercase; margin-bottom: 12px; }}
+    .hero {{ display: flex; justify-content: space-between; gap: 24px; align-items: flex-start; margin-bottom: 28px; }}
+    .version-pill {{ border: 1px solid var(--border); background: rgba(255,255,255,0.04); color: var(--soft); border-radius: 999px; padding: 8px 12px; font-size: 13px; white-space: nowrap; }}
+    .metric-grid {{ display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 14px; margin: 28px 0; }}
+    .card, .metric-card, .empty-panel {{ background: rgba(255,255,255,0.035); border: 1px solid var(--border); border-radius: 16px; box-shadow: inset 0 1px 0 rgba(255,255,255,0.04); }}
+    .metric-card {{ padding: 18px; }}
+    .metric-label {{ color: var(--muted); font-size: 13px; margin-bottom: 12px; }}
+    .metric-value {{ font-size: 34px; line-height: 1; font-weight: 510; letter-spacing: -0.7px; }}
+    .metric-note {{ color: var(--muted); font-size: 12px; margin-top: 10px; }}
+    .dashboard-grid {{ display: grid; grid-template-columns: 1.35fr .85fr; gap: 16px; }}
+    .empty-panel {{ padding: 22px; min-height: 230px; }}
+    .table-shell {{ margin-top: 18px; border: 1px solid var(--border-soft); border-radius: 12px; overflow: hidden; }}
+    .table-row {{ display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; padding: 13px 14px; border-bottom: 1px solid var(--border-soft); color: var(--muted); font-size: 13px; }}
+    .table-row:last-child {{ border-bottom: 0; }}
+    .table-head {{ color: var(--soft); background: rgba(255,255,255,0.03); font-weight: 510; }}
+    .status-list {{ display: grid; gap: 10px; margin-top: 18px; }}
+    .status-item {{ display: flex; justify-content: space-between; align-items: center; padding: 12px; border-radius: 12px; background: rgba(255,255,255,0.03); border: 1px solid var(--border-soft); color: var(--soft); }}
+    .dot {{ width: 8px; height: 8px; border-radius: 999px; background: var(--good); display: inline-block; margin-right: 8px; }}
+    .soon {{ color: var(--muted); font-size: 13px; }}
+    form {{ max-width: 420px; margin-top: 24px; padding: 22px; border: 1px solid var(--border); border-radius: 16px; background: rgba(255,255,255,0.035); }}
+    label {{ color: var(--soft); font-size: 14px; }}
+    input {{ width: 100%; margin: 8px 0 14px; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--border); color: var(--text); background: rgba(255,255,255,0.04); }}
+    button {{ border: 0; border-radius: 10px; padding: 11px 16px; color: #fff; background: var(--accent-bg); font-weight: 590; cursor: pointer; }}
+    [role="alert"] {{ color: #fecaca; }}
+    @media (max-width: 860px) {{
+      .shell {{ grid-template-columns: 1fr; }}
+      header {{ border-right: 0; border-bottom: 1px solid var(--border-soft); }}
+      nav {{ grid-template-columns: repeat(2, minmax(0,1fr)); }}
+      main {{ padding: 28px 18px; }}
+      .hero, .dashboard-grid {{ display: block; }}
+      .metric-grid {{ grid-template-columns: repeat(2, minmax(0,1fr)); }}
+      .empty-panel {{ margin-top: 16px; }}
+    }}
+  </style>
 </head>
 <body>
-  <header>
-    <strong>Ewash Admin</strong>
-    <nav aria-label="Admin navigation"><ul>{nav}</ul></nav>
-    <p>{_language_switch(locale)}</p>
-  </header>
-  <main>{body}</main>
+  <div class="shell">
+    <header>
+      <div class="brand"><span class="brand-mark">E</span><span>Ewash Admin</span></div>
+      <nav aria-label="Admin navigation">{nav}</nav>
+      <p class="lang">{_language_switch(locale)}</p>
+    </header>
+    <main>{body}</main>
+  </div>
 </body>
 </html>"""
 
@@ -94,13 +178,60 @@ def _password_form(*, locale: str, error: str = "") -> HTMLResponse:
 
 def _dashboard(*, locale: str) -> HTMLResponse:
     title = t("nav.dashboard", locale)
-    body = (
-        f"<h1>{escape(title)}</h1>"
-        f"<p><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> "
-        "v0.3.0-alpha4</p>"
-        f"<p>{escape(t('admin.dashboard.placeholder', locale))}</p>"
-        f'<p><a href="/admin/logout">{escape(t("nav.logout", locale))}</a></p>'
-    )
+    body = f"""
+<section class="hero">
+  <div>
+    <div class="eyebrow">Ewash Ops</div>
+    <h1>{escape(title)}</h1>
+    <p>{escape(t('admin.dashboard.placeholder', locale))}</p>
+  </div>
+  <div class="version-pill"><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> v0.3.0-alpha5</div>
+</section>
+
+<section class="metric-grid" aria-label="Résumé opérationnel">
+  <article class="metric-card">
+    <div class="metric-label">{escape(t('admin.metric.bookings_today', locale))}</div>
+    <div class="metric-value">0</div>
+    <div class="metric-note">{escape(t('admin.metric.pending_data', locale))}</div>
+  </article>
+  <article class="metric-card">
+    <div class="metric-label">{escape(t('admin.metric.awaiting_confirmation', locale))}</div>
+    <div class="metric-value">0</div>
+    <div class="metric-note">{escape(t('admin.metric.pending_data', locale))}</div>
+  </article>
+  <article class="metric-card">
+    <div class="metric-label">{escape(t('admin.metric.customers', locale))}</div>
+    <div class="metric-value">0</div>
+    <div class="metric-note">{escape(t('admin.metric.pending_data', locale))}</div>
+  </article>
+  <article class="metric-card">
+    <div class="metric-label">{escape(t('admin.metric.reminders', locale))}</div>
+    <div class="metric-value">0</div>
+    <div class="metric-note">{escape(t('admin.metric.pending_data', locale))}</div>
+  </article>
+</section>
+
+<section class="dashboard-grid">
+  <article class="empty-panel">
+    <h2>{escape(t('admin.panel.recent_bookings', locale))}</h2>
+    <p>{escape(t('admin.panel.no_bookings', locale))}</p>
+    <div class="table-shell" aria-label="Réservations récentes">
+      <div class="table-row table-head"><span>Client</span><span>Service</span><span>Statut</span></div>
+      <div class="table-row"><span>—</span><span>—</span><span>—</span></div>
+    </div>
+  </article>
+  <aside class="empty-panel">
+    <h2>{escape(t('admin.panel.next_steps', locale))}</h2>
+    <div class="status-list">
+      <div class="status-item"><span><span class="dot"></span>{escape(t('admin.next.password', locale))}</span><span>OK</span></div>
+      <div class="status-item"><span><span class="dot"></span>{escape(t('admin.next.db', locale))}</span><span>OK</span></div>
+      <div class="status-item"><span>{escape(t('admin.next.persistence', locale))}</span><span class="soon">{escape(t('admin.next.soon', locale))}</span></div>
+      <div class="status-item"><span>{escape(t('admin.next.pages', locale))}</span><span class="soon">{escape(t('admin.next.soon', locale))}</span></div>
+    </div>
+    <p><a href="/admin/logout">{escape(t('nav.logout', locale))}</a></p>
+  </aside>
+</section>
+"""
     return HTMLResponse(content=_layout(locale=locale, title=title, body=body), status_code=200)
 
 

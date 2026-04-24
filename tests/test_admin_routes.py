@@ -81,7 +81,12 @@ def test_admin_entrypoint_accepts_configured_password_without_username(monkeypat
     assert "Tableau de bord" in dashboard.text
     assert "Mot de passe" not in dashboard.text
     assert "Version actuelle" in dashboard.text
+    assert "Réservations aujourd" in dashboard.text
+    assert "Rappels en attente" in dashboard.text
+    assert "Aucune réservation persistée pour le moment" in dashboard.text
     assert "Les pages opérationnelles arrivent dans les prochains lots" in dashboard.text
+    assert "class=\"metric-grid\"" in dashboard.text
+    assert "class=\"empty-panel\"" in dashboard.text
 
 
 def test_admin_logout_clears_password_session(monkeypatch):
