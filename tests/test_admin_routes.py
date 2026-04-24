@@ -1,14 +1,7 @@
-from base64 import b64encode
-
 from fastapi.testclient import TestClient
 
 from app.config import settings
 from app.main import app
-
-
-def _basic_auth(password: str, username: str = "admin") -> dict[str, str]:
-    token = b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
-    return {"Authorization": f"Basic {token}"}
 
 
 def test_admin_entrypoint_defaults_to_french_when_not_configured(monkeypatch):
@@ -39,32 +32,72 @@ def test_admin_entrypoint_can_render_english_option_when_not_configured(monkeypa
     assert "?lang=fr" in response.text
 
 
-def test_admin_entrypoint_prompts_for_password_when_configured(monkeypatch):
+def test_admin_entrypoint_shows_password_only_form_when_configured(monkeypatch):
     monkeypatch.setattr(settings, "admin_password", "secret-pass")
     client = TestClient(app)
 
     response = client.get("/admin")
 
-    assert response.status_code == 401
-    assert response.headers["www-authenticate"] == 'Basic realm="Ewash Admin"'
-
-
-def test_admin_entrypoint_rejects_wrong_password(monkeypatch):
-    monkeypatch.setattr(settings, "admin_password", "secret-pass")
-    client = TestClient(app)
-
-    response = client.get("/admin", headers=_basic_auth("wrong-pass"))
-
-    assert response.status_code == 401
-    assert response.headers["www-authenticate"] == 'Basic realm="Ewash Admin"'
-
-
-def test_admin_entrypoint_accepts_configured_password(monkeypatch):
-    monkeypatch.setattr(settings, "admin_password", "secret-pass")
-    client = TestClient(app)
-
-    response = client.get("/admin", headers=_basic_auth("secret-pass"))
-
     assert response.status_code == 200
-    assert "Tableau de bord" in response.text
-    assert "Portail admin non configuré" not in response.text
+    assert "Mot de passe" in response.text
+    assert "name=\"password\"" in response.text
+    assert "type=\"password\"" in response.text
+    assert "Username" not in response.text
+    assert "Nom d'utilisateur" not in response.text
+
+
+def test_admin_entrypoint_rejects_wrong_password_without_username(monkeypatch):
+    monkeypatch.setattr(settings, "admin_password", "secret-pass")
+    client = TestClient(app)
+
+    response = client.post(
+        "/admin",
+        content="password=wrong-pass",
+        headers={"content-type": "application/x-www-form-urlencoded"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 401
+    assert "Mot de passe incorrect" in response.text
+
+
+def test_admin_entrypoint_accepts_configured_password_without_username(monkeypatch):
+    monkeypatch.setattr(settings, "admin_password", "secret-pass")
+    client = TestClient(app)
+
+    response = client.post(
+        "/admin",
+        content="password=secret-pass",
+        headers={"content-type": "application/x-www-form-urlencoded"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/admin"
+    assert "ewash_admin_session" in response.headers["set-cookie"]
+
+    dashboard = client.get("/admin")
+    assert dashboard.status_code == 200
+    assert "Tableau de bord" in dashboard.text
+    assert "Mot de passe" not in dashboard.text
+    assert "Version actuelle" in dashboard.text
+    assert "Les pages opérationnelles arrivent dans les prochains lots" in dashboard.text
+
+
+def test_admin_logout_clears_password_session(monkeypatch):
+    monkeypatch.setattr(settings, "admin_password", "secret-pass")
+    client = TestClient(app)
+    client.post(
+        "/admin",
+        content="password=secret-pass",
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+
+    response = client.get("/admin/logout", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/admin"
+    assert "ewash_admin_session" in response.headers["set-cookie"]
+
+    login = client.get("/admin")
+    assert "Mot de passe" in login.text
