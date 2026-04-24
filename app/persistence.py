@@ -39,6 +39,20 @@ class RecentBooking:
 
 
 @dataclass(frozen=True)
+class AdminBookingListItem:
+    ref: str
+    customer_name: str
+    customer_phone: str
+    vehicle_label: str
+    service_label: str
+    status: str
+    date_label: str
+    slot: str
+    location_label: str
+    price_dh: int
+
+
+@dataclass(frozen=True)
 class DashboardSummary:
     total_bookings: int = 0
     confirmed_bookings: int = 0
@@ -208,6 +222,39 @@ def persist_booking_addon(
         row.addon_service = addon_service
         row.addon_service_label = addon_service_label
         row.addon_price_dh = addon_price_dh
+
+
+def admin_booking_list(*, engine: Engine | None = None, limit: int = 100) -> tuple[AdminBookingListItem, ...]:
+    db_engine = _engine_or_configured(engine)
+    if db_engine is None:
+        return ()
+    try:
+        with session_scope(db_engine) as session:
+            rows = session.scalars(
+                select(BookingRow).order_by(BookingRow.created_at.desc()).limit(limit)
+            ).all()
+            items: list[AdminBookingListItem] = []
+            for row in rows:
+                vehicle_label = " — ".join(part for part in (row.car_model, row.color) if part) or row.vehicle_type
+                location_label = row.center if row.location_mode == "center" else (row.address or row.geo or row.location_mode)
+                items.append(
+                    AdminBookingListItem(
+                        ref=row.ref,
+                        customer_name=row.customer_name or row.customer_phone,
+                        customer_phone=row.customer_phone,
+                        vehicle_label=vehicle_label,
+                        service_label=row.service_label or row.service_id,
+                        status=row.status,
+                        date_label=row.date_label,
+                        slot=row.slot,
+                        location_label=location_label,
+                        price_dh=row.price_dh,
+                    )
+                )
+            return tuple(items)
+    except Exception:
+        log.exception("admin_booking_list failed")
+        return ()
 
 
 def admin_dashboard_summary(*, engine: Engine | None = None, recent_limit: int = 5) -> DashboardSummary:
