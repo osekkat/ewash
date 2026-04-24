@@ -81,7 +81,7 @@ COLORS: list[tuple[str, str]] = []
 # Add new codes by dropping a new entry keyed on the UPPERCASE code. Keep keys
 # alphanumeric (partner DMs + printed flyers tend to be fat-fingered).
 PROMO_CODES: dict[str, dict] = {
-    "HPL25": {
+    "YS26": {
         "label": "Yasmine Signature",
         # Regular → promo price map per service_id × category.
         # Matches "Tarifs Exclusifs Yasmine Signature" Apr-2026 flyer.

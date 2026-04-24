@@ -38,10 +38,10 @@ class Booking:
     addon_service_label: str = ""  # "Le Polissage — 891 DH (-10%)"
     addon_price_dh: int = 0        # discounted DH price of the addon
 
-    # Promo code (partner preferential tariff, e.g. HPL25). Empty string
+    # Promo code (partner preferential tariff, e.g. YS26). Empty string
     # means the public / regular grid applies. Captured BEFORE the service
     # menu so the list rows render the correct (discounted) prices.
-    promo_code: str = ""            # UPPERCASE canonical code, e.g. "HPL25"
+    promo_code: str = ""            # UPPERCASE canonical code, e.g. "YS26"
     promo_label: str = ""           # Human-readable, e.g. "Yasmine Signature"
     price_regular_dh: int = 0       # Public price at time of booking (for savings math)
 

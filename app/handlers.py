@@ -374,7 +374,7 @@ async def _handle_book_promo_ask(phone, sess, payload_id=None, **kw):
         sess.state = "BOOK_PROMO_CODE"
         await meta.send_text(
             phone,
-            "🎁 Écrivez votre *code promo* (ex: *HPL25*).\n\n"
+            "🎁 Écrivez votre *code promo* (ex: *YS26*).\n\n"
             "_Écrivez *passer* si vous n'en avez pas finalement._",
         )
         return
