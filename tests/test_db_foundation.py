@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import inspect, select
+from sqlalchemy import inspect, select, text
 
 from app.db import init_db, make_engine, normalize_database_url, session_scope
 from app.models import (
@@ -10,6 +10,8 @@ from app.models import (
     Customer,
     CustomerVehicle,
     ReminderRuleRow,
+    VehicleColor,
+    VehicleModel,
 )
 
 
@@ -35,11 +37,55 @@ def test_init_db_creates_v03_core_tables():
     assert {
         "customers",
         "customer_vehicles",
+        "vehicle_models",
+        "vehicle_colors",
         "bookings",
         "booking_status_events",
         "reminder_rules",
         "booking_reminders",
     }.issubset(tables)
+    vehicle_columns = {column["name"] for column in inspect(engine).get_columns("customer_vehicles")}
+    assert {"model_id", "color_id"}.issubset(vehicle_columns)
+
+
+def test_init_db_migrates_legacy_customer_vehicles_to_normalized_refs():
+    engine = make_engine("sqlite+pysqlite:///:memory:")
+    with engine.begin() as connection:
+        connection.execute(text("""
+            CREATE TABLE customer_vehicles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                customer_phone VARCHAR(32),
+                category VARCHAR(16),
+                model VARCHAR(120),
+                color VARCHAR(60),
+                label VARCHAR(180),
+                active BOOLEAN,
+                last_used_at DATETIME,
+                created_at DATETIME
+            )
+        """))
+        connection.execute(text("""
+            INSERT INTO customer_vehicles
+                (customer_phone, category, model, color, label, active, created_at)
+            VALUES
+                ('212665883062', 'B', 'BMW 330i', 'Noir', 'BMW 330i — Noir', 1, CURRENT_TIMESTAMP)
+        """))
+
+    init_db(engine)
+
+    vehicle_columns = {column["name"] for column in inspect(engine).get_columns("customer_vehicles")}
+    assert {"model_id", "color_id"}.issubset(vehicle_columns)
+    with session_scope(engine) as session:
+        model = session.scalars(select(VehicleModel)).one()
+        color = session.scalars(select(VehicleColor)).one()
+        vehicle = session.scalars(select(CustomerVehicle)).one()
+        assert model.category == "B"
+        assert model.name == "BMW 330i"
+        assert model.normalized_name == "bmw 330i"
+        assert color.name == "Noir"
+        assert color.normalized_name == "noir"
+        assert vehicle.model_id == model.id
+        assert vehicle.color_id == color.id
 
 
 def test_customer_vehicle_booking_status_and_reminder_rows_round_trip():
@@ -52,9 +98,16 @@ def test_customer_vehicle_booking_status_and_reminder_rows_round_trip():
         session.add(customer)
         session.flush()
 
+        model = VehicleModel(category="B", name="BMW 330i", normalized_name="bmw 330i")
+        color = VehicleColor(name="Noir", normalized_name="noir")
+        session.add_all([model, color])
+        session.flush()
+
         vehicle = CustomerVehicle(
             customer_phone=customer.phone,
             category="B",
+            model_id=model.id,
+            color_id=color.id,
             model="BMW 330i",
             color="Noir",
             label="BMW 330i — Noir",
@@ -120,6 +173,8 @@ def test_customer_vehicle_booking_status_and_reminder_rows_round_trip():
         assert booking.customer.display_name == "Oussama"
         assert booking.customer_name == "Oussama"
         assert booking.vehicle.label == "BMW 330i — Noir"
+        assert booking.vehicle.vehicle_model.name == "BMW 330i"
+        assert booking.vehicle.vehicle_color.name == "Noir"
         assert booking.car_model == "BMW 330i"
         assert booking.color == "Noir"
         assert booking.address == "Bouskoura"

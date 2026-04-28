@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Iterable
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 BOOKING_STATUSES = (
@@ -90,12 +90,43 @@ class Customer(Base):
     bookings: Mapped[list["BookingRow"]] = relationship(back_populates="customer")
 
 
+class VehicleModel(Base):
+    __tablename__ = "vehicle_models"
+    __table_args__ = (UniqueConstraint("category", "normalized_name", name="uq_vehicle_model_category_normalized"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    category: Mapped[str] = mapped_column(String(16), default="", index=True)
+    name: Mapped[str] = mapped_column(String(120), default="")
+    normalized_name: Mapped[str] = mapped_column(String(120), default="", index=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    vehicles: Mapped[list["CustomerVehicle"]] = relationship(back_populates="vehicle_model")
+
+
+class VehicleColor(Base):
+    __tablename__ = "vehicle_colors"
+    __table_args__ = (UniqueConstraint("normalized_name", name="uq_vehicle_color_normalized"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(60), default="")
+    normalized_name: Mapped[str] = mapped_column(String(60), default="", index=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    vehicles: Mapped[list["CustomerVehicle"]] = relationship(back_populates="vehicle_color")
+
+
 class CustomerVehicle(Base):
     __tablename__ = "customer_vehicles"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     customer_phone: Mapped[str] = mapped_column(ForeignKey("customers.phone"), index=True)
     category: Mapped[str] = mapped_column(String(16), default="")
+    model_id: Mapped[int | None] = mapped_column(ForeignKey("vehicle_models.id"), nullable=True, index=True)
+    color_id: Mapped[int | None] = mapped_column(ForeignKey("vehicle_colors.id"), nullable=True, index=True)
     model: Mapped[str] = mapped_column(String(120), default="")
     color: Mapped[str] = mapped_column(String(60), default="")
     label: Mapped[str] = mapped_column(String(180), default="")
@@ -104,6 +135,8 @@ class CustomerVehicle(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     customer: Mapped[Customer] = relationship(back_populates="vehicles")
+    vehicle_model: Mapped[VehicleModel | None] = relationship(back_populates="vehicles")
+    vehicle_color: Mapped[VehicleColor | None] = relationship(back_populates="vehicles")
     bookings: Mapped[list["BookingRow"]] = relationship(back_populates="vehicle")
 
 

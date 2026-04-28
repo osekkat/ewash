@@ -2,7 +2,7 @@ from sqlalchemy import select
 
 from app.booking import Booking
 from app.db import init_db, make_engine, session_scope
-from app.models import BookingRow, BookingStatusEventRow, Customer, CustomerVehicle
+from app.models import BookingRow, BookingStatusEventRow, Customer, CustomerVehicle, VehicleColor, VehicleModel
 from app.persistence import (
     admin_dashboard_summary,
     assign_booking_ref,
@@ -58,6 +58,10 @@ def test_persist_confirmed_booking_upserts_customer_vehicle_and_status_event():
         assert vehicle.model == "BMW 330i"
         assert vehicle.color == "Noir"
         assert vehicle.label == "BMW 330i — Noir"
+        assert vehicle.vehicle_model.name == "BMW 330i"
+        assert vehicle.vehicle_model.normalized_name == "bmw 330i"
+        assert vehicle.vehicle_color.name == "Noir"
+        assert vehicle.vehicle_color.normalized_name == "noir"
 
         saved = session.scalars(select(BookingRow)).one()
         assert saved.customer_phone == "212665883062"
@@ -94,6 +98,34 @@ def test_persist_confirmed_booking_reuses_existing_vehicle_for_repeat_customer()
         assert len(session.scalars(select(BookingRow)).all()) == 2
         customer = session.get(Customer, "212665883062")
         assert customer.booking_count == 2
+
+
+def test_persist_confirmed_booking_normalizes_vehicle_model_and_color_references():
+    engine = make_engine("sqlite+pysqlite:///:memory:")
+    init_db(engine)
+    first = _sample_booking()
+    persist_confirmed_booking(first, engine=engine)
+
+    second = _sample_booking()
+    second.ref = "EW-2026-9999"
+    second.car_model = "  bmw   330I "
+    second.color = " NOIR "
+    persist_confirmed_booking(second, engine=engine)
+
+    with session_scope(engine) as session:
+        assert len(session.scalars(select(VehicleModel)).all()) == 1
+        assert len(session.scalars(select(VehicleColor)).all()) == 1
+        model = session.scalars(select(VehicleModel)).one()
+        color = session.scalars(select(VehicleColor)).one()
+        assert model.category == "B"
+        assert model.name == "BMW 330i"
+        assert model.normalized_name == "bmw 330i"
+        assert color.name == "Noir"
+        assert color.normalized_name == "noir"
+        vehicle = session.scalars(select(CustomerVehicle)).one()
+        assert vehicle.model_id == model.id
+        assert vehicle.color_id == color.id
+        assert len(session.scalars(select(BookingRow)).all()) == 2
 
 
 def test_assign_booking_ref_advances_past_existing_db_refs_when_memory_counter_reset(monkeypatch):

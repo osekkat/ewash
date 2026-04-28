@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Iterable
 
-from sqlalchemy import Engine, func, select
+from sqlalchemy import Engine, func, select, or_
 
 from .booking import Booking, all_bookings
 from .config import settings
@@ -26,6 +26,8 @@ from .models import (
     BookingStatusEventRow,
     Customer,
     CustomerVehicle,
+    VehicleColor,
+    VehicleModel,
 )
 
 log = logging.getLogger(__name__)
@@ -137,6 +139,45 @@ def _vehicle_label(booking: Booking) -> str:
     return label or booking.vehicle_type or "Véhicule"
 
 
+def _normalize_vehicle_value(value: str) -> str:
+    return re.sub(r"\s+", " ", (value or "").strip()).casefold()
+
+
+def _find_or_create_vehicle_model(session, *, category: str, model: str) -> VehicleModel | None:
+    normalized = _normalize_vehicle_value(model)
+    if not normalized:
+        return None
+    existing = session.scalars(
+        select(VehicleModel).where(
+            VehicleModel.category == category,
+            VehicleModel.normalized_name == normalized,
+        )
+    ).first()
+    if existing is not None:
+        existing.last_seen_at = _now()
+        return existing
+    row = VehicleModel(category=category, name=model.strip(), normalized_name=normalized, active=True, last_seen_at=_now())
+    session.add(row)
+    session.flush()
+    return row
+
+
+def _find_or_create_vehicle_color(session, *, color: str) -> VehicleColor | None:
+    normalized = _normalize_vehicle_value(color)
+    if not normalized:
+        return None
+    existing = session.scalars(
+        select(VehicleColor).where(VehicleColor.normalized_name == normalized)
+    ).first()
+    if existing is not None:
+        existing.last_seen_at = _now()
+        return existing
+    row = VehicleColor(name=color.strip(), normalized_name=normalized, active=True, last_seen_at=_now())
+    session.add(row)
+    session.flush()
+    return row
+
+
 def _find_or_create_customer(session, booking: Booking) -> Customer:
     customer = session.get(Customer, booking.phone)
     if customer is None:
@@ -156,16 +197,25 @@ def _find_or_create_vehicle(session, booking: Booking) -> CustomerVehicle | None
     model = "" if booking.category == "MOTO" else (booking.car_model or "").strip()
     color = "" if booking.category == "MOTO" else (booking.color or "").strip()
     category = booking.category or ""
-    existing = session.scalars(
-        select(CustomerVehicle).where(
-            CustomerVehicle.customer_phone == booking.phone,
-            CustomerVehicle.category == category,
-            CustomerVehicle.model == model,
-            CustomerVehicle.color == color,
-            CustomerVehicle.active.is_(True),
-        )
-    ).first()
+    vehicle_model = _find_or_create_vehicle_model(session, category=category, model=model) if model else None
+    vehicle_color = _find_or_create_vehicle_color(session, color=color) if color else None
+    conditions = [
+        CustomerVehicle.customer_phone == booking.phone,
+        CustomerVehicle.category == category,
+        CustomerVehicle.active.is_(True),
+    ]
+    if vehicle_model is not None:
+        conditions.append(or_(CustomerVehicle.model_id == vehicle_model.id, CustomerVehicle.model == model))
+    else:
+        conditions.append(CustomerVehicle.model == model)
+    if vehicle_color is not None:
+        conditions.append(or_(CustomerVehicle.color_id == vehicle_color.id, CustomerVehicle.color == color))
+    else:
+        conditions.append(CustomerVehicle.color == color)
+    existing = session.scalars(select(CustomerVehicle).where(*conditions)).first()
     if existing is not None:
+        existing.model_id = existing.model_id or (vehicle_model.id if vehicle_model else None)
+        existing.color_id = existing.color_id or (vehicle_color.id if vehicle_color else None)
         existing.label = existing.label or _vehicle_label(booking)
         existing.last_used_at = _now()
         return existing
@@ -173,6 +223,8 @@ def _find_or_create_vehicle(session, booking: Booking) -> CustomerVehicle | None
     vehicle = CustomerVehicle(
         customer_phone=booking.phone,
         category=category,
+        model_id=vehicle_model.id if vehicle_model else None,
+        color_id=vehicle_color.id if vehicle_color else None,
         model=model,
         color=color,
         label=_vehicle_label(booking),

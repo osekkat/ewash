@@ -3,12 +3,13 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+import re
 
-from sqlalchemy import Engine, create_engine
+from sqlalchemy import Engine, create_engine, inspect, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from .config import settings
-from .models import Base
+from .models import Base, CustomerVehicle, VehicleColor, VehicleModel
 
 
 def normalize_database_url(database_url: str) -> str:
@@ -42,6 +43,82 @@ def make_engine(database_url: str | None = None) -> Engine:
 def init_db(engine: Engine) -> None:
     """Create all v0.3 tables. Alembic can replace this after MVP."""
     Base.metadata.create_all(bind=engine)
+    _ensure_customer_vehicle_reference_columns(engine)
+    _backfill_vehicle_reference_data(engine)
+
+
+def _normalize_reference_value(value: str) -> str:
+    return re.sub(r"\s+", " ", (value or "").strip()).casefold()
+
+
+def _get_or_create_vehicle_model(session: Session, *, category: str, model: str) -> VehicleModel | None:
+    normalized = _normalize_reference_value(model)
+    if not normalized:
+        return None
+    existing = session.query(VehicleModel).filter_by(category=category, normalized_name=normalized).first()
+    if existing is not None:
+        return existing
+    row = VehicleModel(category=category, name=model.strip(), normalized_name=normalized, active=True)
+    session.add(row)
+    session.flush()
+    return row
+
+
+def _get_or_create_vehicle_color(session: Session, *, color: str) -> VehicleColor | None:
+    normalized = _normalize_reference_value(color)
+    if not normalized:
+        return None
+    existing = session.query(VehicleColor).filter_by(normalized_name=normalized).first()
+    if existing is not None:
+        return existing
+    row = VehicleColor(name=color.strip(), normalized_name=normalized, active=True)
+    session.add(row)
+    session.flush()
+    return row
+
+
+def _backfill_vehicle_reference_data(engine: Engine) -> None:
+    with Session(engine, expire_on_commit=False, future=True) as session:
+        vehicles = session.query(CustomerVehicle).all()
+        changed = False
+        for vehicle in vehicles:
+            if vehicle.category == "MOTO":
+                continue
+            if vehicle.model and vehicle.model_id is None:
+                model = _get_or_create_vehicle_model(session, category=vehicle.category or "", model=vehicle.model)
+                if model is not None:
+                    vehicle.model_id = model.id
+                    changed = True
+            if vehicle.color and vehicle.color_id is None:
+                color = _get_or_create_vehicle_color(session, color=vehicle.color)
+                if color is not None:
+                    vehicle.color_id = color.id
+                    changed = True
+        if changed:
+            session.commit()
+
+
+def _ensure_customer_vehicle_reference_columns(engine: Engine) -> None:
+    """Add normalized vehicle FK columns for DBs created before this schema slice.
+
+    `create_all()` creates the columns for fresh databases, but does not alter
+    existing Railway Postgres tables. Keep this deliberately tiny/idempotent
+    until the project needs Alembic.
+    """
+    inspector = inspect(engine)
+    if "customer_vehicles" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("customer_vehicles")}
+    statements: list[str] = []
+    if "model_id" not in columns:
+        statements.append("ALTER TABLE customer_vehicles ADD COLUMN model_id INTEGER")
+    if "color_id" not in columns:
+        statements.append("ALTER TABLE customer_vehicles ADD COLUMN color_id INTEGER")
+    if not statements:
+        return
+    with engine.begin() as connection:
+        for statement in statements:
+            connection.execute(text(statement))
 
 
 @contextmanager
