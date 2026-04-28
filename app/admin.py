@@ -15,6 +15,7 @@ from urllib.parse import parse_qs
 from fastapi import APIRouter, Query, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from . import catalog
 from .admin_i18n import SUPPORTED_LOCALES, normalize_locale, t
 from .catalog import SERVICES_DETAILING, SERVICES_MOTO, SERVICES_WASH
 from .config import settings
@@ -159,6 +160,14 @@ def _layout(*, locale: str, title: str, body: str, active_path: str = "/admin") 
     form {{ max-width: 420px; margin-top: 24px; padding: 22px; border: 1px solid var(--border); border-radius: 16px; background: rgba(255,255,255,0.035); }}
     label {{ color: var(--soft); font-size: 14px; }}
     input {{ width: 100%; margin: 8px 0 14px; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--border); color: var(--text); background: rgba(255,255,255,0.04); }}
+    input[type="checkbox"] {{ width: auto; margin-right: 8px; }}
+    .admin-form {{ max-width: none; }}
+    .price-input {{ margin: 0; padding: 9px 10px; min-width: 70px; }}
+    .form-grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }}
+    .notice {{ padding: 12px 14px; border-radius: 12px; margin: 14px 0; border: 1px solid var(--border); }}
+    .notice.ok {{ color: #bbf7d0; background: rgba(16,185,129,0.08); }}
+    .notice.error {{ color: #fecaca; background: rgba(239,68,68,0.08); }}
+    .muted {{ color: var(--muted); }}
     button {{ border: 0; border-radius: 10px; padding: 11px 16px; color: #fff; background: var(--accent-bg); font-weight: 590; cursor: pointer; }}
     [role="alert"] {{ color: #fecaca; }}
     @media (max-width: 860px) {{
@@ -224,7 +233,7 @@ def _dashboard(*, locale: str) -> HTMLResponse:
     <h1>{escape(title)}</h1>
     <p>{escape(t('admin.dashboard.placeholder', locale))}</p>
   </div>
-  <div class="version-pill"><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> v0.3.0-alpha11</div>
+  <div class="version-pill"><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> v0.3.0-alpha12</div>
 </section>
 
 <section class="metric-grid" aria-label="Résumé opérationnel">
@@ -274,6 +283,45 @@ def _dashboard(*, locale: str) -> HTMLResponse:
     return HTMLResponse(content=_layout(locale=locale, title=title, body=body), status_code=200)
 
 
+def _notice_html(*, message: str = "", error: str = "") -> str:
+    if error:
+        return f'<div class="notice error" role="alert">{escape(error)}</div>'
+    if message:
+        return f'<div class="notice ok">{escape(message)}</div>'
+    return ""
+
+
+def _parse_int_field(value: str, *, label: str) -> int:
+    cleaned = (value or "").strip()
+    if not cleaned:
+        raise ValueError(f"{label}: prix manquant")
+    try:
+        price = int(cleaned)
+    except ValueError as exc:
+        raise ValueError(f"{label}: prix invalide") from exc
+    if price < 0 or price > 100_000:
+        raise ValueError(f"{label}: prix hors limites")
+    return price
+
+
+def _price_input_name(service_id: str, category: str) -> str:
+    return f"price__{service_id}__{category}"
+
+
+def _discount_input_name(service_id: str, category: str) -> str:
+    return f"discount__{service_id}__{category}"
+
+
+def _price_cell(service_id: str, category: str) -> str:
+    price = catalog.public_service_price(service_id, category)
+    value = "" if price is None else str(price)
+    return (
+        f'<input class="price-input" type="number" min="0" step="1" '
+        f'name="{escape(_price_input_name(service_id, category))}" value="{escape(value)}">'
+        f'<small class="muted">{escape(value)} DH</small>'
+    )
+
+
 def _price_rows(*, locale: str) -> str:
     rows: list[str] = []
     for group_label, services in (
@@ -286,9 +334,9 @@ def _price_rows(*, locale: str) -> str:
                 f"<span>{escape(group_label)}</span>"
                 f"<span>{escape(name)}</span>"
                 f"<span>{escape(desc)}</span>"
-                f"<span>{prices.get('A', '—')} DH</span>"
-                f"<span>{prices.get('B', '—')} DH</span>"
-                f"<span>{prices.get('C', '—')} DH</span>"
+                f"<span>{_price_cell(_sid, 'A')}</span>"
+                f"<span>{_price_cell(_sid, 'B')}</span>"
+                f"<span>{_price_cell(_sid, 'C')}</span>"
                 "</div>"
             )
     for _sid, name, desc, price in SERVICES_MOTO:
@@ -297,7 +345,7 @@ def _price_rows(*, locale: str) -> str:
             f"<span>{escape(t('admin.prices.moto', locale))}</span>"
             f"<span>{escape(name)}</span>"
             f"<span>{escape(desc)}</span>"
-            f"<span>{price} DH</span>"
+            f"<span>{_price_cell(_sid, catalog.MOTO_PRICE_CATEGORY)}</span>"
             "<span>—</span>"
             "<span>—</span>"
             "</div>"
@@ -305,9 +353,10 @@ def _price_rows(*, locale: str) -> str:
     return "".join(rows)
 
 
-def _prices_page(*, locale: str) -> HTMLResponse:
+def _prices_page(*, locale: str, message: str = "", error: str = "") -> HTMLResponse:
     title = t("nav.prices", locale)
     intro = t("admin.prices.intro", locale)
+    notice = _notice_html(message=message, error=error)
     body = f"""
 <section class="hero">
   <div>
@@ -315,18 +364,122 @@ def _prices_page(*, locale: str) -> HTMLResponse:
     <h1>{escape(title)}</h1>
     <p>{escape(intro)}</p>
   </div>
-  <div class="version-pill"><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> v0.3.0-alpha11</div>
+  <div class="version-pill"><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> v0.3.0-alpha12</div>
 </section>
 <section class="empty-panel">
   <h2>{escape(t('admin.prices.public_tariff', locale))}</h2>
+  {notice}
+  <form class="admin-form" method="post" action="/admin/prices?lang={escape(locale)}">
   <div class="table-shell" aria-label="{escape(t('admin.prices.public_tariff', locale))}">
     <div class="table-row table-head price-row"><span>{escape(t('admin.prices.group', locale))}</span><span>{escape(t('admin.prices.service', locale))}</span><span>{escape(t('admin.prices.description', locale))}</span><span>A</span><span>B</span><span>C</span></div>
     {_price_rows(locale=locale)}
   </div>
+  <p><button type="submit">{escape(t('action.save', locale))}</button></p>
+  </form>
 </section>
 """
     return HTMLResponse(
         content=_layout(locale=locale, title=title, body=body, active_path="/admin/prices"),
+        status_code=200,
+    )
+
+
+def _promo_discount_cell(service_id: str, category: str, discounts: dict[tuple[str, str], int] | None = None) -> str:
+    discounts = discounts or {}
+    value = discounts.get((service_id, category))
+    display = "" if value is None else str(value)
+    public = catalog.public_service_price(service_id, category)
+    placeholder = "" if public is None else str(public)
+    discount_label = f"{display} DH" if display else "—"
+    return (
+        f'<input class="price-input" type="number" min="0" step="1" '
+        f'name="{escape(_discount_input_name(service_id, category))}" value="{escape(display)}" '
+        f'placeholder="{escape(placeholder)}">'
+        f'<small class="muted">{escape(discount_label)}</small>'
+    )
+
+
+def _promo_discount_rows(discounts: dict[tuple[str, str], int] | None = None) -> str:
+    rows: list[str] = []
+    for group_label, services in (("Lavages", SERVICES_WASH), ("Esthétique", SERVICES_DETAILING)):
+        for service_id, name, desc, _prices in services:
+            rows.append(
+                "<div class=\"table-row price-row\">"
+                f"<span>{escape(group_label)}</span>"
+                f"<span>{escape(name)}</span>"
+                f"<span>{escape(desc)}</span>"
+                f"<span>{_promo_discount_cell(service_id, 'A', discounts)}</span>"
+                f"<span>{_promo_discount_cell(service_id, 'B', discounts)}</span>"
+                f"<span>{_promo_discount_cell(service_id, 'C', discounts)}</span>"
+                "</div>"
+            )
+    return "".join(rows)
+
+
+def _promo_list_rows(locale: str) -> str:
+    promos = catalog.list_promo_codes()
+    if not promos:
+        return '<div class="table-row"><span>—</span><span>—</span><span>—</span></div>'
+    rows: list[str] = []
+    for promo in promos:
+        active = t("admin.promos.active", locale) if promo.active else t("admin.promos.inactive", locale)
+        discount_parts = []
+        for (service_id, category), price in sorted(promo.discounts.items()):
+            discount_parts.append(f"{catalog.service_name(service_id)} {category}: {price} DH")
+        discount_text = ", ".join(discount_parts[:8])
+        if len(discount_parts) > 8:
+            discount_text += f" … +{len(discount_parts) - 8}"
+        rows.append(
+            "<div class=\"table-row\">"
+            f"<span>{escape(promo.code)}<br><small>{escape(active)}</small></span>"
+            f"<span>{escape(promo.label)}</span>"
+            f"<span>{escape(discount_text or '—')}</span>"
+            "</div>"
+        )
+    return "".join(rows)
+
+
+def _promos_page(*, locale: str, message: str = "", error: str = "") -> HTMLResponse:
+    title = t("nav.promos", locale)
+    notice = _notice_html(message=message, error=error)
+    body = f"""
+<section class="hero">
+  <div>
+    <div class="eyebrow">Ewash Ops</div>
+    <h1>{escape(title)}</h1>
+    <p>{escape(t('admin.promos.intro', locale))}</p>
+  </div>
+  <div class="version-pill"><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> v0.3.0-alpha12</div>
+</section>
+<section class="dashboard-grid">
+  <article class="empty-panel">
+    <h2>{escape(t('admin.promos.existing', locale))}</h2>
+    {notice}
+    <div class="table-shell" aria-label="{escape(t('admin.promos.existing', locale))}">
+      <div class="table-row table-head"><span>{escape(t('admin.promos.code', locale))}</span><span>{escape(t('admin.promos.label', locale))}</span><span>{escape(t('admin.promos.discounts', locale))}</span></div>
+      {_promo_list_rows(locale)}
+    </div>
+  </article>
+  <aside class="empty-panel">
+    <h2>{escape(t('admin.promos.add_or_update', locale))}</h2>
+    <form class="admin-form" method="post" action="/admin/promos?lang={escape(locale)}">
+      <div class="form-grid">
+        <label>{escape(t('admin.promos.code', locale))}<input name="code" placeholder="VIP30" required></label>
+        <label>{escape(t('admin.promos.label', locale))}<input name="label" placeholder="VIP Thirty" required></label>
+      </div>
+      <label><input type="checkbox" name="active" checked>{escape(t('admin.promos.active', locale))}</label>
+      <p class="muted">{escape(t('admin.promos.discount_help', locale))}</p>
+      <div class="table-shell" aria-label="{escape(t('admin.promos.discounts', locale))}">
+        <div class="table-row table-head price-row"><span>{escape(t('admin.prices.group', locale))}</span><span>{escape(t('admin.prices.service', locale))}</span><span>{escape(t('admin.prices.description', locale))}</span><span>A</span><span>B</span><span>C</span></div>
+        {_promo_discount_rows()}
+      </div>
+      <p><button type="submit">{escape(t('action.save', locale))}</button></p>
+    </form>
+  </aside>
+</section>
+"""
+    return HTMLResponse(
+        content=_layout(locale=locale, title=title, body=body, active_path="/admin/promos"),
         status_code=200,
     )
 
@@ -340,7 +493,7 @@ def _placeholder_page(*, locale: str, page_key: str, active_path: str) -> HTMLRe
     <h1>{escape(title)}</h1>
     <p>{escape(t('admin.page.placeholder', locale))}</p>
   </div>
-  <div class="version-pill"><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> v0.3.0-alpha11</div>
+  <div class="version-pill"><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> v0.3.0-alpha12</div>
 </section>
 <section class="dashboard-grid">
   <article class="empty-panel">
@@ -391,7 +544,7 @@ def _bookings_page(*, locale: str) -> HTMLResponse:
     <h1>{escape(title)}</h1>
     <p>{escape(intro)}</p>
   </div>
-  <div class="version-pill"><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> v0.3.0-alpha11</div>
+  <div class="version-pill"><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> v0.3.0-alpha12</div>
 </section>
 <section class="empty-panel">
   <h2>{escape(t('admin.panel.recent_bookings', locale))}</h2>
@@ -436,7 +589,7 @@ def _customers_page(*, locale: str) -> HTMLResponse:
     <h1>{escape(title)}</h1>
     <p>{escape(intro)}</p>
   </div>
-  <div class="version-pill"><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> v0.3.0-alpha11</div>
+  <div class="version-pill"><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> v0.3.0-alpha12</div>
 </section>
 <section class="empty-panel">
   <h2>{escape(title)}</h2>
@@ -505,6 +658,77 @@ async def admin_logout() -> RedirectResponse:
     return response
 
 
+@router.post("/prices", response_class=HTMLResponse)
+async def admin_prices_submit(request: Request, lang: str | None = Query(default=None)):
+    locale = normalize_locale(lang or settings.admin_default_locale)
+    if not settings.admin_password:
+        return RedirectResponse(url=f"/admin?lang={locale}", status_code=status.HTTP_303_SEE_OTHER)
+    if not _valid_session_token(request.cookies.get(_SESSION_COOKIE)):
+        return _password_form(locale=locale)
+
+    raw_body = (await request.body()).decode("utf-8")
+    form = parse_qs(raw_body)
+    valid_pairs = {
+        (service_id, category)
+        for service_id, _name, _desc, _prices in SERVICES_WASH + SERVICES_DETAILING
+        for category in catalog.CAR_PRICE_CATEGORIES
+    }
+    valid_pairs.update((service_id, catalog.MOTO_PRICE_CATEGORY) for service_id, _name, _desc, _price in SERVICES_MOTO)
+    updates: dict[tuple[str, str], int] = {}
+    try:
+        for key, values in form.items():
+            if not key.startswith("price__"):
+                continue
+            _prefix, service_id, category = key.split("__", 2)
+            if (service_id, category) not in valid_pairs:
+                raise ValueError(f"Champ prix inconnu: {service_id}/{category}")
+            updates[(service_id, category)] = _parse_int_field(values[0], label=f"{service_id} {category}")
+        if not updates:
+            raise ValueError("Aucun prix à enregistrer")
+        catalog.upsert_public_prices(updates)
+    except Exception as exc:
+        return _prices_page(locale=locale, error=str(exc))
+    return RedirectResponse(url=f"/admin/prices?lang={locale}&saved=1", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/promos", response_class=HTMLResponse)
+async def admin_promos_submit(request: Request, lang: str | None = Query(default=None)):
+    locale = normalize_locale(lang or settings.admin_default_locale)
+    if not settings.admin_password:
+        return RedirectResponse(url=f"/admin?lang={locale}", status_code=status.HTTP_303_SEE_OTHER)
+    if not _valid_session_token(request.cookies.get(_SESSION_COOKIE)):
+        return _password_form(locale=locale)
+
+    raw_body = (await request.body()).decode("utf-8")
+    form = parse_qs(raw_body)
+    valid_pairs = {
+        (service_id, category)
+        for service_id, _name, _desc, _prices in SERVICES_WASH + SERVICES_DETAILING
+        for category in catalog.CAR_PRICE_CATEGORIES
+    }
+    discounts: dict[tuple[str, str], int] = {}
+    try:
+        for key, values in form.items():
+            if not key.startswith("discount__"):
+                continue
+            value = (values[0] if values else "").strip()
+            if not value:
+                continue
+            _prefix, service_id, category = key.split("__", 2)
+            if (service_id, category) not in valid_pairs:
+                raise ValueError(f"Champ promo inconnu: {service_id}/{category}")
+            discounts[(service_id, category)] = _parse_int_field(value, label=f"{service_id} {category}")
+        catalog.upsert_promo_code(
+            code=(form.get("code", [""])[0]),
+            label=(form.get("label", [""])[0]),
+            active="active" in form,
+            discounts=discounts,
+        )
+    except Exception as exc:
+        return _promos_page(locale=locale, error=str(exc))
+    return RedirectResponse(url=f"/admin/promos?lang={locale}&saved=1", status_code=status.HTTP_303_SEE_OTHER)
+
+
 @router.get("/{page_slug}", response_class=HTMLResponse)
 async def admin_section(request: Request, page_slug: str, lang: str | None = Query(default=None)) -> HTMLResponse:
     locale = normalize_locale(lang or settings.admin_default_locale)
@@ -530,5 +754,9 @@ async def admin_section(request: Request, page_slug: str, lang: str | None = Que
     if page_id == "customers":
         return _customers_page(locale=locale)
     if page_id == "prices":
-        return _prices_page(locale=locale)
+        message = t("admin.prices.saved", locale) if request.query_params.get("saved") == "1" else ""
+        return _prices_page(locale=locale, message=message)
+    if page_id == "promos":
+        message = t("admin.promos.saved", locale) if request.query_params.get("saved") == "1" else ""
+        return _promos_page(locale=locale, message=message)
     return _placeholder_page(locale=locale, page_key=page_key, active_path=active_path)

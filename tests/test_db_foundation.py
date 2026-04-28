@@ -9,7 +9,10 @@ from app.models import (
     BookingStatusEventRow,
     Customer,
     CustomerVehicle,
+    PromoCodeRow,
+    PromoDiscountRow,
     ReminderRuleRow,
+    ServicePriceRow,
     VehicleColor,
     VehicleModel,
 )
@@ -43,9 +46,18 @@ def test_init_db_creates_v03_core_tables():
         "booking_status_events",
         "reminder_rules",
         "booking_reminders",
+        "service_prices",
+        "promo_codes",
+        "promo_discounts",
     }.issubset(tables)
     vehicle_columns = {column["name"] for column in inspect(engine).get_columns("customer_vehicles")}
     assert {"model_id", "color_id"}.issubset(vehicle_columns)
+    service_price_columns = {column["name"] for column in inspect(engine).get_columns("service_prices")}
+    assert {"service_id", "category", "price_dh"}.issubset(service_price_columns)
+    promo_code_columns = {column["name"] for column in inspect(engine).get_columns("promo_codes")}
+    assert {"code", "label", "active"}.issubset(promo_code_columns)
+    promo_discount_columns = {column["name"] for column in inspect(engine).get_columns("promo_discounts")}
+    assert {"promo_code", "service_id", "category", "price_dh"}.issubset(promo_discount_columns)
 
 
 def test_init_db_migrates_legacy_customer_vehicles_to_normalized_refs():

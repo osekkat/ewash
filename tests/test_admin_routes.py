@@ -88,8 +88,8 @@ def test_admin_entrypoint_accepts_configured_password_without_username(monkeypat
     assert "Réservations aujourd" in dashboard.text
     assert "Rappels en attente" in dashboard.text
     assert "Aucune réservation persistée pour le moment" in dashboard.text
-    assert "Réservations, clients et prix sont disponibles" in dashboard.text
-    assert "Pages réservations / clients / prix" in dashboard.text
+    assert "Réservations, clients, prix et promos sont disponibles" in dashboard.text
+    assert "Pages réservations / clients / prix / promos" in dashboard.text
     assert "<span>OK</span>" in dashboard.text
     assert "class=\"metric-grid\"" in dashboard.text
     assert "class=\"empty-panel\"" in dashboard.text
@@ -257,6 +257,79 @@ def test_admin_prices_page_renders_public_tariff(monkeypatch):
     assert 'href="/admin/prices" class="active"' in response.text
 
 
+def test_admin_prices_page_allows_updating_public_tariff(monkeypatch, tmp_path):
+    db_url = f"sqlite+pysqlite:///{tmp_path / 'admin-prices.db'}"
+    engine = make_engine(db_url)
+    init_db(engine)
+    monkeypatch.setattr(settings, "database_url", db_url)
+    _configured_engine.cache_clear()
+    import app.catalog as catalog
+    catalog.catalog_cache_clear()
+    monkeypatch.setattr(settings, "admin_password", "secret-pass")
+    client = TestClient(app)
+    client.post(
+        "/admin",
+        content="password=secret-pass",
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+
+    response = client.post(
+        "/admin/prices?lang=en",
+        data={"price__svc_cpl__B": "131"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/admin/prices?lang=en&saved=1"
+    assert catalog.service_price("svc_cpl", "B") == 131
+    updated = client.get(response.headers["location"])
+    assert "131 DH" in updated.text
+    assert "Prices saved" in updated.text
+    catalog.catalog_cache_clear()
+    _configured_engine.cache_clear()
+
+
+def test_admin_promos_page_allows_adding_promo_codes(monkeypatch, tmp_path):
+    db_url = f"sqlite+pysqlite:///{tmp_path / 'admin-promos.db'}"
+    engine = make_engine(db_url)
+    init_db(engine)
+    monkeypatch.setattr(settings, "database_url", db_url)
+    _configured_engine.cache_clear()
+    import app.catalog as catalog
+    catalog.catalog_cache_clear()
+    monkeypatch.setattr(settings, "admin_password", "secret-pass")
+    client = TestClient(app)
+    client.post(
+        "/admin",
+        content="password=secret-pass",
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+
+    response = client.post(
+        "/admin/promos?lang=en",
+        data={
+            "code": "VIP30",
+            "label": "VIP Thirty",
+            "active": "on",
+            "discount__svc_cpl__B": "90",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/admin/promos?lang=en&saved=1"
+    assert catalog.normalize_promo_code("vip30") == "VIP30"
+    assert catalog.promo_label("VIP30") == "VIP Thirty"
+    assert catalog.service_price("svc_cpl", "B", promo_code="VIP30") == 90
+    page = client.get(response.headers["location"])
+    assert "VIP30" in page.text
+    assert "VIP Thirty" in page.text
+    assert "90 DH" in page.text
+    assert "Promos saved" in page.text
+    catalog.catalog_cache_clear()
+    _configured_engine.cache_clear()
+
+
 def test_admin_sidebar_pages_are_clickable_placeholders(monkeypatch):
     monkeypatch.setattr(settings, "admin_password", "secret-pass")
     client = TestClient(app)
@@ -267,7 +340,6 @@ def test_admin_sidebar_pages_are_clickable_placeholders(monkeypatch):
     )
 
     expected_pages = {
-        "/admin/promos": "Promos",
         "/admin/reminders": "Rappels",
         "/admin/closed-dates": "Fermetures",
         "/admin/time-slots": "Créneaux",

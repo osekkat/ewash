@@ -3,6 +3,20 @@
 Pricing categories A/B/C are the industry-standard size tiers Ewash prints
 on their own flyer. Moto is a separate lane with its own 2-option service list.
 """
+from __future__ import annotations
+
+from dataclasses import dataclass
+from functools import lru_cache
+import logging
+import re
+
+from sqlalchemy import Engine, delete, select
+
+from .config import settings
+from .db import init_db, make_engine, session_scope
+from .models import PromoCodeRow, PromoDiscountRow, ServicePriceRow
+
+log = logging.getLogger(__name__)
 
 # ── Vehicle categories ─────────────────────────────────────────────────────
 # Shown as a WhatsApp LIST (4 rows). Row format: (id, title ≤24 chars, desc).
@@ -102,12 +116,196 @@ PROMO_CODES: dict[str, dict] = {
 }
 
 
+CAR_PRICE_CATEGORIES = ("A", "B", "C")
+MOTO_PRICE_CATEGORY = "MOTO"
+
+
+@dataclass(frozen=True)
+class PromoCodeView:
+    code: str
+    label: str
+    active: bool
+    discounts: dict[tuple[str, str], int]
+
+
+@lru_cache(maxsize=1)
+def _catalog_engine() -> Engine | None:
+    if not settings.database_url:
+        return None
+    engine = make_engine(settings.database_url)
+    init_db(engine)
+    return engine
+
+
+def catalog_cache_clear() -> None:
+    """Clear cached DB state after admin catalog writes or test setting changes."""
+    _catalog_engine.cache_clear()
+
+
+def _engine_or_configured(engine: Engine | None = None) -> Engine | None:
+    return engine if engine is not None else _catalog_engine()
+
+
+def _clean_promo_code(text: str) -> str:
+    return text.strip().strip("'\"“”‘’ ").upper()
+
+
+def _default_public_price(service_id: str, category: str) -> int | None:
+    if category == MOTO_PRICE_CATEGORY:
+        for sid, _name, _desc, price in SERVICES_MOTO:
+            if sid == service_id:
+                return price
+        return None
+    for sid, _name, _desc, prices in SERVICES_CAR:
+        if sid == service_id:
+            return prices.get(category)
+    return None
+
+
+def public_service_price(service_id: str, category: str, *, engine: Engine | None = None) -> int | None:
+    db_engine = _engine_or_configured(engine)
+    if db_engine is not None:
+        try:
+            with session_scope(db_engine) as session:
+                row = session.scalars(
+                    select(ServicePriceRow).where(
+                        ServicePriceRow.service_id == service_id,
+                        ServicePriceRow.category == category,
+                    )
+                ).first()
+                if row is not None:
+                    return row.price_dh
+        except Exception:
+            log.exception("public_service_price failed; falling back to static catalog")
+    return _default_public_price(service_id, category)
+
+
+def upsert_public_prices(updates: dict[tuple[str, str], int], *, engine: Engine | None = None) -> int:
+    db_engine = _engine_or_configured(engine)
+    if db_engine is None:
+        raise RuntimeError("DATABASE_URL is not configured")
+    count = 0
+    with session_scope(db_engine) as session:
+        for (service_id, category), price_dh in updates.items():
+            row = session.scalars(
+                select(ServicePriceRow).where(
+                    ServicePriceRow.service_id == service_id,
+                    ServicePriceRow.category == category,
+                )
+            ).first()
+            if row is None:
+                session.add(ServicePriceRow(service_id=service_id, category=category, price_dh=price_dh))
+            else:
+                row.price_dh = price_dh
+            count += 1
+    catalog_cache_clear()
+    return count
+
+
+def _db_promo_view(code: str, *, engine: Engine | None = None) -> PromoCodeView | None:
+    db_engine = _engine_or_configured(engine)
+    if db_engine is None:
+        return None
+    try:
+        with session_scope(db_engine) as session:
+            row = session.get(PromoCodeRow, code)
+            if row is None:
+                return None
+            discounts = {
+                (discount.service_id, discount.category): discount.price_dh
+                for discount in session.scalars(
+                    select(PromoDiscountRow).where(PromoDiscountRow.promo_code == code)
+                ).all()
+            }
+            return PromoCodeView(code=row.code, label=row.label, active=row.active, discounts=discounts)
+    except Exception:
+        log.exception("_db_promo_view failed; falling back to static promo catalog")
+        return None
+
+
+def _static_promo_view(code: str) -> PromoCodeView | None:
+    promo = PROMO_CODES.get(code)
+    if promo is None:
+        return None
+    discounts: dict[tuple[str, str], int] = {}
+    for service_id, prices in promo.get("discounts", {}).items():
+        for category, price_dh in prices.items():
+            discounts[(service_id, category)] = price_dh
+    return PromoCodeView(code=code, label=str(promo.get("label") or code), active=True, discounts=discounts)
+
+
+def list_promo_codes(*, engine: Engine | None = None) -> tuple[PromoCodeView, ...]:
+    promos = {code: view for code in PROMO_CODES if (view := _static_promo_view(code)) is not None}
+    db_engine = _engine_or_configured(engine)
+    if db_engine is not None:
+        try:
+            with session_scope(db_engine) as session:
+                rows = session.scalars(select(PromoCodeRow).order_by(PromoCodeRow.code)).all()
+                for row in rows:
+                    discounts = {
+                        (discount.service_id, discount.category): discount.price_dh
+                        for discount in session.scalars(
+                            select(PromoDiscountRow).where(PromoDiscountRow.promo_code == row.code)
+                        ).all()
+                    }
+                    promos[row.code] = PromoCodeView(
+                        code=row.code,
+                        label=row.label,
+                        active=row.active,
+                        discounts=discounts,
+                    )
+        except Exception:
+            log.exception("list_promo_codes failed; falling back to static promo catalog")
+    return tuple(promos[code] for code in sorted(promos))
+
+
+def upsert_promo_code(
+    *,
+    code: str,
+    label: str,
+    active: bool,
+    discounts: dict[tuple[str, str], int],
+    engine: Engine | None = None,
+) -> str:
+    normalized = _clean_promo_code(code)
+    if not normalized or not re.fullmatch(r"[A-Z0-9_-]{2,40}", normalized):
+        raise ValueError("Promo code must be 2-40 letters, numbers, underscores, or hyphens")
+    db_engine = _engine_or_configured(engine)
+    if db_engine is None:
+        raise RuntimeError("DATABASE_URL is not configured")
+    with session_scope(db_engine) as session:
+        row = session.get(PromoCodeRow, normalized)
+        if row is None:
+            row = PromoCodeRow(code=normalized, label=label.strip() or normalized, active=active)
+            session.add(row)
+        else:
+            row.label = label.strip() or normalized
+            row.active = active
+        session.execute(delete(PromoDiscountRow).where(PromoDiscountRow.promo_code == normalized))
+        for (service_id, category), price_dh in discounts.items():
+            session.add(
+                PromoDiscountRow(
+                    promo_code=normalized,
+                    service_id=service_id,
+                    category=category,
+                    price_dh=price_dh,
+                )
+            )
+    catalog_cache_clear()
+    return normalized
+
+
 def normalize_promo_code(text: str) -> str | None:
     """Normalize free-text promo input. Returns the canonical UPPERCASE code
     if valid, else None. Case-insensitive, trims whitespace and stray quotes."""
     if not text:
         return None
-    cleaned = text.strip().strip("'\"“”‘’ ").upper()
+    cleaned = _clean_promo_code(text)
+    if not re.fullmatch(r"[A-Z0-9_-]{2,40}", cleaned):
+        return None
+    db_view = _db_promo_view(cleaned)
+    if db_view is not None:
+        return cleaned if db_view.active else None
     if cleaned in PROMO_CODES:
         return cleaned
     return None
@@ -115,9 +313,15 @@ def normalize_promo_code(text: str) -> str | None:
 
 def promo_label(code: str | None) -> str:
     """Human-readable partner label for a normalized code, or ''."""
-    if code and code in PROMO_CODES:
-        return PROMO_CODES[code]["label"]
-    return ""
+    cleaned = _clean_promo_code(code or "")
+    if not cleaned:
+        return ""
+    db_view = _db_promo_view(cleaned)
+    if db_view is not None:
+        return db_view.label if db_view.active else ""
+    static_view = _static_promo_view(cleaned)
+    return static_view.label if static_view else ""
+
 
 
 # ── Closed days (Eids, etc.) ───────────────────────────────────────────────
@@ -189,14 +393,10 @@ def build_car_service_rows(
     else:
         source = SERVICES_CAR
 
-    promo = PROMO_CODES.get(promo_code) if promo_code else None
     rows = []
-    for sid, name, desc, prices in source:
-        price = prices.get(category)
-        if promo:
-            promo_price = promo["discounts"].get(sid, {}).get(category)
-            if promo_price is not None:
-                price = promo_price
+    normalized_promo = normalize_promo_code(promo_code or "") if promo_code else None
+    for sid, name, desc, _prices in source:
+        price = service_price(sid, category, promo_code=normalized_promo)
         title = f"{name} — {price} DH" if price is not None else name
         rows.append((sid, title[:24], desc[:72]))
     return rows
@@ -205,7 +405,8 @@ def build_car_service_rows(
 def build_moto_service_rows() -> list[tuple[str, str, str]]:
     """Render SERVICES_MOTO as WhatsApp list rows with inline prices."""
     rows = []
-    for sid, name, desc, price in SERVICES_MOTO:
+    for sid, name, desc, _price in SERVICES_MOTO:
+        price = public_service_price(sid, MOTO_PRICE_CATEGORY)
         rows.append((sid, f"{name} — {price} DH"[:24], desc[:72]))
     return rows
 
@@ -220,19 +421,17 @@ def service_price(
     When `promo_code` is a valid UPPERCASE partner code, the partner grid wins
     for any service covered by that partner. Moto is never discounted.
     """
-    if category == "MOTO":
-        for sid, _name, _desc, price in SERVICES_MOTO:
-            if sid == service_id:
-                return price
-        return None
-    if promo_code and promo_code in PROMO_CODES:
-        promo_price = PROMO_CODES[promo_code]["discounts"].get(service_id, {}).get(category)
-        if promo_price is not None:
-            return promo_price
-    for sid, _name, _desc, prices in SERVICES_CAR:
-        if sid == service_id:
-            return prices.get(category)
-    return None
+    if category == MOTO_PRICE_CATEGORY:
+        return public_service_price(service_id, category)
+    normalized_promo = normalize_promo_code(promo_code or "") if promo_code else None
+    if normalized_promo:
+        db_view = _db_promo_view(normalized_promo)
+        promo_view = db_view if db_view is not None else _static_promo_view(normalized_promo)
+        if promo_view is not None and promo_view.active:
+            promo_price = promo_view.discounts.get((service_id, category))
+            if promo_price is not None:
+                return promo_price
+    return public_service_price(service_id, category)
 
 
 def service_name(service_id: str) -> str:

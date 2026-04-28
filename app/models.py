@@ -140,6 +140,45 @@ class CustomerVehicle(Base):
     bookings: Mapped[list["BookingRow"]] = relationship(back_populates="vehicle")
 
 
+class ServicePriceRow(Base):
+    __tablename__ = "service_prices"
+    __table_args__ = (UniqueConstraint("service_id", "category", name="uq_service_price_service_category"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    service_id: Mapped[str] = mapped_column(String(40), index=True)
+    category: Mapped[str] = mapped_column(String(8), index=True)
+    price_dh: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class PromoCodeRow(Base):
+    __tablename__ = "promo_codes"
+
+    code: Mapped[str] = mapped_column(String(40), primary_key=True)
+    label: Mapped[str] = mapped_column(String(120), default="")
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    discounts: Mapped[list["PromoDiscountRow"]] = relationship(back_populates="promo", cascade="all, delete-orphan")
+
+
+class PromoDiscountRow(Base):
+    __tablename__ = "promo_discounts"
+    __table_args__ = (UniqueConstraint("promo_code", "service_id", "category", name="uq_promo_discount_code_service_category"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    promo_code: Mapped[str] = mapped_column(ForeignKey("promo_codes.code"), index=True)
+    service_id: Mapped[str] = mapped_column(String(40), index=True)
+    category: Mapped[str] = mapped_column(String(8), index=True)
+    price_dh: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    promo: Mapped[PromoCodeRow] = relationship(back_populates="discounts")
+
+
 class BookingRow(Base):
     __tablename__ = "bookings"
 
