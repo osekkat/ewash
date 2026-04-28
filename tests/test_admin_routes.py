@@ -88,7 +88,9 @@ def test_admin_entrypoint_accepts_configured_password_without_username(monkeypat
     assert "Réservations aujourd" in dashboard.text
     assert "Rappels en attente" in dashboard.text
     assert "Aucune réservation persistée pour le moment" in dashboard.text
-    assert "Les pages opérationnelles arrivent dans les prochains lots" in dashboard.text
+    assert "Réservations, clients et prix sont disponibles" in dashboard.text
+    assert "Pages réservations / clients / prix" in dashboard.text
+    assert "<span>OK</span>" in dashboard.text
     assert "class=\"metric-grid\"" in dashboard.text
     assert "class=\"empty-panel\"" in dashboard.text
     assert 'href="/admin/bookings"' in dashboard.text
@@ -227,6 +229,34 @@ def test_admin_customers_page_falls_back_to_live_memory_when_database_is_missing
     _configured_engine.cache_clear()
 
 
+def test_admin_prices_page_renders_public_tariff(monkeypatch):
+    monkeypatch.setattr(settings, "admin_password", "secret-pass")
+    client = TestClient(app)
+    client.post(
+        "/admin",
+        content="password=secret-pass",
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+
+    response = client.get("/admin/prices")
+
+    assert response.status_code == 200
+    assert "Prix" in response.text
+    assert "Tarifs publics" in response.text
+    assert "Lavages" in response.text
+    assert "Esthétique" in response.text
+    assert "L&#x27;Extérieur" in response.text
+    assert "Le Complet" in response.text
+    assert "Céramique 6m" in response.text
+    assert "Scooter" in response.text
+    assert "60 DH" in response.text
+    assert "125 DH" in response.text
+    assert "1150 DH" in response.text
+    assert "105 DH" in response.text
+    assert "Cette page arrive dans le prochain lot" not in response.text
+    assert 'href="/admin/prices" class="active"' in response.text
+
+
 def test_admin_sidebar_pages_are_clickable_placeholders(monkeypatch):
     monkeypatch.setattr(settings, "admin_password", "secret-pass")
     client = TestClient(app)
@@ -237,7 +267,6 @@ def test_admin_sidebar_pages_are_clickable_placeholders(monkeypatch):
     )
 
     expected_pages = {
-        "/admin/prices": "Prix",
         "/admin/promos": "Promos",
         "/admin/reminders": "Rappels",
         "/admin/closed-dates": "Fermetures",

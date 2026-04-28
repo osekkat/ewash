@@ -16,6 +16,7 @@ from fastapi import APIRouter, Query, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from .admin_i18n import SUPPORTED_LOCALES, normalize_locale, t
+from .catalog import SERVICES_DETAILING, SERVICES_MOTO, SERVICES_WASH
 from .config import settings
 from .persistence import admin_booking_list, admin_customer_list, admin_dashboard_summary
 
@@ -148,6 +149,7 @@ def _layout(*, locale: str, title: str, body: str, active_path: str = "/admin") 
     .table-row {{ display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; padding: 13px 14px; border-bottom: 1px solid var(--border-soft); color: var(--muted); font-size: 13px; }}
     .booking-row {{ grid-template-columns: .8fr 1.1fr 1fr 1.3fr .9fr .9fr .7fr; align-items: center; }}
     .customer-row {{ grid-template-columns: 1.2fr 1fr 1.4fr .8fr; align-items: center; }}
+    .price-row {{ grid-template-columns: .9fr 1.15fr 2fr .55fr .55fr .55fr; align-items: center; }}
     .table-row:last-child {{ border-bottom: 0; }}
     .table-head {{ color: var(--soft); background: rgba(255,255,255,0.03); font-weight: 510; }}
     .status-list {{ display: grid; gap: 10px; margin-top: 18px; }}
@@ -222,7 +224,7 @@ def _dashboard(*, locale: str) -> HTMLResponse:
     <h1>{escape(title)}</h1>
     <p>{escape(t('admin.dashboard.placeholder', locale))}</p>
   </div>
-  <div class="version-pill"><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> v0.3.0-alpha10</div>
+  <div class="version-pill"><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> v0.3.0-alpha11</div>
 </section>
 
 <section class="metric-grid" aria-label="Résumé opérationnel">
@@ -263,13 +265,70 @@ def _dashboard(*, locale: str) -> HTMLResponse:
       <div class="status-item"><span><span class="dot"></span>{escape(t('admin.next.password', locale))}</span><span>OK</span></div>
       <div class="status-item"><span><span class="dot"></span>{escape(t('admin.next.db', locale))}</span><span>OK</span></div>
       <div class="status-item"><span><span class="dot"></span>{escape(t('admin.next.persistence', locale))}</span><span>{persistence_state}</span></div>
-      <div class="status-item"><span>{escape(t('admin.next.pages', locale))}</span><span class="soon">{escape(t('admin.next.soon', locale))}</span></div>
+      <div class="status-item"><span><span class="dot"></span>{escape(t('admin.next.pages', locale))}</span><span>OK</span></div>
     </div>
     <p><a href="/admin/logout">{escape(t('nav.logout', locale))}</a></p>
   </aside>
 </section>
 """
     return HTMLResponse(content=_layout(locale=locale, title=title, body=body), status_code=200)
+
+
+def _price_rows(*, locale: str) -> str:
+    rows: list[str] = []
+    for group_label, services in (
+        (t("admin.prices.washes", locale), SERVICES_WASH),
+        (t("admin.prices.detailing", locale), SERVICES_DETAILING),
+    ):
+        for _sid, name, desc, prices in services:
+            rows.append(
+                "<div class=\"table-row price-row\">"
+                f"<span>{escape(group_label)}</span>"
+                f"<span>{escape(name)}</span>"
+                f"<span>{escape(desc)}</span>"
+                f"<span>{prices.get('A', '—')} DH</span>"
+                f"<span>{prices.get('B', '—')} DH</span>"
+                f"<span>{prices.get('C', '—')} DH</span>"
+                "</div>"
+            )
+    for _sid, name, desc, price in SERVICES_MOTO:
+        rows.append(
+            "<div class=\"table-row price-row\">"
+            f"<span>{escape(t('admin.prices.moto', locale))}</span>"
+            f"<span>{escape(name)}</span>"
+            f"<span>{escape(desc)}</span>"
+            f"<span>{price} DH</span>"
+            "<span>—</span>"
+            "<span>—</span>"
+            "</div>"
+        )
+    return "".join(rows)
+
+
+def _prices_page(*, locale: str) -> HTMLResponse:
+    title = t("nav.prices", locale)
+    intro = t("admin.prices.intro", locale)
+    body = f"""
+<section class="hero">
+  <div>
+    <div class="eyebrow">Ewash Ops</div>
+    <h1>{escape(title)}</h1>
+    <p>{escape(intro)}</p>
+  </div>
+  <div class="version-pill"><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> v0.3.0-alpha11</div>
+</section>
+<section class="empty-panel">
+  <h2>{escape(t('admin.prices.public_tariff', locale))}</h2>
+  <div class="table-shell" aria-label="{escape(t('admin.prices.public_tariff', locale))}">
+    <div class="table-row table-head price-row"><span>{escape(t('admin.prices.group', locale))}</span><span>{escape(t('admin.prices.service', locale))}</span><span>{escape(t('admin.prices.description', locale))}</span><span>A</span><span>B</span><span>C</span></div>
+    {_price_rows(locale=locale)}
+  </div>
+</section>
+"""
+    return HTMLResponse(
+        content=_layout(locale=locale, title=title, body=body, active_path="/admin/prices"),
+        status_code=200,
+    )
 
 
 def _placeholder_page(*, locale: str, page_key: str, active_path: str) -> HTMLResponse:
@@ -281,7 +340,7 @@ def _placeholder_page(*, locale: str, page_key: str, active_path: str) -> HTMLRe
     <h1>{escape(title)}</h1>
     <p>{escape(t('admin.page.placeholder', locale))}</p>
   </div>
-  <div class="version-pill"><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> v0.3.0-alpha10</div>
+  <div class="version-pill"><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> v0.3.0-alpha11</div>
 </section>
 <section class="dashboard-grid">
   <article class="empty-panel">
@@ -332,7 +391,7 @@ def _bookings_page(*, locale: str) -> HTMLResponse:
     <h1>{escape(title)}</h1>
     <p>{escape(intro)}</p>
   </div>
-  <div class="version-pill"><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> v0.3.0-alpha10</div>
+  <div class="version-pill"><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> v0.3.0-alpha11</div>
 </section>
 <section class="empty-panel">
   <h2>{escape(t('admin.panel.recent_bookings', locale))}</h2>
@@ -377,7 +436,7 @@ def _customers_page(*, locale: str) -> HTMLResponse:
     <h1>{escape(title)}</h1>
     <p>{escape(intro)}</p>
   </div>
-  <div class="version-pill"><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> v0.3.0-alpha10</div>
+  <div class="version-pill"><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> v0.3.0-alpha11</div>
 </section>
 <section class="empty-panel">
   <h2>{escape(title)}</h2>
@@ -470,4 +529,6 @@ async def admin_section(request: Request, page_slug: str, lang: str | None = Que
         return _bookings_page(locale=locale)
     if page_id == "customers":
         return _customers_page(locale=locale)
+    if page_id == "prices":
+        return _prices_page(locale=locale)
     return _placeholder_page(locale=locale, page_key=page_key, active_path=active_path)
