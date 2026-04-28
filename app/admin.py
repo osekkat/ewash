@@ -159,7 +159,8 @@ def _layout(*, locale: str, title: str, body: str, active_path: str = "/admin") 
     .soon {{ color: var(--muted); font-size: 13px; }}
     form {{ max-width: 420px; margin-top: 24px; padding: 22px; border: 1px solid var(--border); border-radius: 16px; background: rgba(255,255,255,0.035); }}
     label {{ color: var(--soft); font-size: 14px; }}
-    input {{ width: 100%; margin: 8px 0 14px; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--border); color: var(--text); background: rgba(255,255,255,0.04); }}
+    input, textarea, select {{ width: 100%; margin: 8px 0 14px; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--border); color: var(--text); background: rgba(255,255,255,0.04); }}
+    textarea {{ min-height: 110px; resize: vertical; }}
     input[type="checkbox"] {{ width: auto; margin-right: 8px; }}
     .admin-form {{ max-width: none; }}
     .price-input {{ margin: 0; padding: 9px 10px; min-width: 70px; }}
@@ -233,7 +234,7 @@ def _dashboard(*, locale: str) -> HTMLResponse:
     <h1>{escape(title)}</h1>
     <p>{escape(t('admin.dashboard.placeholder', locale))}</p>
   </div>
-  <div class="version-pill"><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> v0.3.0-alpha12</div>
+  <div class="version-pill"><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> v0.3.0-alpha13</div>
 </section>
 
 <section class="metric-grid" aria-label="Résumé opérationnel">
@@ -364,7 +365,7 @@ def _prices_page(*, locale: str, message: str = "", error: str = "") -> HTMLResp
     <h1>{escape(title)}</h1>
     <p>{escape(intro)}</p>
   </div>
-  <div class="version-pill"><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> v0.3.0-alpha12</div>
+  <div class="version-pill"><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> v0.3.0-alpha13</div>
 </section>
 <section class="empty-panel">
   <h2>{escape(t('admin.prices.public_tariff', locale))}</h2>
@@ -449,7 +450,7 @@ def _promos_page(*, locale: str, message: str = "", error: str = "") -> HTMLResp
     <h1>{escape(title)}</h1>
     <p>{escape(t('admin.promos.intro', locale))}</p>
   </div>
-  <div class="version-pill"><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> v0.3.0-alpha12</div>
+  <div class="version-pill"><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> v0.3.0-alpha13</div>
 </section>
 <section class="dashboard-grid">
   <article class="empty-panel">
@@ -484,6 +485,89 @@ def _promos_page(*, locale: str, message: str = "", error: str = "") -> HTMLResp
     )
 
 
+def _simple_status(active: bool, locale: str) -> str:
+    return t("admin.promos.active", locale) if active else t("admin.promos.inactive", locale)
+
+
+def _reminders_page(*, locale: str, message: str = "", error: str = "") -> HTMLResponse:
+    title = t("nav.reminders", locale)
+    rows = "".join(
+        "<div class=\"table-row\">"
+        f"<span>{escape(rule.name)}<br><small>{escape(_simple_status(rule.enabled, locale))}</small></span>"
+        f"<span>{rule.offset_minutes_before} min</span>"
+        f"<span>{escape(rule.template_name or '—')}</span>"
+        "</div>"
+        for rule in catalog.list_reminder_rules()
+    ) or '<div class="table-row"><span>—</span><span>—</span><span>—</span></div>'
+    body = f"""
+<section class="hero"><div><div class="eyebrow">Ewash Ops</div><h1>{escape(title)}</h1><p>{escape(t('admin.reminders.intro', locale))}</p></div><div class="version-pill"><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> v0.3.0-alpha13</div></section>
+<section class="dashboard-grid">
+  <article class="empty-panel"><h2>{escape(t('admin.reminders.rules', locale))}</h2>{_notice_html(message=message, error=error)}<div class="table-shell"><div class="table-row table-head"><span>{escape(t('admin.reminders.name', locale))}</span><span>{escape(t('admin.reminders.offset', locale))}</span><span>{escape(t('admin.reminders.template', locale))}</span></div>{rows}</div></article>
+  <aside class="empty-panel"><h2>{escape(t('admin.reminders.add_or_update', locale))}</h2><form class="admin-form" method="post" action="/admin/reminders?lang={escape(locale)}"><label>{escape(t('admin.reminders.name', locale))}<input name="reminder_name" placeholder="H-1" required></label><label>{escape(t('admin.reminders.offset', locale))}<input type="number" min="1" step="1" name="offset_minutes_before" value="60" required></label><label>{escape(t('admin.reminders.template', locale))}<input name="template_name" placeholder="booking_reminder_h1"></label><label><input type="checkbox" name="enabled" checked>{escape(t('admin.promos.active', locale))}</label><p><button type="submit">{escape(t('action.save', locale))}</button></p></form></aside>
+</section>"""
+    return HTMLResponse(content=_layout(locale=locale, title=title, body=body, active_path="/admin/reminders"), status_code=200)
+
+
+def _closed_dates_page(*, locale: str, message: str = "", error: str = "") -> HTMLResponse:
+    title = t("nav.closed_dates", locale)
+    rows = "".join(
+        "<div class=\"table-row\">"
+        f"<span>{escape(item.date_iso)}<br><small>{escape(_simple_status(item.active, locale))}</small></span>"
+        f"<span>{escape(item.label or '—')}</span><span>—</span></div>"
+        for item in catalog.list_closed_dates()
+    ) or '<div class="table-row"><span>—</span><span>—</span><span>—</span></div>'
+    body = f"""
+<section class="hero"><div><div class="eyebrow">Ewash Ops</div><h1>{escape(title)}</h1><p>{escape(t('admin.closed_dates.intro', locale))}</p></div><div class="version-pill"><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> v0.3.0-alpha13</div></section>
+<section class="dashboard-grid"><article class="empty-panel"><h2>{escape(title)}</h2>{_notice_html(message=message, error=error)}<div class="table-shell"><div class="table-row table-head"><span>{escape(t('admin.closed_dates.date', locale))}</span><span>{escape(t('admin.closed_dates.label', locale))}</span><span></span></div>{rows}</div></article>
+<aside class="empty-panel"><h2>{escape(t('admin.closed_dates.add_or_update', locale))}</h2><form class="admin-form" method="post" action="/admin/closed-dates?lang={escape(locale)}"><label>{escape(t('admin.closed_dates.date', locale))}<input type="date" name="closed_date" required></label><label>{escape(t('admin.closed_dates.label', locale))}<input name="label" placeholder="Eid / Maintenance"></label><label><input type="checkbox" name="active" checked>{escape(t('admin.promos.active', locale))}</label><p><button type="submit">{escape(t('action.save', locale))}</button></p></form></aside></section>"""
+    return HTMLResponse(content=_layout(locale=locale, title=title, body=body, active_path="/admin/closed-dates"), status_code=200)
+
+
+def _time_slots_page(*, locale: str, message: str = "", error: str = "") -> HTMLResponse:
+    title = t("nav.time_slots", locale)
+    rows = "".join(
+        "<div class=\"table-row\">"
+        f"<span>{escape(item.slot_id)}<br><small>{escape(_simple_status(item.active, locale))}</small></span>"
+        f"<span>{escape(item.label)}</span><span>{escape(item.period or '—')}</span></div>"
+        for item in catalog.list_time_slots()
+    ) or '<div class="table-row"><span>—</span><span>—</span><span>—</span></div>'
+    body = f"""
+<section class="hero"><div><div class="eyebrow">Ewash Ops</div><h1>{escape(title)}</h1><p>{escape(t('admin.time_slots.intro', locale))}</p></div><div class="version-pill"><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> v0.3.0-alpha13</div></section>
+<section class="dashboard-grid"><article class="empty-panel"><h2>{escape(title)}</h2>{_notice_html(message=message, error=error)}<div class="table-shell"><div class="table-row table-head"><span>ID</span><span>{escape(t('admin.time_slots.label', locale))}</span><span>{escape(t('admin.time_slots.period', locale))}</span></div>{rows}</div></article>
+<aside class="empty-panel"><h2>{escape(t('admin.time_slots.add_or_update', locale))}</h2><form class="admin-form" method="post" action="/admin/time-slots?lang={escape(locale)}"><label>ID<input name="slot_id" placeholder="slot_22_23" required></label><label>{escape(t('admin.time_slots.label', locale))}<input name="label" placeholder="22h – 23h" required></label><label>{escape(t('admin.time_slots.period', locale))}<input name="period" placeholder="Soirée"></label><label><input type="checkbox" name="active" checked>{escape(t('admin.promos.active', locale))}</label><p><button type="submit">{escape(t('action.save', locale))}</button></p></form></aside></section>"""
+    return HTMLResponse(content=_layout(locale=locale, title=title, body=body, active_path="/admin/time-slots"), status_code=200)
+
+
+def _centers_page(*, locale: str, message: str = "", error: str = "") -> HTMLResponse:
+    title = t("nav.centers", locale)
+    rows = "".join(
+        "<div class=\"table-row\">"
+        f"<span>{escape(item.center_id)}<br><small>{escape(_simple_status(item.active, locale))}</small></span>"
+        f"<span>{escape(item.name)}</span><span>{escape(item.details or '—')}</span></div>"
+        for item in catalog.list_centers()
+    ) or '<div class="table-row"><span>—</span><span>—</span><span>—</span></div>'
+    body = f"""
+<section class="hero"><div><div class="eyebrow">Ewash Ops</div><h1>{escape(title)}</h1><p>{escape(t('admin.centers.intro', locale))}</p></div><div class="version-pill"><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> v0.3.0-alpha13</div></section>
+<section class="dashboard-grid"><article class="empty-panel"><h2>{escape(title)}</h2>{_notice_html(message=message, error=error)}<div class="table-shell"><div class="table-row table-head"><span>ID</span><span>{escape(t('admin.centers.name', locale))}</span><span>{escape(t('admin.centers.details', locale))}</span></div>{rows}</div></article>
+<aside class="empty-panel"><h2>{escape(t('admin.centers.add_or_update', locale))}</h2><form class="admin-form" method="post" action="/admin/centers?lang={escape(locale)}"><label>ID<input name="center_id" placeholder="ctr_casa" required></label><label>{escape(t('admin.centers.name', locale))}<input name="name" placeholder="Stand physique" required></label><label>{escape(t('admin.centers.details', locale))}<textarea name="details" placeholder="Mall Triangle Vert, Bouskoura · 7j/7 · 09h-22h30"></textarea></label><label><input type="checkbox" name="active" checked>{escape(t('admin.promos.active', locale))}</label><p><button type="submit">{escape(t('action.save', locale))}</button></p></form></aside></section>"""
+    return HTMLResponse(content=_layout(locale=locale, title=title, body=body, active_path="/admin/centers"), status_code=200)
+
+
+def _copy_page(*, locale: str, message: str = "", error: str = "") -> HTMLResponse:
+    title = t("nav.copy", locale)
+    rows = "".join(
+        "<div class=\"table-row\">"
+        f"<span>{escape(item.key)}<br><small>{escape(item.title)}</small></span>"
+        f"<span>{escape(item.body)}</span><span>—</span></div>"
+        for item in catalog.list_text_snippets()
+    ) or '<div class="table-row"><span>—</span><span>—</span><span>—</span></div>'
+    body = f"""
+<section class="hero"><div><div class="eyebrow">Ewash Ops</div><h1>{escape(title)}</h1><p>{escape(t('admin.copy.intro', locale))}</p></div><div class="version-pill"><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> v0.3.0-alpha13</div></section>
+<section class="dashboard-grid"><article class="empty-panel"><h2>{escape(title)}</h2>{_notice_html(message=message, error=error)}<div class="table-shell"><div class="table-row table-head"><span>{escape(t('admin.copy.key', locale))}</span><span>{escape(t('admin.copy.body', locale))}</span><span></span></div>{rows}</div></article>
+<aside class="empty-panel"><h2>{escape(t('admin.copy.add_or_update', locale))}</h2><form class="admin-form" method="post" action="/admin/copy?lang={escape(locale)}"><label>{escape(t('admin.copy.key', locale))}<input name="text_key" placeholder="booking.welcome" required></label><label>{escape(t('admin.copy.title', locale))}<input name="title" placeholder="Accueil réservation" required></label><label>{escape(t('admin.copy.body', locale))}<textarea name="body" required></textarea></label><p><button type="submit">{escape(t('action.save', locale))}</button></p></form></aside></section>"""
+    return HTMLResponse(content=_layout(locale=locale, title=title, body=body, active_path="/admin/copy"), status_code=200)
+
+
 def _placeholder_page(*, locale: str, page_key: str, active_path: str) -> HTMLResponse:
     title = t(page_key, locale)
     body = f"""
@@ -493,7 +577,7 @@ def _placeholder_page(*, locale: str, page_key: str, active_path: str) -> HTMLRe
     <h1>{escape(title)}</h1>
     <p>{escape(t('admin.page.placeholder', locale))}</p>
   </div>
-  <div class="version-pill"><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> v0.3.0-alpha12</div>
+  <div class="version-pill"><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> v0.3.0-alpha13</div>
 </section>
 <section class="dashboard-grid">
   <article class="empty-panel">
@@ -544,7 +628,7 @@ def _bookings_page(*, locale: str) -> HTMLResponse:
     <h1>{escape(title)}</h1>
     <p>{escape(intro)}</p>
   </div>
-  <div class="version-pill"><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> v0.3.0-alpha12</div>
+  <div class="version-pill"><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> v0.3.0-alpha13</div>
 </section>
 <section class="empty-panel">
   <h2>{escape(t('admin.panel.recent_bookings', locale))}</h2>
@@ -589,7 +673,7 @@ def _customers_page(*, locale: str) -> HTMLResponse:
     <h1>{escape(title)}</h1>
     <p>{escape(intro)}</p>
   </div>
-  <div class="version-pill"><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> v0.3.0-alpha12</div>
+  <div class="version-pill"><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> v0.3.0-alpha13</div>
 </section>
 <section class="empty-panel">
   <h2>{escape(title)}</h2>
@@ -729,6 +813,106 @@ async def admin_promos_submit(request: Request, lang: str | None = Query(default
     return RedirectResponse(url=f"/admin/promos?lang={locale}&saved=1", status_code=status.HTTP_303_SEE_OTHER)
 
 
+async def _admin_form(request: Request) -> dict[str, list[str]]:
+    return parse_qs((await request.body()).decode("utf-8"))
+
+
+def _auth_or_none(request: Request, locale: str):
+    if not settings.admin_password:
+        return RedirectResponse(url=f"/admin?lang={locale}", status_code=status.HTTP_303_SEE_OTHER)
+    if not _valid_session_token(request.cookies.get(_SESSION_COOKIE)):
+        return _password_form(locale=locale)
+    return None
+
+
+@router.post("/reminders", response_class=HTMLResponse)
+async def admin_reminders_submit(request: Request, lang: str | None = Query(default=None)):
+    locale = normalize_locale(lang or settings.admin_default_locale)
+    if response := _auth_or_none(request, locale):
+        return response
+    form = await _admin_form(request)
+    try:
+        catalog.upsert_reminder_rule(
+            name=form.get("reminder_name", [""])[0],
+            offset_minutes_before=int(form.get("offset_minutes_before", ["0"])[0] or 0),
+            template_name=form.get("template_name", [""])[0],
+            enabled="enabled" in form,
+        )
+    except Exception as exc:
+        return _reminders_page(locale=locale, error=str(exc))
+    return RedirectResponse(url=f"/admin/reminders?lang={locale}&saved=1", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/closed-dates", response_class=HTMLResponse)
+async def admin_closed_dates_submit(request: Request, lang: str | None = Query(default=None)):
+    locale = normalize_locale(lang or settings.admin_default_locale)
+    if response := _auth_or_none(request, locale):
+        return response
+    form = await _admin_form(request)
+    try:
+        catalog.upsert_closed_date(
+            date_iso=form.get("closed_date", [""])[0],
+            label=form.get("label", [""])[0],
+            active="active" in form,
+        )
+    except Exception as exc:
+        return _closed_dates_page(locale=locale, error=str(exc))
+    return RedirectResponse(url=f"/admin/closed-dates?lang={locale}&saved=1", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/time-slots", response_class=HTMLResponse)
+async def admin_time_slots_submit(request: Request, lang: str | None = Query(default=None)):
+    locale = normalize_locale(lang or settings.admin_default_locale)
+    if response := _auth_or_none(request, locale):
+        return response
+    form = await _admin_form(request)
+    try:
+        catalog.upsert_time_slot(
+            slot_id=form.get("slot_id", [""])[0],
+            label=form.get("label", [""])[0],
+            period=form.get("period", [""])[0],
+            active="active" in form,
+        )
+    except Exception as exc:
+        return _time_slots_page(locale=locale, error=str(exc))
+    return RedirectResponse(url=f"/admin/time-slots?lang={locale}&saved=1", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/centers", response_class=HTMLResponse)
+async def admin_centers_submit(request: Request, lang: str | None = Query(default=None)):
+    locale = normalize_locale(lang or settings.admin_default_locale)
+    if response := _auth_or_none(request, locale):
+        return response
+    form = await _admin_form(request)
+    try:
+        catalog.upsert_center(
+            center_id=form.get("center_id", [""])[0],
+            name=form.get("name", [""])[0],
+            details=form.get("details", [""])[0],
+            active="active" in form,
+        )
+    except Exception as exc:
+        return _centers_page(locale=locale, error=str(exc))
+    return RedirectResponse(url=f"/admin/centers?lang={locale}&saved=1", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/copy", response_class=HTMLResponse)
+async def admin_copy_submit(request: Request, lang: str | None = Query(default=None)):
+    locale = normalize_locale(lang or settings.admin_default_locale)
+    if response := _auth_or_none(request, locale):
+        return response
+    form = await _admin_form(request)
+    try:
+        catalog.upsert_text_snippet(
+            key=form.get("text_key", [""])[0],
+            title=form.get("title", [""])[0],
+            body=form.get("body", [""])[0],
+        )
+    except Exception as exc:
+        return _copy_page(locale=locale, error=str(exc))
+    return RedirectResponse(url=f"/admin/copy?lang={locale}&saved=1", status_code=status.HTTP_303_SEE_OTHER)
+
+
 @router.get("/{page_slug}", response_class=HTMLResponse)
 async def admin_section(request: Request, page_slug: str, lang: str | None = Query(default=None)) -> HTMLResponse:
     locale = normalize_locale(lang or settings.admin_default_locale)
@@ -759,4 +943,19 @@ async def admin_section(request: Request, page_slug: str, lang: str | None = Que
     if page_id == "promos":
         message = t("admin.promos.saved", locale) if request.query_params.get("saved") == "1" else ""
         return _promos_page(locale=locale, message=message)
+    if page_id == "reminders":
+        message = t("admin.reminders.saved", locale) if request.query_params.get("saved") == "1" else ""
+        return _reminders_page(locale=locale, message=message)
+    if page_id == "closed_dates":
+        message = t("admin.closed_dates.saved", locale) if request.query_params.get("saved") == "1" else ""
+        return _closed_dates_page(locale=locale, message=message)
+    if page_id == "time_slots":
+        message = t("admin.time_slots.saved", locale) if request.query_params.get("saved") == "1" else ""
+        return _time_slots_page(locale=locale, message=message)
+    if page_id == "centers":
+        message = t("admin.centers.saved", locale) if request.query_params.get("saved") == "1" else ""
+        return _centers_page(locale=locale, message=message)
+    if page_id == "copy":
+        message = t("admin.copy.saved", locale) if request.query_params.get("saved") == "1" else ""
+        return _copy_page(locale=locale, message=message)
     return _placeholder_page(locale=locale, page_key=page_key, active_path=active_path)

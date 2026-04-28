@@ -6,6 +6,7 @@ on their own flyer. Moto is a separate lane with its own 2-option service list.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from functools import lru_cache
 import logging
 import re
@@ -14,7 +15,16 @@ from sqlalchemy import Engine, delete, select
 
 from .config import settings
 from .db import init_db, make_engine, session_scope
-from .models import PromoCodeRow, PromoDiscountRow, ServicePriceRow
+from .models import (
+    AdminTextRow,
+    CenterRow,
+    ClosedDateRow,
+    PromoCodeRow,
+    PromoDiscountRow,
+    ReminderRuleRow,
+    ServicePriceRow,
+    TimeSlotRow,
+)
 
 log = logging.getLogger(__name__)
 
@@ -126,6 +136,56 @@ class PromoCodeView:
     label: str
     active: bool
     discounts: dict[tuple[str, str], int]
+
+
+@dataclass(frozen=True)
+class ReminderRuleView:
+    id: int | None
+    name: str
+    enabled: bool
+    offset_minutes_before: int
+    template_name: str
+    channel: str
+
+
+@dataclass(frozen=True)
+class ClosedDateView:
+    date_iso: str
+    label: str
+    active: bool
+
+
+@dataclass(frozen=True)
+class TimeSlotView:
+    slot_id: str
+    label: str
+    period: str
+    active: bool
+    sort_order: int = 0
+
+
+@dataclass(frozen=True)
+class CenterView:
+    center_id: str
+    name: str
+    details: str
+    active: bool
+    sort_order: int = 0
+
+
+@dataclass(frozen=True)
+class TextSnippetView:
+    key: str
+    title: str
+    body: str
+
+
+DEFAULT_TEXT_SNIPPETS: dict[str, tuple[str, str]] = {
+    "booking.welcome": ("Accueil réservation", "Bonjour 👋 Bienvenue chez Ewash. On démarre votre réservation."),
+    "booking.location": ("Choix du lieu", "Où souhaitez-vous le lavage ? À domicile ou au stand."),
+    "booking.promo": ("Question code promo", "Avez-vous un code promo partenaire ?"),
+    "booking.note": ("Question note", "Souhaitez-vous ajouter une note ?"),
+}
 
 
 @lru_cache(maxsize=1)
@@ -291,6 +351,234 @@ def upsert_promo_code(
                     price_dh=price_dh,
                 )
             )
+    catalog_cache_clear()
+    return normalized
+
+
+def _require_db_engine(engine: Engine | None = None) -> Engine:
+    db_engine = _engine_or_configured(engine)
+    if db_engine is None:
+        raise RuntimeError("DATABASE_URL is not configured")
+    return db_engine
+
+
+def _clean_id(value: str, *, field: str) -> str:
+    cleaned = (value or "").strip()
+    if not re.fullmatch(r"[a-zA-Z0-9_-]{2,80}", cleaned):
+        raise ValueError(f"{field} must be 2-80 letters, numbers, underscores, or hyphens")
+    return cleaned
+
+
+def _validate_date_iso(value: str) -> str:
+    cleaned = (value or "").strip()
+    date.fromisoformat(cleaned)
+    return cleaned
+
+
+def list_reminder_rules(*, engine: Engine | None = None) -> tuple[ReminderRuleView, ...]:
+    db_engine = _engine_or_configured(engine)
+    if db_engine is None:
+        return ()
+    try:
+        with session_scope(db_engine) as session:
+            rows = session.scalars(select(ReminderRuleRow).order_by(ReminderRuleRow.offset_minutes_before.desc())).all()
+            return tuple(
+                ReminderRuleView(
+                    id=row.id,
+                    name=row.name,
+                    enabled=row.enabled,
+                    offset_minutes_before=row.offset_minutes_before,
+                    template_name=row.template_name,
+                    channel=row.channel,
+                )
+                for row in rows
+            )
+    except Exception:
+        log.exception("list_reminder_rules failed")
+        return ()
+
+
+def upsert_reminder_rule(
+    *,
+    name: str,
+    offset_minutes_before: int,
+    template_name: str,
+    enabled: bool,
+    channel: str = "whatsapp_template",
+    engine: Engine | None = None,
+) -> int:
+    cleaned_name = (name or "").strip()
+    if not cleaned_name:
+        raise ValueError("Reminder name is required")
+    if offset_minutes_before <= 0:
+        raise ValueError("Reminder offset must be positive")
+    db_engine = _require_db_engine(engine)
+    with session_scope(db_engine) as session:
+        row = session.scalars(select(ReminderRuleRow).where(ReminderRuleRow.name == cleaned_name)).first()
+        if row is None:
+            row = ReminderRuleRow(name=cleaned_name, offset_minutes_before=offset_minutes_before)
+            session.add(row)
+        row.enabled = enabled
+        row.offset_minutes_before = offset_minutes_before
+        row.template_name = (template_name or "").strip()
+        row.channel = (channel or "whatsapp_template").strip() or "whatsapp_template"
+        session.flush()
+        rule_id = int(row.id)
+    catalog_cache_clear()
+    return rule_id
+
+
+def list_closed_dates(*, engine: Engine | None = None) -> tuple[ClosedDateView, ...]:
+    dates = {value: ClosedDateView(date_iso=value, label="Fermeture", active=True) for value in CLOSED_DATES}
+    db_engine = _engine_or_configured(engine)
+    if db_engine is not None:
+        try:
+            with session_scope(db_engine) as session:
+                for row in session.scalars(select(ClosedDateRow).order_by(ClosedDateRow.date_iso)).all():
+                    dates[row.date_iso] = ClosedDateView(row.date_iso, row.label, row.active)
+        except Exception:
+            log.exception("list_closed_dates failed; falling back to static closures")
+    return tuple(dates[key] for key in sorted(dates))
+
+
+def active_closed_dates(*, engine: Engine | None = None) -> set[str]:
+    return {item.date_iso for item in list_closed_dates(engine=engine) if item.active}
+
+
+def upsert_closed_date(*, date_iso: str, label: str, active: bool, engine: Engine | None = None) -> str:
+    normalized = _validate_date_iso(date_iso)
+    db_engine = _require_db_engine(engine)
+    with session_scope(db_engine) as session:
+        row = session.get(ClosedDateRow, normalized)
+        if row is None:
+            row = ClosedDateRow(date_iso=normalized)
+            session.add(row)
+        row.label = (label or "").strip() or "Fermeture"
+        row.active = active
+    catalog_cache_clear()
+    return normalized
+
+
+def list_time_slots(*, engine: Engine | None = None) -> tuple[TimeSlotView, ...]:
+    slots = {
+        slot_id: TimeSlotView(slot_id, label, period, True, index)
+        for index, (slot_id, label, period) in enumerate(SLOTS)
+    }
+    db_engine = _engine_or_configured(engine)
+    if db_engine is not None:
+        try:
+            with session_scope(db_engine) as session:
+                for row in session.scalars(select(TimeSlotRow).order_by(TimeSlotRow.sort_order, TimeSlotRow.slot_id)).all():
+                    slots[row.slot_id] = TimeSlotView(row.slot_id, row.label, row.period, row.active, row.sort_order)
+        except Exception:
+            log.exception("list_time_slots failed; falling back to static slots")
+    return tuple(sorted(slots.values(), key=lambda item: (item.sort_order, item.slot_id)))
+
+
+def active_time_slots(*, engine: Engine | None = None) -> tuple[tuple[str, str, str], ...]:
+    return tuple((item.slot_id, item.label, item.period) for item in list_time_slots(engine=engine) if item.active)
+
+
+def upsert_time_slot(
+    *,
+    slot_id: str,
+    label: str,
+    period: str,
+    active: bool,
+    sort_order: int = 100,
+    engine: Engine | None = None,
+) -> str:
+    normalized = _clean_id(slot_id, field="Slot id")
+    if not (label or "").strip():
+        raise ValueError("Slot label is required")
+    db_engine = _require_db_engine(engine)
+    with session_scope(db_engine) as session:
+        row = session.get(TimeSlotRow, normalized)
+        if row is None:
+            row = TimeSlotRow(slot_id=normalized)
+            session.add(row)
+        row.label = label.strip()
+        row.period = (period or "").strip()
+        row.active = active
+        row.sort_order = sort_order
+    catalog_cache_clear()
+    return normalized
+
+
+def list_centers(*, engine: Engine | None = None) -> tuple[CenterView, ...]:
+    centers = {
+        center_id: CenterView(center_id, name, details, True, index)
+        for index, (center_id, name, details) in enumerate(CENTERS)
+    }
+    db_engine = _engine_or_configured(engine)
+    if db_engine is not None:
+        try:
+            with session_scope(db_engine) as session:
+                for row in session.scalars(select(CenterRow).order_by(CenterRow.sort_order, CenterRow.center_id)).all():
+                    centers[row.center_id] = CenterView(row.center_id, row.name, row.details, row.active, row.sort_order)
+        except Exception:
+            log.exception("list_centers failed; falling back to static centers")
+    return tuple(sorted(centers.values(), key=lambda item: (item.sort_order, item.center_id)))
+
+
+def active_centers(*, engine: Engine | None = None) -> tuple[tuple[str, str, str], ...]:
+    return tuple((item.center_id, item.name, item.details) for item in list_centers(engine=engine) if item.active)
+
+
+def upsert_center(
+    *,
+    center_id: str,
+    name: str,
+    details: str,
+    active: bool,
+    sort_order: int = 100,
+    engine: Engine | None = None,
+) -> str:
+    normalized = _clean_id(center_id, field="Center id")
+    if not (name or "").strip():
+        raise ValueError("Center name is required")
+    db_engine = _require_db_engine(engine)
+    with session_scope(db_engine) as session:
+        row = session.get(CenterRow, normalized)
+        if row is None:
+            row = CenterRow(center_id=normalized)
+            session.add(row)
+        row.name = name.strip()
+        row.details = (details or "").strip()
+        row.active = active
+        row.sort_order = sort_order
+    catalog_cache_clear()
+    return normalized
+
+
+def list_text_snippets(*, engine: Engine | None = None) -> tuple[TextSnippetView, ...]:
+    snippets = {
+        key: TextSnippetView(key=key, title=title, body=body)
+        for key, (title, body) in DEFAULT_TEXT_SNIPPETS.items()
+    }
+    db_engine = _engine_or_configured(engine)
+    if db_engine is not None:
+        try:
+            with session_scope(db_engine) as session:
+                for row in session.scalars(select(AdminTextRow).order_by(AdminTextRow.text_key)).all():
+                    snippets[row.text_key] = TextSnippetView(key=row.text_key, title=row.title, body=row.body)
+        except Exception:
+            log.exception("list_text_snippets failed; falling back to defaults")
+    return tuple(snippets[key] for key in sorted(snippets))
+
+
+def upsert_text_snippet(*, key: str, title: str, body: str, engine: Engine | None = None) -> str:
+    normalized = (key or "").strip()
+    if not re.fullmatch(r"[a-zA-Z0-9_.-]{2,80}", normalized):
+        raise ValueError("Text key must be 2-80 letters, numbers, dots, underscores, or hyphens")
+    db_engine = _require_db_engine(engine)
+    with session_scope(db_engine) as session:
+        row = session.get(AdminTextRow, normalized)
+        if row is None:
+            row = AdminTextRow(text_key=normalized)
+            session.add(row)
+        row.title = (title or "").strip() or normalized
+        row.body = (body or "").strip()
     catalog_cache_clear()
     return normalized
 

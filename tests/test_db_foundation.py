@@ -4,15 +4,19 @@ from sqlalchemy import inspect, select, text
 
 from app.db import init_db, make_engine, normalize_database_url, session_scope
 from app.models import (
+    AdminTextRow,
     BookingReminderRow,
     BookingRow,
     BookingStatusEventRow,
+    CenterRow,
+    ClosedDateRow,
     Customer,
     CustomerVehicle,
     PromoCodeRow,
     PromoDiscountRow,
     ReminderRuleRow,
     ServicePriceRow,
+    TimeSlotRow,
     VehicleColor,
     VehicleModel,
 )
@@ -49,6 +53,10 @@ def test_init_db_creates_v03_core_tables():
         "service_prices",
         "promo_codes",
         "promo_discounts",
+        "closed_dates",
+        "time_slots",
+        "centers",
+        "admin_texts",
     }.issubset(tables)
     vehicle_columns = {column["name"] for column in inspect(engine).get_columns("customer_vehicles")}
     assert {"model_id", "color_id"}.issubset(vehicle_columns)
@@ -58,6 +66,14 @@ def test_init_db_creates_v03_core_tables():
     assert {"code", "label", "active"}.issubset(promo_code_columns)
     promo_discount_columns = {column["name"] for column in inspect(engine).get_columns("promo_discounts")}
     assert {"promo_code", "service_id", "category", "price_dh"}.issubset(promo_discount_columns)
+    closed_date_columns = {column["name"] for column in inspect(engine).get_columns("closed_dates")}
+    assert {"date_iso", "label", "active"}.issubset(closed_date_columns)
+    time_slot_columns = {column["name"] for column in inspect(engine).get_columns("time_slots")}
+    assert {"slot_id", "label", "period", "active"}.issubset(time_slot_columns)
+    center_columns = {column["name"] for column in inspect(engine).get_columns("centers")}
+    assert {"center_id", "name", "details", "active"}.issubset(center_columns)
+    admin_text_columns = {column["name"] for column in inspect(engine).get_columns("admin_texts")}
+    assert {"text_key", "title", "body"}.issubset(admin_text_columns)
 
 
 def test_init_db_migrates_legacy_customer_vehicles_to_normalized_refs():

@@ -330,7 +330,14 @@ def test_admin_promos_page_allows_adding_promo_codes(monkeypatch, tmp_path):
     _configured_engine.cache_clear()
 
 
-def test_admin_sidebar_pages_are_clickable_placeholders(monkeypatch):
+def test_admin_remaining_tabs_are_real_operational_pages(monkeypatch, tmp_path):
+    db_url = f"sqlite+pysqlite:///{tmp_path / 'admin-ops-tabs.db'}"
+    engine = make_engine(db_url)
+    init_db(engine)
+    monkeypatch.setattr(settings, "database_url", db_url)
+    _configured_engine.cache_clear()
+    import app.catalog as catalog
+    catalog.catalog_cache_clear()
     monkeypatch.setattr(settings, "admin_password", "secret-pass")
     client = TestClient(app)
     client.post(
@@ -340,18 +347,89 @@ def test_admin_sidebar_pages_are_clickable_placeholders(monkeypatch):
     )
 
     expected_pages = {
-        "/admin/reminders": "Rappels",
-        "/admin/closed-dates": "Fermetures",
-        "/admin/time-slots": "Créneaux",
-        "/admin/centers": "Centres",
-        "/admin/copy": "Textes",
+        "/admin/reminders": ("Rappels", "reminder_name"),
+        "/admin/closed-dates": ("Fermetures", "closed_date"),
+        "/admin/time-slots": ("Créneaux", "slot_id"),
+        "/admin/centers": ("Centres", "center_id"),
+        "/admin/copy": ("Textes", "text_key"),
     }
-    for path, title in expected_pages.items():
+    for path, (title, field_name) in expected_pages.items():
         response = client.get(path)
         assert response.status_code == 200
         assert title in response.text
-        assert "Cette page arrive dans le prochain lot" in response.text
-        assert f'href="{path}"' in response.text
+        assert f'name="{field_name}"' in response.text
+        assert "Cette page arrive dans le prochain lot" not in response.text
+        assert f'href="{path}" class="active"' in response.text
+    catalog.catalog_cache_clear()
+    _configured_engine.cache_clear()
+
+
+def test_admin_ops_pages_allow_updating_remaining_tabs(monkeypatch, tmp_path):
+    db_url = f"sqlite+pysqlite:///{tmp_path / 'admin-ops-updates.db'}"
+    engine = make_engine(db_url)
+    init_db(engine)
+    monkeypatch.setattr(settings, "database_url", db_url)
+    _configured_engine.cache_clear()
+    import app.catalog as catalog
+    catalog.catalog_cache_clear()
+    monkeypatch.setattr(settings, "admin_password", "secret-pass")
+    client = TestClient(app)
+    client.post(
+        "/admin",
+        content="password=secret-pass",
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+
+    reminders = client.post(
+        "/admin/reminders?lang=en",
+        data={"reminder_name": "H-2", "offset_minutes_before": "120", "template_name": "booking_reminder_h2", "enabled": "on"},
+        follow_redirects=False,
+    )
+    assert reminders.status_code == 303
+    reminders_page = client.get(reminders.headers["location"])
+    assert "H-2" in reminders_page.text
+    assert "booking_reminder_h2" in reminders_page.text
+    assert "Reminders saved" in reminders_page.text
+
+    closed = client.post(
+        "/admin/closed-dates?lang=en",
+        data={"closed_date": "2026-06-01", "label": "Maintenance", "active": "on"},
+        follow_redirects=False,
+    )
+    assert closed.status_code == 303
+    assert "2026-06-01" in catalog.active_closed_dates()
+    assert "Maintenance" in client.get(closed.headers["location"]).text
+
+    slot = client.post(
+        "/admin/time-slots?lang=en",
+        data={"slot_id": "slot_22_23", "label": "22h – 23h", "period": "Late", "active": "on"},
+        follow_redirects=False,
+    )
+    assert slot.status_code == 303
+    assert ("slot_22_23", "22h – 23h", "Late") in catalog.active_time_slots()
+    assert "22h – 23h" in client.get(slot.headers["location"]).text
+
+    center = client.post(
+        "/admin/centers?lang=en",
+        data={"center_id": "ctr_maarif", "name": "Maârif", "details": "Rue test · 09h-18h", "active": "on"},
+        follow_redirects=False,
+    )
+    assert center.status_code == 303
+    assert ("ctr_maarif", "Maârif", "Rue test · 09h-18h") in catalog.active_centers()
+    assert "Maârif" in client.get(center.headers["location"]).text
+
+    copy = client.post(
+        "/admin/copy?lang=en",
+        data={"text_key": "booking.welcome", "title": "Welcome", "body": "Bonjour from admin"},
+        follow_redirects=False,
+    )
+    assert copy.status_code == 303
+    snippets = {snippet.key: snippet for snippet in catalog.list_text_snippets()}
+    assert snippets["booking.welcome"].body == "Bonjour from admin"
+    assert "Bonjour from admin" in client.get(copy.headers["location"]).text
+
+    catalog.catalog_cache_clear()
+    _configured_engine.cache_clear()
 
 
 def test_admin_logout_clears_password_session(monkeypatch):

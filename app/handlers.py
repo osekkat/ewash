@@ -261,15 +261,16 @@ async def _handle_book_service(phone, sess, payload_id=None, **kw):
 async def _handle_book_where(phone, sess, payload_id=None, **kw):
     if payload_id == "where_center":
         sess.booking.location_mode = "center"
-        if len(catalog.CENTERS) == 1:
+        centers = catalog.active_centers()
+        if len(centers) == 1:
             # Only one center → auto-pick and skip selection.
-            row = catalog.CENTERS[0]
+            row = centers[0]
             sess.booking.center = f"{row[1]} — {row[2]}"
             await _after_location(phone, sess)
         else:
             sess.state = "BOOK_CENTER"
             await meta.send_list(phone, "Quel centre Ewash ?", "Choisir le centre",
-                                 catalog.CENTERS, "Centres disponibles")
+                                 centers, "Centres disponibles")
         return
     if payload_id == "where_home":
         sess.booking.location_mode = "home"
@@ -292,11 +293,12 @@ async def _handle_book_where(phone, sess, payload_id=None, **kw):
 
 
 async def _handle_book_center(phone, sess, payload_id=None, **kw):
-    if payload_id not in {row[0] for row in catalog.CENTERS}:
+    centers = catalog.active_centers()
+    if payload_id not in {row[0] for row in centers}:
         await meta.send_list(phone, "Choisissez un centre :", "Choisir le centre",
-                             catalog.CENTERS, "Centres disponibles")
+                             centers, "Centres disponibles")
         return
-    sess.booking.center = catalog.label_for(catalog.CENTERS, payload_id)
+    sess.booking.center = catalog.label_for(centers, payload_id)
     await _after_location(phone, sess)
 
 
@@ -421,10 +423,11 @@ async def _ask_when(phone, sess, page: int = 0):
     sess.state = "BOOK_WHEN"
     sess.booking.when_page = page
     open_dates = []
+    closed_dates = catalog.active_closed_dates()
     scan = 0
     while len(open_dates) < 15 and scan < 25:
         d = date.today() + timedelta(days=scan)
-        if d.isoformat() not in catalog.CLOSED_DATES:
+        if d.isoformat() not in closed_dates:
             open_dates.append(d)
         scan += 1
     sess.booking.when_dates = [d.isoformat() for d in open_dates]
@@ -485,8 +488,9 @@ async def _handle_book_when(phone, sess, payload_id=None, **kw):
             label = f"{_jour_fr(d)} {d.strftime('%d/%m/%Y')}"
         sess.booking.date_label = label
         sess.state = "BOOK_SLOT"
+        slots = catalog.active_time_slots()
         await meta.send_list(phone, "À quelle heure ?", "Choisir un créneau",
-                             catalog.SLOTS, "Créneaux")
+                             slots, "Créneaux")
         return
 
     # Unknown payload — re-render current page
@@ -494,11 +498,12 @@ async def _handle_book_when(phone, sess, payload_id=None, **kw):
 
 
 async def _handle_book_slot(phone, sess, payload_id=None, **kw):
-    if payload_id not in {row[0] for row in catalog.SLOTS}:
+    slots = catalog.active_time_slots()
+    if payload_id not in {row[0] for row in slots}:
         await meta.send_list(phone, "Choisissez un créneau :", "Choisir un créneau",
-                             catalog.SLOTS, "Créneaux")
+                             slots, "Créneaux")
         return
-    sess.booking.slot = catalog.label_for(catalog.SLOTS, payload_id)
+    sess.booking.slot = catalog.label_for(slots, payload_id)
     sess.state = "BOOK_NOTE"
     await meta.send_buttons(
         phone,

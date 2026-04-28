@@ -14,7 +14,7 @@ from fastapi.responses import PlainTextResponse
 from . import admin, booking, handlers, meta
 from .config import settings
 
-APP_VERSION = "v0.3.0-alpha12"
+APP_VERSION = "v0.3.0-alpha13"
 
 logging.basicConfig(
     level=settings.log_level,
