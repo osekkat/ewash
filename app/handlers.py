@@ -566,10 +566,7 @@ async def _send_recap(phone, sess):
     )
     if b.note:
         recap += f"📝 *Note* : {b.note}\n"
-    recap += (
-        "\n_Le tarif affiché est indicatif — l'équipe confirme selon l'état "
-        "du véhicule._\n\nTout est correct ?"
-    )
+    recap += "\nTout est correct ?"
     sess.state = "BOOK_CONFIRM"
     await meta.send_buttons(
         phone, recap,
