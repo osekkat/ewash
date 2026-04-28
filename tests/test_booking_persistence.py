@@ -5,6 +5,7 @@ from app.db import init_db, make_engine, session_scope
 from app.models import BookingRow, BookingStatusEventRow, Customer, CustomerVehicle
 from app.persistence import (
     admin_dashboard_summary,
+    assign_booking_ref,
     persist_confirmed_booking,
     persist_booking_addon,
 )
@@ -93,6 +94,35 @@ def test_persist_confirmed_booking_reuses_existing_vehicle_for_repeat_customer()
         assert len(session.scalars(select(BookingRow)).all()) == 2
         customer = session.get(Customer, "212665883062")
         assert customer.booking_count == 2
+
+
+def test_assign_booking_ref_advances_past_existing_db_refs_when_memory_counter_reset(monkeypatch):
+    engine = make_engine("sqlite+pysqlite:///:memory:")
+    init_db(engine)
+    existing = _sample_booking(phone="212600000001")
+    year = existing.ref.split("-")[1]
+    existing.ref = f"EW-{year}-0007"
+    persist_confirmed_booking(existing, engine=engine)
+
+    # Simulates a Railway redeploy: the process-local counter resets to 0,
+    # while Postgres still has prior confirmed booking refs.
+    import app.booking as booking_store
+    monkeypatch.setattr(booking_store, "_counter", 0)
+    booking_store._bookings.clear()
+
+    new_booking = _sample_booking(phone="212600000002")
+    new_booking.ref = ""
+    new_booking.created_at = ""
+
+    ref = assign_booking_ref(new_booking, engine=engine)
+    persist_confirmed_booking(new_booking, engine=engine)
+
+    assert ref == f"EW-{year}-0008"
+    assert new_booking.ref == f"EW-{year}-0008"
+    with session_scope(engine) as session:
+        refs = {row.ref for row in session.scalars(select(BookingRow)).all()}
+        assert refs == {f"EW-{year}-0007", f"EW-{year}-0008"}
+        assert session.get(Customer, "212600000002") is not None
 
 
 def test_persist_booking_addon_updates_confirmed_booking_row():

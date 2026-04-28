@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -88,6 +89,44 @@ def _engine_or_configured(engine: Engine | None = None) -> Engine | None:
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+_REF_RE = re.compile(r"^EW-(\d{4})-(\d+)$")
+
+
+def _max_ref_counter(refs: Iterable[str], *, year: int) -> int:
+    max_counter = 0
+    for ref in refs:
+        match = _REF_RE.match(ref or "")
+        if not match or int(match.group(1)) != year:
+            continue
+        max_counter = max(max_counter, int(match.group(2)))
+    return max_counter
+
+
+def assign_booking_ref(booking: Booking, *, engine: Engine | None = None) -> str:
+    """Assign a booking reference that is monotonic against persisted refs.
+
+    The in-memory Booking counter resets on each Railway redeploy, while
+    Postgres keeps old refs. Before confirming a booking, seed the in-memory
+    counter from the DB max so a fresh process does not reuse EW-YYYY-0001 and
+    get ignored as an existing persisted row.
+    """
+    db_engine = _engine_or_configured(engine)
+    if db_engine is None:
+        return booking.assign_ref()
+
+    year = _now().year
+    try:
+        with session_scope(db_engine) as session:
+            refs = session.scalars(
+                select(BookingRow.ref).where(BookingRow.ref.like(f"EW-{year}-%"))
+            ).all()
+            counter_floor = _max_ref_counter(refs, year=year)
+    except Exception:
+        log.exception("assign_booking_ref failed to read DB refs; falling back to process counter")
+        counter_floor = 0
+    return booking.assign_ref(counter_floor=counter_floor)
 
 
 def _vehicle_label(booking: Booking) -> str:

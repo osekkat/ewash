@@ -51,8 +51,10 @@ class Booking:
     when_page: int = 0
     when_dates: list[str] = field(default_factory=list)  # ISO dates currently offered
 
-    def assign_ref(self) -> str:
+    def assign_ref(self, *, counter_floor: int = 0) -> str:
         global _counter
+        if counter_floor > _counter:
+            _counter = counter_floor
         _counter += 1
         year = datetime.now(timezone.utc).year
         self.ref = f"EW-{year}-{_counter:04d}"
