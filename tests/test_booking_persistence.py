@@ -100,6 +100,35 @@ def test_persist_confirmed_booking_reuses_existing_vehicle_for_repeat_customer()
         assert customer.booking_count == 2
 
 
+def test_persist_confirmed_booking_allows_one_customer_to_have_many_cars():
+    engine = make_engine("sqlite+pysqlite:///:memory:")
+    init_db(engine)
+    first = _sample_booking()
+    first.ref = "EW-2026-0201"
+    persist_confirmed_booking(first, engine=engine)
+
+    second = _sample_booking()
+    second.ref = "EW-2026-0202"
+    second.car_model = "Audi Q5"
+    second.color = "Blanc"
+    persist_confirmed_booking(second, engine=engine)
+
+    with session_scope(engine) as session:
+        customer = session.get(Customer, "212665883062")
+        assert customer is not None
+        assert customer.booking_count == 2
+        assert len(customer.vehicles) == 2
+
+        vehicles = session.scalars(select(CustomerVehicle).order_by(CustomerVehicle.id)).all()
+        assert [vehicle.customer_phone for vehicle in vehicles] == ["212665883062", "212665883062"]
+        assert [vehicle.label for vehicle in vehicles] == ["BMW 330i — Noir", "Audi Q5 — Blanc"]
+
+        bookings = session.scalars(select(BookingRow).order_by(BookingRow.ref)).all()
+        assert [booking.customer_vehicle_id for booking in bookings] == [vehicles[0].id, vehicles[1].id]
+        assert bookings[0].customer.phone == "212665883062"
+        assert bookings[1].customer.phone == "212665883062"
+
+
 def test_persist_confirmed_booking_normalizes_vehicle_model_and_color_references():
     engine = make_engine("sqlite+pysqlite:///:memory:")
     init_db(engine)
