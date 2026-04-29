@@ -44,7 +44,7 @@ def test_persist_confirmed_booking_upserts_customer_vehicle_and_status_event():
 
     assert row is not None
     assert row.ref == booking.ref
-    assert row.status == "confirmed"
+    assert row.status == "pending_ewash_confirmation"
 
     with session_scope(engine) as session:
         customer = session.get(Customer, "212665883062")
@@ -80,7 +80,7 @@ def test_persist_confirmed_booking_upserts_customer_vehicle_and_status_event():
         event = session.scalars(select(BookingStatusEventRow)).one()
         assert event.booking_id == saved.id
         assert event.from_status == "awaiting_confirmation"
-        assert event.to_status == "confirmed"
+        assert event.to_status == "pending_ewash_confirmation"
         assert event.actor == "customer"
 
 
@@ -216,7 +216,8 @@ def test_admin_dashboard_summary_counts_db_rows_and_recent_bookings():
     summary = admin_dashboard_summary(engine=engine)
 
     assert summary.total_bookings == 1
-    assert summary.confirmed_bookings == 1
+    assert summary.confirmed_bookings == 0
+    assert summary.pending_ewash_confirmation == 1
     assert summary.customers == 1
     assert summary.pending_reminders == 0
     assert len(summary.recent_bookings) == 1

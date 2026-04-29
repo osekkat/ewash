@@ -68,6 +68,7 @@ class DashboardSummary:
     total_bookings: int = 0
     confirmed_bookings: int = 0
     awaiting_confirmation: int = 0
+    pending_ewash_confirmation: int = 0
     customers: int = 0
     pending_reminders: int = 0
     recent_bookings: tuple[RecentBooking, ...] = ()
@@ -262,7 +263,7 @@ def persist_confirmed_booking(booking: Booking, *, engine: Engine | None = None)
             ref=booking.ref,
             customer_phone=customer.phone,
             customer_vehicle_id=vehicle.id if vehicle else None,
-            status="confirmed",
+            status="pending_ewash_confirmation",
             customer_name=booking.name,
             vehicle_type=booking.vehicle_type,
             car_model=booking.car_model,
@@ -292,7 +293,7 @@ def persist_confirmed_booking(booking: Booking, *, engine: Engine | None = None)
             BookingStatusEventRow(
                 booking_id=row.id,
                 from_status="awaiting_confirmation",
-                to_status="confirmed",
+                to_status="pending_ewash_confirmation",
                 actor="customer",
                 note="Confirmation WhatsApp",
             )
@@ -335,7 +336,7 @@ def _booking_dict_to_admin_item(row: dict) -> AdminBookingListItem:
         customer_phone=str(row.get("phone") or ""),
         vehicle_label=vehicle_label,
         service_label=str(row.get("service_label") or row.get("service") or ""),
-        status="confirmed" if row.get("ref") else "draft",
+        status="pending_ewash_confirmation" if row.get("ref") else "draft",
         date_label=str(row.get("date_label") or ""),
         slot=str(row.get("slot") or ""),
         location_label=location_label,
@@ -459,6 +460,9 @@ def admin_dashboard_summary(*, engine: Engine | None = None, recent_limit: int =
             awaiting = session.scalar(
                 select(func.count()).select_from(BookingRow).where(BookingRow.status == "awaiting_confirmation")
             ) or 0
+            pending_ewash = session.scalar(
+                select(func.count()).select_from(BookingRow).where(BookingRow.status == "pending_ewash_confirmation")
+            ) or 0
             customers = session.scalar(select(func.count()).select_from(Customer)) or 0
             reminders = session.scalar(
                 select(func.count()).select_from(BookingReminderRow).where(BookingReminderRow.status == "pending")
@@ -479,6 +483,7 @@ def admin_dashboard_summary(*, engine: Engine | None = None, recent_limit: int =
                 total_bookings=total,
                 confirmed_bookings=confirmed,
                 awaiting_confirmation=awaiting,
+                pending_ewash_confirmation=pending_ewash,
                 customers=customers,
                 pending_reminders=reminders,
                 recent_bookings=recent,

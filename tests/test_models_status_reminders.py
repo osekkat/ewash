@@ -18,6 +18,7 @@ def test_booking_statuses_cover_full_operational_lifecycle():
     assert BOOKING_STATUSES == (
         "draft",
         "awaiting_confirmation",
+        "pending_ewash_confirmation",
         "confirmed",
         "rescheduled",
         "customer_cancelled",
@@ -47,15 +48,15 @@ def test_transition_booking_status_records_append_only_event():
 
     event = transition_booking_status(
         booking,
-        "confirmed",
+        "pending_ewash_confirmation",
         actor="customer",
         note="Confirmed from WhatsApp recap",
     )
 
-    assert booking.status == "confirmed"
+    assert booking.status == "pending_ewash_confirmation"
     assert isinstance(event, BookingStatusEvent)
     assert event.from_status == "awaiting_confirmation"
-    assert event.to_status == "confirmed"
+    assert event.to_status == "pending_ewash_confirmation"
     assert event.actor == "customer"
     assert event.note == "Confirmed from WhatsApp recap"
     assert booking.status_events == [event]

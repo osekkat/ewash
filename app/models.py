@@ -16,6 +16,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 BOOKING_STATUSES = (
     "draft",
     "awaiting_confirmation",
+    "pending_ewash_confirmation",
     "confirmed",
     "rescheduled",
     "customer_cancelled",
@@ -45,7 +46,8 @@ FINAL_BOOKING_STATUSES = (
 # like completed -> in_progress.
 _ALLOWED_STATUS_TRANSITIONS: dict[str, set[str]] = {
     "draft": {"awaiting_confirmation", "expired", "customer_cancelled", "admin_cancelled"},
-    "awaiting_confirmation": {"confirmed", "expired", "customer_cancelled", "admin_cancelled"},
+    "awaiting_confirmation": {"pending_ewash_confirmation", "expired", "customer_cancelled", "admin_cancelled"},
+    "pending_ewash_confirmation": {"confirmed", "rescheduled", "customer_cancelled", "admin_cancelled", "expired"},
     "confirmed": {
         "rescheduled",
         "customer_cancelled",
