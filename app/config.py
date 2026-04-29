@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     # Server
     port: int = 8000
     log_level: str = "INFO"
+    public_base_url: str = ""
+    railway_service_web_url: str = ""
 
     # v0.3 persistence/admin portal
     database_url: str = ""

@@ -10,6 +10,7 @@ from datetime import date, timedelta
 
 from . import catalog, meta, state
 from .booking import Booking
+from .config import settings
 from .persistence import assign_booking_ref, persist_booking_addon, persist_confirmed_booking
 
 log = logging.getLogger(__name__)
@@ -740,18 +741,25 @@ async def _send_menu(phone: str, greeting: str | None = None) -> None:
 
 
 async def _show_services_info(phone: str) -> None:
-    lines = ["*🧼 Nos services Ewash* _(tarifs A/B/C en DH)_:\n"]
-    for _id, name, desc, prices in catalog.SERVICES_CAR:
-        price_str = f"{prices['A']}/{prices['B']}/{prices['C']} DH"
-        lines.append(f"• *{name}* — {price_str}\n  _{desc}_")
-    lines.append("")
-    lines.append("*🏍️ Moto* :")
-    for _id, name, desc, price in catalog.SERVICES_MOTO:
-        lines.append(f"• *{name}* — {price} DH  _{desc}_")
-    lines.append("")
-    lines.append("*Catégories de véhicule* :")
-    lines.append("A = Citadine · B = Berline/SUV moyen · C = Grande berline/SUV")
-    await meta.send_text(phone, "\n".join(lines))
+    await meta.send_image_link(
+        phone,
+        _public_asset_url("/static/tarifs-lavage.jpg"),
+        caption="🧼 Tarifs Ewash — lavage auto",
+    )
+    await meta.send_image_link(
+        phone,
+        _public_asset_url("/static/tarifs-esthetique.jpg"),
+        caption="✨ Tarifs Ewash — esthétique & protections",
+    )
+
+
+def _public_asset_url(path: str) -> str:
+    base = settings.public_base_url or settings.railway_service_web_url
+    if not base:
+        raise RuntimeError("Set PUBLIC_BASE_URL or RAILWAY_SERVICE_WEB_URL to send media links")
+    if not base.startswith(("http://", "https://")):
+        base = f"https://{base}"
+    return f"{base.rstrip('/')}/{path.lstrip('/')}"
 
 
 # ── Dispatch table ─────────────────────────────────────────────────────────

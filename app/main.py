@@ -7,14 +7,17 @@ Endpoints:
   POST /webhook   → Inbound customer messages (signature-verified)
 """
 import logging
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import PlainTextResponse
+from fastapi.staticfiles import StaticFiles
 
 from . import admin, booking, handlers, meta
 from .config import settings
 
-APP_VERSION = "v0.3.0-alpha13"
+APP_VERSION = "v0.3.0-alpha14"
+STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 logging.basicConfig(
     level=settings.log_level,
@@ -23,6 +26,7 @@ logging.basicConfig(
 log = logging.getLogger("ewash")
 
 app = FastAPI(title="Ewash WhatsApp Agent", version=APP_VERSION.removeprefix("v"))
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.include_router(admin.router)
 
 

@@ -1,9 +1,10 @@
 """Meta Cloud API client — signature verification + outbound send.
 
 Supports:
-- send_text:      plain free-form message
-- send_buttons:   up to 3 reply buttons
-- send_list:      up to 10 options in a dropdown (grouped in sections)
+- send_text:       plain free-form message
+- send_image_link: image message by public HTTPS URL
+- send_buttons:    up to 3 reply buttons
+- send_list:       up to 10 options in a dropdown (grouped in sections)
 - Inbound parsers for button_reply, list_reply, location pins
 """
 import hashlib
@@ -55,6 +56,20 @@ async def send_text(to: str, body: str) -> dict:
         "to": to,
         "type": "text",
         "text": {"body": body},
+    })
+
+
+async def send_image_link(to: str, image_url: str, caption: str | None = None) -> dict:
+    """Send an image message using a public HTTPS URL."""
+    image: dict[str, str] = {"link": image_url}
+    if caption:
+        image["caption"] = caption[:1024]
+    return await _post({
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": to,
+        "type": "image",
+        "image": image,
     })
 
 
