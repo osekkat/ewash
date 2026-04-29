@@ -535,8 +535,12 @@ async def _handle_book_note_text(phone, sess, text=None, **kw):
     await _send_recap(phone, sess)
 
 
-async def _send_recap(phone, sess):
-    b = sess.booking
+def _booking_recap_text(
+    b: Booking,
+    *,
+    title: str = "📋 *Récapitulatif*",
+    closing: str | None = "Tout est correct ?",
+) -> str:
     if b.location_mode == "center":
         where_block = f"📍 *Lieu* : 🏢 {b.center}\n"
     else:
@@ -559,11 +563,20 @@ async def _send_recap(phone, sess):
             )
         else:
             promo_line = f"🎁 *Promo* : {b.promo_label}\n"
+    addon_line = ""
+    total_line = ""
+    if b.addon_service_label:
+        addon_line = f"✨ *Esthétique (-10%)* : {b.addon_service_label}\n"
+        total = (b.price_dh or 0) + (b.addon_price_dh or 0)
+        if total:
+            total_line = f"💰 *Total indicatif* : {total} DH\n"
     recap = (
-        "📋 *Récapitulatif*\n\n"
+        f"{title}\n\n"
         f"👤 *Nom* : {b.name}\n"
         + vehicle_line +
         f"🧼 *Service* : {b.service_label or b.service}\n"
+        + addon_line
+        + total_line
         + promo_line
         + where_block +
         f"🗓️ *Date* : {b.date_label}\n"
@@ -572,7 +585,13 @@ async def _send_recap(phone, sess):
     )
     if b.note:
         recap += f"📝 *Note* : {b.note}\n"
-    recap += "\nTout est correct ?"
+    if closing:
+        recap += f"\n{closing}"
+    return recap
+
+
+async def _send_recap(phone, sess):
+    recap = _booking_recap_text(sess.booking)
     sess.state = "BOOK_CONFIRM"
     await meta.send_buttons(
         phone, recap,
@@ -709,15 +728,16 @@ async def _handle_upsell_detailing_pick(phone, sess, payload_id=None, **kw):
         addon_service_label=label,
         addon_price_dh=disc,
     )
-    main = sess.booking.service_label or sess.booking.service or "—"
-    total = (sess.booking.price_dh or 0) + disc
+    updated_recap = _booking_recap_text(
+        sess.booking,
+        title="📋 *Récapitulatif mis à jour*",
+        closing=None,
+    )
     await meta.send_text(
         phone,
         f"✅ *Add-on enregistré !*\n\n"
         f"Votre réservation *{sess.booking.ref}* a bien été mise à jour :\n\n"
-        f"🧼 *Lavage* : {main}\n"
-        f"✨ *Esthétique (-10%)* : {label}\n"
-        f"💰 *Total indicatif* : {total} DH\n\n"
+        f"{updated_recap}\n\n"
         f"_Le tarif reste indicatif — l'équipe confirme selon l'état du véhicule._\n\n"
         f"L'équipe Ewash confirmera lors de l'intervention. À très vite ! 🙏",
     )

@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from . import admin, booking, handlers, meta
 from .config import settings
 
-APP_VERSION = "v0.3.0-alpha14"
+APP_VERSION = "v0.3.0-alpha15"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 logging.basicConfig(
