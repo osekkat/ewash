@@ -19,6 +19,7 @@ from . import catalog
 from .admin_i18n import SUPPORTED_LOCALES, normalize_locale, t
 from .catalog import SERVICES_DETAILING, SERVICES_MOTO, SERVICES_WASH
 from .config import settings
+from .notifications import get_booking_notification_settings, upsert_booking_notification_settings
 from .persistence import admin_booking_list, admin_customer_list, admin_dashboard_summary
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -31,6 +32,7 @@ _NAV_ITEMS = (
     ("prices", "nav.prices", "/admin/prices"),
     ("promos", "nav.promos", "/admin/promos"),
     ("reminders", "nav.reminders", "/admin/reminders"),
+    ("notifications", "nav.notifications", "/admin/notifications"),
     ("closed_dates", "nav.closed_dates", "/admin/closed-dates"),
     ("time_slots", "nav.time_slots", "/admin/time-slots"),
     ("centers", "nav.centers", "/admin/centers"),
@@ -526,6 +528,27 @@ def _reminders_page(*, locale: str, message: str = "", error: str = "") -> HTMLR
     return HTMLResponse(content=_layout(locale=locale, title=title, body=body, active_path="/admin/reminders"), status_code=200)
 
 
+def _notifications_page(*, locale: str, message: str = "", error: str = "") -> HTMLResponse:
+    title = t("nav.notifications", locale)
+    config = get_booking_notification_settings()
+    checked = " checked" if config.enabled else ""
+    status_label = _simple_status(config.enabled, locale)
+    phone_value = escape(config.phone_number)
+    template_value = escape(config.template_name)
+    language_value = escape(config.template_language or "fr")
+    body = f"""
+<section class="hero"><div><div class="eyebrow">Ewash Ops</div><h1>{escape(title)}</h1><p>{escape(t('admin.notifications.intro', locale))}</p></div><div class="version-pill"><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> {_ADMIN_VERSION}</div></section>
+
+<section class="dashboard-grid">
+  <article class="empty-panel"><h2>{escape(t('admin.notifications.current', locale))}</h2>{_notice_html(message=message, error=error)}<div class="table-shell"><div class="table-row table-head"><span>{escape(t('admin.notifications.enabled', locale))}</span><span>{escape(t('admin.notifications.phone', locale))}</span><span>{escape(t('admin.notifications.template', locale))}</span></div><div class="table-row"><span>{escape(status_label)}</span><span>{phone_value or '—'}</span><span>{template_value or '—'}<br><small>{language_value}</small></span></div></div><h2 style="margin-top:18px">{escape(t('admin.notifications.template_contract', locale))}</h2><p>{escape(t('admin.notifications.template_contract_body', locale))}</p></article>
+  <aside class="empty-panel"><h2>{escape(t('admin.notifications.form_title', locale))}</h2><form class="admin-form" method="post" action="/admin/notifications?lang={escape(locale)}"><label><input type="checkbox" name="enabled"{checked}>{escape(t('admin.notifications.enabled', locale))}</label><label>{escape(t('admin.notifications.phone', locale))}<input name="phone_number" inputmode="tel" placeholder="+212665883062" value="{phone_value}"></label><label>{escape(t('admin.notifications.template', locale))}<input name="template_name" placeholder="new_booking_alert" value="{template_value}"></label><label>{escape(t('admin.notifications.language', locale))}<input name="template_language" placeholder="fr" value="{language_value}"></label><p><button type="submit">{escape(t('action.save', locale))}</button></p></form></aside>
+</section>"""
+    return HTMLResponse(
+        content=_layout(locale=locale, title=title, body=body, active_path="/admin/notifications"),
+        status_code=200,
+    )
+
+
 def _closed_dates_page(*, locale: str, message: str = "", error: str = "") -> HTMLResponse:
     title = t("nav.closed_dates", locale)
     rows = "".join(
@@ -880,6 +903,24 @@ async def admin_reminders_submit(request: Request, lang: str | None = Query(defa
     return RedirectResponse(url=f"/admin/reminders?lang={locale}&saved=1", status_code=status.HTTP_303_SEE_OTHER)
 
 
+@router.post("/notifications", response_class=HTMLResponse)
+async def admin_notifications_submit(request: Request, lang: str | None = Query(default=None)):
+    locale = normalize_locale(lang or settings.admin_default_locale)
+    if response := _auth_or_none(request, locale):
+        return response
+    form = await _admin_form(request)
+    try:
+        upsert_booking_notification_settings(
+            enabled="enabled" in form,
+            phone_number=form.get("phone_number", [""])[0],
+            template_name=form.get("template_name", [""])[0],
+            template_language=form.get("template_language", ["fr"])[0] or "fr",
+        )
+    except Exception as exc:
+        return _notifications_page(locale=locale, error=str(exc))
+    return RedirectResponse(url=f"/admin/notifications?lang={locale}&saved=1", status_code=status.HTTP_303_SEE_OTHER)
+
+
 @router.post("/closed-dates", response_class=HTMLResponse)
 async def admin_closed_dates_submit(request: Request, lang: str | None = Query(default=None)):
     locale = normalize_locale(lang or settings.admin_default_locale)
@@ -983,6 +1024,9 @@ async def admin_section(request: Request, page_slug: str, lang: str | None = Que
     if page_id == "reminders":
         message = t("admin.reminders.saved", locale) if request.query_params.get("saved") == "1" else ""
         return _reminders_page(locale=locale, message=message)
+    if page_id == "notifications":
+        message = t("admin.notifications.saved", locale) if request.query_params.get("saved") == "1" else ""
+        return _notifications_page(locale=locale, message=message)
     if page_id == "closed_dates":
         message = t("admin.closed_dates.saved", locale) if request.query_params.get("saved") == "1" else ""
         return _closed_dates_page(locale=locale, message=message)

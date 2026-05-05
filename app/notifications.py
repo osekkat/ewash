@@ -1,0 +1,197 @@
+"""Internal WhatsApp notifications for operational staff."""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from functools import lru_cache
+import logging
+import re
+
+from sqlalchemy import Engine
+
+from . import meta
+from .booking import Booking
+from .config import settings
+from .db import init_db, make_engine, session_scope
+from .models import BookingNotificationSettingRow
+
+log = logging.getLogger(__name__)
+
+BOOKING_CONFIRMATION_SETTINGS_KEY = "booking_confirmation"
+
+
+@dataclass(frozen=True)
+class BookingNotificationSettings:
+    enabled: bool = False
+    phone_number: str = ""
+    template_name: str = ""
+    template_language: str = "fr"
+
+
+@lru_cache(maxsize=1)
+def _notification_engine() -> Engine | None:
+    if not settings.database_url:
+        return None
+    engine = make_engine(settings.database_url)
+    init_db(engine)
+    return engine
+
+
+def notification_cache_clear() -> None:
+    _notification_engine.cache_clear()
+
+
+def _engine_or_configured(engine: Engine | None = None) -> Engine | None:
+    return engine if engine is not None else _notification_engine()
+
+
+def _normalize_phone_number(phone_number: str) -> str:
+    digits = re.sub(r"\D+", "", phone_number or "")
+    if not digits:
+        return ""
+    if len(digits) < 8 or len(digits) > 20:
+        raise ValueError("WhatsApp phone number must contain 8-20 digits")
+    return digits
+
+
+def _normalize_template_name(template_name: str) -> str:
+    cleaned = (template_name or "").strip()
+    if not cleaned:
+        return ""
+    if not re.fullmatch(r"[A-Za-z0-9_]{2,160}", cleaned):
+        raise ValueError("Template name must be 2-160 letters, numbers, or underscores")
+    return cleaned
+
+
+def _normalize_template_language(template_language: str) -> str:
+    cleaned = (template_language or "fr").strip() or "fr"
+    if not re.fullmatch(r"[a-z]{2,3}(?:_[A-Z]{2})?", cleaned):
+        raise ValueError("Template language must look like fr, en, or fr_FR")
+    return cleaned
+
+
+def get_booking_notification_settings(*, engine: Engine | None = None) -> BookingNotificationSettings:
+    db_engine = _engine_or_configured(engine)
+    if db_engine is None:
+        return BookingNotificationSettings()
+    try:
+        with session_scope(db_engine) as session:
+            row = session.get(BookingNotificationSettingRow, BOOKING_CONFIRMATION_SETTINGS_KEY)
+            if row is None:
+                return BookingNotificationSettings()
+            return BookingNotificationSettings(
+                enabled=row.enabled,
+                phone_number=row.phone_number,
+                template_name=row.template_name,
+                template_language=row.template_language or "fr",
+            )
+    except Exception:
+        log.exception("get_booking_notification_settings failed")
+        return BookingNotificationSettings()
+
+
+def upsert_booking_notification_settings(
+    *,
+    enabled: bool,
+    phone_number: str,
+    template_name: str,
+    template_language: str = "fr",
+    engine: Engine | None = None,
+) -> BookingNotificationSettings:
+    normalized_phone = _normalize_phone_number(phone_number)
+    normalized_template = _normalize_template_name(template_name)
+    normalized_language = _normalize_template_language(template_language)
+    if enabled and (not normalized_phone or not normalized_template):
+        raise ValueError("Phone number and template are required when notifications are enabled")
+
+    db_engine = _engine_or_configured(engine)
+    if db_engine is None:
+        raise RuntimeError("DATABASE_URL is not configured")
+    with session_scope(db_engine) as session:
+        row = session.get(BookingNotificationSettingRow, BOOKING_CONFIRMATION_SETTINGS_KEY)
+        if row is None:
+            row = BookingNotificationSettingRow(settings_key=BOOKING_CONFIRMATION_SETTINGS_KEY)
+            session.add(row)
+        row.enabled = enabled
+        row.phone_number = normalized_phone
+        row.template_name = normalized_template
+        row.template_language = normalized_language
+    notification_cache_clear()
+    return BookingNotificationSettings(
+        enabled=enabled,
+        phone_number=normalized_phone,
+        template_name=normalized_template,
+        template_language=normalized_language,
+    )
+
+
+def _clean(value: str) -> str:
+    return re.sub(r"\s+", " ", (value or "").strip()) or "-"
+
+
+def _vehicle_label(booking: Booking) -> str:
+    vehicle = _clean(booking.vehicle_type)
+    details = " ".join(part for part in (booking.car_model, booking.color) if part)
+    if details:
+        return _clean(f"{vehicle} - {details}")
+    return vehicle
+
+
+def _service_label(booking: Booking) -> str:
+    parts = [_clean(booking.service_label or booking.service)]
+    if booking.addon_service_label:
+        parts.append(f"Esthetique: {_clean(booking.addon_service_label)}")
+    return " + ".join(parts)
+
+
+def _location_label(booking: Booking) -> str:
+    if booking.location_mode == "center":
+        return _clean(booking.center or booking.location_name or "Stand Ewash")
+    if booking.address:
+        return _clean(booking.address)
+    if booking.location_address:
+        return _clean(booking.location_address)
+    if booking.geo:
+        return _clean(booking.geo)
+    return "-"
+
+
+def booking_notification_parameters(
+    booking: Booking,
+    *,
+    event_label: str = "Nouvelle reservation",
+) -> list[str]:
+    total = (booking.price_dh or 0) + (booking.addon_price_dh or 0)
+    date_slot = " - ".join(part for part in (booking.date_label, booking.slot) if part)
+    return [
+        _clean(event_label),
+        _clean(booking.ref),
+        _clean(booking.name),
+        _clean(f"+{booking.phone}" if booking.phone else ""),
+        _vehicle_label(booking),
+        _service_label(booking),
+        _clean(date_slot),
+        _location_label(booking),
+        f"{total} DH" if total else "-",
+        _clean(booking.note),
+    ]
+
+
+async def notify_booking_confirmation(
+    booking: Booking,
+    *,
+    event_label: str = "Nouvelle reservation",
+) -> bool:
+    config = get_booking_notification_settings()
+    if not config.enabled or not config.phone_number or not config.template_name:
+        return False
+    try:
+        await meta.send_template(
+            config.phone_number,
+            config.template_name,
+            language_code=config.template_language,
+            body_parameters=booking_notification_parameters(booking, event_label=event_label),
+        )
+    except Exception:
+        log.exception("booking notification failed ref=%s to=%s", booking.ref, config.phone_number)
+        return False
+    return True

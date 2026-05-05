@@ -18,6 +18,7 @@ from .persistence import (
     persist_customer_bot_stage,
     persist_whatsapp_inbound_message,
 )
+from .notifications import notify_booking_confirmation
 
 log = logging.getLogger(__name__)
 
@@ -644,6 +645,7 @@ async def _handle_book_confirm(phone, sess, payload_id=None, **kw):
             f"L'équipe Ewash vous contactera très prochainement pour confirmer "
             f"le créneau et le tarif. Merci de votre confiance ! 🙏",
         )
+        await notify_booking_confirmation(sess.booking, event_label="Nouvelle reservation")
         # Moto customers have no Esthétique catalog — skip the upsell and end here.
         if sess.booking.category == "MOTO":
             state.reset(phone)
@@ -771,6 +773,7 @@ async def _handle_upsell_detailing_pick(phone, sess, payload_id=None, **kw):
         f"{updated_recap}\n\n"
         f"L'équipe Ewash confirmera lors de l'intervention. À très vite ! 🙏",
     )
+    await notify_booking_confirmation(sess.booking, event_label="Reservation mise a jour")
     state.reset(phone)
 
 

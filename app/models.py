@@ -252,6 +252,18 @@ class AdminTextRow(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
+class BookingNotificationSettingRow(Base):
+    __tablename__ = "booking_notification_settings"
+
+    settings_key: Mapped[str] = mapped_column(String(40), primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    phone_number: Mapped[str] = mapped_column(String(32), default="")
+    template_name: Mapped[str] = mapped_column(String(160), default="")
+    template_language: Mapped[str] = mapped_column(String(16), default="fr")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 class BookingRow(Base):
     __tablename__ = "bookings"
     __table_args__ = (

@@ -64,3 +64,44 @@ async def test_send_image_link_posts_whatsapp_image_payload(monkeypatch):
             },
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_send_template_posts_whatsapp_template_payload(monkeypatch):
+    payloads = []
+
+    async def fake_post(payload):
+        payloads.append(payload)
+        return {"messages": [{"id": "wamid.template"}]}
+
+    monkeypatch.setattr(meta, "_post", fake_post)
+
+    result = await meta.send_template(
+        "212665883062",
+        "new_booking_alert",
+        language_code="fr",
+        body_parameters=["Nouvelle reservation", "EW-2026-0001"],
+    )
+
+    assert result == {"messages": [{"id": "wamid.template"}]}
+    assert payloads == [
+        {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": "212665883062",
+            "type": "template",
+            "template": {
+                "name": "new_booking_alert",
+                "language": {"code": "fr"},
+                "components": [
+                    {
+                        "type": "body",
+                        "parameters": [
+                            {"type": "text", "text": "Nouvelle reservation"},
+                            {"type": "text", "text": "EW-2026-0001"},
+                        ],
+                    }
+                ],
+            },
+        }
+    ]

@@ -33,6 +33,7 @@ def test_admin_navigation_is_localized():
         "Prix",
         "Promos",
         "Rappels",
+        "Notifications",
         "Fermetures",
         "Créneaux",
         "Centres",

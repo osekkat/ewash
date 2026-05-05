@@ -72,6 +72,20 @@ Once the echo works, create a long-lived System User token:
 - `invalid signature, rejecting` — `META_APP_SECRET` wrong or webhook hit
   from something other than Meta
 
+## Staff booking alerts
+
+The admin portal exposes `/admin/notifications` for the internal WhatsApp alert
+sent when a customer confirms a booking. Configure:
+
+- the staff WhatsApp phone number, stored as digits only, e.g. `212665883062`
+- the approved template name, e.g. `new_booking_alert`
+- the template language, e.g. `fr`
+
+The template body must accept these parameters in order:
+`{{1}}` type, `{{2}}` reference, `{{3}}` customer, `{{4}}` phone,
+`{{5}}` vehicle, `{{6}}` service, `{{7}}` date/slot, `{{8}}` location,
+`{{9}}` price, `{{10}}` note.
+
 ## What's next (roadmap)
 
 - [x] **v0.1** Echo bot ← we are here

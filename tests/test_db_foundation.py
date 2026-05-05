@@ -69,6 +69,7 @@ def test_init_db_creates_v03_core_tables():
         "time_slots",
         "centers",
         "admin_texts",
+        "booking_notification_settings",
     }.issubset(tables)
     booking_uniques = {tuple(item["column_names"]) for item in inspect(engine).get_unique_constraints("bookings")}
     assert ("ref",) in booking_uniques
@@ -108,6 +109,10 @@ def test_init_db_creates_v03_core_tables():
     assert {"center_id", "name", "details", "active"}.issubset(center_columns)
     admin_text_columns = {column["name"] for column in inspect(engine).get_columns("admin_texts")}
     assert {"text_key", "title", "body"}.issubset(admin_text_columns)
+    notification_columns = {column["name"] for column in inspect(engine).get_columns("booking_notification_settings")}
+    assert {"settings_key", "enabled", "phone_number", "template_name", "template_language"}.issubset(
+        notification_columns
+    )
 
     with session_scope(engine) as session:
         service_ids = {row.service_id for row in session.scalars(select(ServiceRow)).all()}

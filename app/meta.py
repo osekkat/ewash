@@ -59,6 +59,37 @@ async def send_text(to: str, body: str) -> dict:
     })
 
 
+async def send_template(
+    to: str,
+    template_name: str,
+    *,
+    language_code: str = "fr",
+    body_parameters: list[str] | None = None,
+) -> dict:
+    """Send an approved WhatsApp template to an individual recipient."""
+    template: dict = {
+        "name": template_name,
+        "language": {"code": language_code or "fr"},
+    }
+    if body_parameters:
+        template["components"] = [
+            {
+                "type": "body",
+                "parameters": [
+                    {"type": "text", "text": str(parameter)[:1024]}
+                    for parameter in body_parameters
+                ],
+            }
+        ]
+    return await _post({
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": to,
+        "type": "template",
+        "template": template,
+    })
+
+
 async def send_image_link(to: str, image_url: str, caption: str | None = None) -> dict:
     """Send an image message using a public HTTPS URL."""
     image: dict[str, str] = {"link": image_url}

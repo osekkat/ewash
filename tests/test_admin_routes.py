@@ -5,6 +5,7 @@ import app.booking as booking_store
 from app.config import settings
 from app.db import init_db, make_engine
 from app.main import app
+from app.notifications import get_booking_notification_settings, notification_cache_clear
 from app.persistence import _configured_engine, persist_confirmed_booking, persist_customer_bot_stage
 
 
@@ -88,7 +89,7 @@ def test_admin_entrypoint_accepts_configured_password_without_username(monkeypat
     assert "Réservations aujourd" in dashboard.text
     assert "Rappels en attente" in dashboard.text
     assert "Aucune réservation persistée pour le moment" in dashboard.text
-    assert "Réservations, clients, prix et promos sont disponibles" in dashboard.text
+    assert "Réservations, clients, prix, promos et notifications" in dashboard.text
     assert "Pages réservations / clients / prix / promos" in dashboard.text
     assert "<span>OK</span>" in dashboard.text
     assert "class=\"metric-grid\"" in dashboard.text
@@ -317,6 +318,7 @@ def test_admin_prices_page_allows_updating_public_tariff(monkeypatch, tmp_path):
     _configured_engine.cache_clear()
     import app.catalog as catalog
     catalog.catalog_cache_clear()
+    notification_cache_clear()
     monkeypatch.setattr(settings, "admin_password", "secret-pass")
     client = TestClient(app)
     client.post(
@@ -349,6 +351,7 @@ def test_admin_promos_page_allows_adding_promo_codes(monkeypatch, tmp_path):
     _configured_engine.cache_clear()
     import app.catalog as catalog
     catalog.catalog_cache_clear()
+    notification_cache_clear()
     monkeypatch.setattr(settings, "admin_password", "secret-pass")
     client = TestClient(app)
     client.post(
@@ -387,6 +390,7 @@ def test_admin_promos_page_prefills_public_prices_for_number_steppers(monkeypatc
     _configured_engine.cache_clear()
     import app.catalog as catalog
     catalog.catalog_cache_clear()
+    notification_cache_clear()
     monkeypatch.setattr(settings, "admin_password", "secret-pass")
     client = TestClient(app)
     client.post(
@@ -413,6 +417,7 @@ def test_admin_promos_submit_ignores_unchanged_public_price_prefills(monkeypatch
     _configured_engine.cache_clear()
     import app.catalog as catalog
     catalog.catalog_cache_clear()
+    notification_cache_clear()
     monkeypatch.setattr(settings, "admin_password", "secret-pass")
     client = TestClient(app)
     client.post(
@@ -448,6 +453,7 @@ def test_admin_remaining_tabs_are_real_operational_pages(monkeypatch, tmp_path):
     _configured_engine.cache_clear()
     import app.catalog as catalog
     catalog.catalog_cache_clear()
+    notification_cache_clear()
     monkeypatch.setattr(settings, "admin_password", "secret-pass")
     client = TestClient(app)
     client.post(
@@ -458,6 +464,7 @@ def test_admin_remaining_tabs_are_real_operational_pages(monkeypatch, tmp_path):
 
     expected_pages = {
         "/admin/reminders": ("Rappels", "reminder_name"),
+        "/admin/notifications": ("Notifications", "phone_number"),
         "/admin/closed-dates": ("Fermetures", "closed_date"),
         "/admin/time-slots": ("Créneaux", "slot_id"),
         "/admin/centers": ("Centres", "center_id"),
@@ -482,6 +489,7 @@ def test_admin_ops_pages_allow_updating_remaining_tabs(monkeypatch, tmp_path):
     _configured_engine.cache_clear()
     import app.catalog as catalog
     catalog.catalog_cache_clear()
+    notification_cache_clear()
     monkeypatch.setattr(settings, "admin_password", "secret-pass")
     client = TestClient(app)
     client.post(
@@ -500,6 +508,27 @@ def test_admin_ops_pages_allow_updating_remaining_tabs(monkeypatch, tmp_path):
     assert "H-2" in reminders_page.text
     assert "booking_reminder_h2" in reminders_page.text
     assert "Reminders saved" in reminders_page.text
+
+    notifications = client.post(
+        "/admin/notifications?lang=en",
+        data={
+            "enabled": "on",
+            "phone_number": "+212 665 883 062",
+            "template_name": "new_booking_alert",
+            "template_language": "fr",
+        },
+        follow_redirects=False,
+    )
+    assert notifications.status_code == 303
+    notification_config = get_booking_notification_settings()
+    assert notification_config.enabled is True
+    assert notification_config.phone_number == "212665883062"
+    assert notification_config.template_name == "new_booking_alert"
+    notifications_page = client.get(notifications.headers["location"])
+    assert "212665883062" in notifications_page.text
+    assert "new_booking_alert" in notifications_page.text
+    assert "Notifications saved" in notifications_page.text
+    assert "{{1}} type" in notifications_page.text
 
     closed = client.post(
         "/admin/closed-dates?lang=en",
@@ -539,6 +568,7 @@ def test_admin_ops_pages_allow_updating_remaining_tabs(monkeypatch, tmp_path):
     assert "Bonjour from admin" in client.get(copy.headers["location"]).text
 
     catalog.catalog_cache_clear()
+    notification_cache_clear()
     _configured_engine.cache_clear()
 
 
