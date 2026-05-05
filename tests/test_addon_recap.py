@@ -46,10 +46,12 @@ async def test_addon_saved_message_includes_full_updated_recap(monkeypatch):
     assert "🚗 *Véhicule* : B — Berline / SUV — Toyota RAV4 (Noir)" in body
     assert "🧼 *Service* : Le Complet — 125 DH" in body
     assert "✨ *Esthétique (-10%)* : Le Polissage — 963 DH (-10%)" in body
-    assert "💰 *Total indicatif* : 1088 DH" in body
+    assert "💰 *Total* : 1088 DH" in body
     assert "📍 *Lieu* : 🏠 49 rue Jean Jaurès, Casablanca" in body
     assert "🗺️ *Géoloc.* : Gauthier | 49 rue Jean Jaurès | 📍 33.59, -7.62" in body
     assert "🗓️ *Date* : Demain 30/04/2026" in body
     assert "⏰ *Créneau* : 09h – 11h" in body
     assert "📞 *Téléphone* : +212665883062" in body
     assert "📝 *Note* : Portail bleu" in body
+    assert "tarif reste indicatif" not in body
+    assert "Total indicatif" not in body

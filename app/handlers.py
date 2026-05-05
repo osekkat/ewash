@@ -581,7 +581,7 @@ def _booking_recap_text(
         addon_line = f"✨ *Esthétique (-10%)* : {b.addon_service_label}\n"
         total = (b.price_dh or 0) + (b.addon_price_dh or 0)
         if total:
-            total_line = f"💰 *Total indicatif* : {total} DH\n"
+            total_line = f"💰 *Total* : {total} DH\n"
     recap = (
         f"{title}\n\n"
         f"👤 *Nom* : {b.name}\n"
@@ -750,7 +750,6 @@ async def _handle_upsell_detailing_pick(phone, sess, payload_id=None, **kw):
         f"✅ *Add-on enregistré !*\n\n"
         f"Votre réservation *{sess.booking.ref}* a bien été mise à jour :\n\n"
         f"{updated_recap}\n\n"
-        f"_Le tarif reste indicatif — l'équipe confirme selon l'état du véhicule._\n\n"
         f"L'équipe Ewash confirmera lors de l'intervention. À très vite ! 🙏",
     )
     state.reset(phone)

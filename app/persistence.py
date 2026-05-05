@@ -396,6 +396,7 @@ def _booking_dict_to_admin_item(row: dict) -> AdminBookingListItem:
         vehicle_label = str(row.get("vehicle_type") or "")
     location_mode = str(row.get("location_mode") or "")
     location_label = str(row.get("center") or "") if location_mode == "center" else str(row.get("address") or row.get("geo") or location_mode)
+    total_price_dh = int(row.get("price_dh") or 0) + int(row.get("addon_price_dh") or 0)
     return AdminBookingListItem(
         ref=str(row.get("ref") or ""),
         customer_name=str(row.get("name") or row.get("phone") or ""),
@@ -407,7 +408,7 @@ def _booking_dict_to_admin_item(row: dict) -> AdminBookingListItem:
         date_label=str(row.get("date_label") or ""),
         slot=str(row.get("slot") or ""),
         location_label=location_label,
-        price_dh=int(row.get("price_dh") or 0),
+        price_dh=total_price_dh,
     )
 
 
@@ -456,6 +457,7 @@ def admin_booking_list(*, engine: Engine | None = None, limit: int = 100) -> tup
             for row in rows:
                 vehicle_label = " — ".join(part for part in (row.car_model, row.color) if part) or row.vehicle_type
                 location_label = row.center if row.location_mode == "center" else (row.address or row.geo or row.location_mode)
+                total_price_dh = (row.price_dh or 0) + (row.addon_price_dh or 0)
                 items.append(
                     AdminBookingListItem(
                         ref=row.ref,
@@ -468,7 +470,7 @@ def admin_booking_list(*, engine: Engine | None = None, limit: int = 100) -> tup
                         date_label=row.date_label,
                         slot=row.slot,
                         location_label=location_label,
-                        price_dh=row.price_dh,
+                        price_dh=total_price_dh,
                     )
                 )
             db_refs = {item.ref for item in items if item.ref}

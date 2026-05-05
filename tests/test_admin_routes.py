@@ -172,6 +172,7 @@ def test_admin_bookings_page_includes_esthetique_addons_in_service_column(monkey
     assert response.status_code == 200
     assert "Le Complet — 125 DH" in response.text
     assert "Esthétique : Le Polissage — 963 DH (-10%)" in response.text
+    assert "1088 DH" in response.text
     _configured_engine.cache_clear()
 
 
