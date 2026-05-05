@@ -69,12 +69,33 @@ def _seed_services() -> None:
         ("svc_moto", "Moto", "Lavage complet moto", "wash", "moto", 11),
     ]
     for service_id, name, description, bucket, vehicle_lane, sort_order in rows:
+        existing = bind.execute(
+            sa.text("SELECT 1 FROM services WHERE service_id = :service_id"),
+            {"service_id": service_id},
+        ).first()
+        if existing is not None:
+            continue
         bind.execute(
             sa.text(
                 """
-                INSERT INTO services (service_id, name, description, bucket, vehicle_lane, active, sort_order)
-                SELECT :service_id, :name, :description, :bucket, :vehicle_lane, :active, :sort_order
-                WHERE NOT EXISTS (SELECT 1 FROM services WHERE service_id = :service_id)
+                INSERT INTO services (
+                    service_id,
+                    name,
+                    description,
+                    bucket,
+                    vehicle_lane,
+                    active,
+                    sort_order
+                )
+                VALUES (
+                    :service_id,
+                    :name,
+                    :description,
+                    :bucket,
+                    :vehicle_lane,
+                    :active,
+                    :sort_order
+                )
                 """
             ),
             {
