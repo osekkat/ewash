@@ -61,6 +61,8 @@ class AdminCustomerListItem:
     display_name: str
     booking_count: int
     vehicle_labels: tuple[str, ...]
+    last_bot_stage: str = ""
+    last_bot_stage_label: str = ""
 
 
 @dataclass(frozen=True)
@@ -92,6 +94,35 @@ def _engine_or_configured(engine: Engine | None = None) -> Engine | None:
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+_BOT_STAGE_LABELS = {
+    "IDLE": "Hors parcours",
+    "MENU": "Menu principal affiché",
+    "HANDOFF": "Message à l'équipe",
+    "BOOK_NAME": "Saisie du nom",
+    "BOOK_VEHICLE": "Choix du véhicule",
+    "BOOK_MODEL": "Saisie du modèle",
+    "BOOK_COLOR": "Saisie de la couleur",
+    "BOOK_WHERE": "Choix du lieu",
+    "BOOK_CENTER": "Choix du stand Ewash",
+    "BOOK_GEO": "Partage de localisation",
+    "BOOK_ADDRESS": "Saisie de l'adresse",
+    "BOOK_PROMO_ASK": "Question code promo",
+    "BOOK_PROMO_CODE": "Saisie code promo",
+    "BOOK_SERVICE": "Liste des prix affichée",
+    "BOOK_WHEN": "Choix de la date",
+    "BOOK_SLOT": "Choix du créneau",
+    "BOOK_NOTE": "Question note client",
+    "BOOK_NOTE_TEXT": "Saisie note client",
+    "BOOK_CONFIRM": "Récap envoyé — attente client",
+    "UPSELL_DETAILING": "Offre esthétique affichée",
+    "UPSELL_DETAILING_PICK": "Liste upsell affichée",
+}
+
+
+def bot_stage_label(stage: str) -> str:
+    return _BOT_STAGE_LABELS.get(stage or "", stage or "—")
 
 
 _REF_RE = re.compile(r"^EW-(\d{4})-(\d+)$")
@@ -190,6 +221,40 @@ def _find_or_create_customer(session, booking: Booking) -> Customer:
     customer.last_seen_at = _now()
     customer.booking_count = (customer.booking_count or 0) + 1
     return customer
+
+
+def persist_customer_bot_stage(
+    phone: str,
+    stage: str,
+    *,
+    display_name: str = "",
+    engine: Engine | None = None,
+) -> Customer | None:
+    """Persist the latest WhatsApp funnel stage for a phone number.
+
+    This intentionally creates a customer row before confirmation so abandoned
+    leads still show where they dropped in the admin portal.
+    """
+    db_engine = _engine_or_configured(engine)
+    if db_engine is None or not phone:
+        return None
+
+    label = bot_stage_label(stage)
+    with session_scope(db_engine) as session:
+        customer = session.get(Customer, phone)
+        if customer is None:
+            customer = Customer(phone=phone, display_name=display_name or "")
+            session.add(customer)
+            session.flush()
+        elif display_name and not customer.display_name:
+            customer.display_name = display_name
+        customer.last_seen_at = _now()
+        customer.last_bot_stage = stage or ""
+        customer.last_bot_stage_label = label
+        customer.last_bot_stage_at = _now()
+        session.flush()
+        session.expunge(customer)
+        return customer
 
 
 def _find_or_create_vehicle(session, booking: Booking) -> CustomerVehicle | None:
@@ -436,6 +501,8 @@ def admin_customer_list(*, engine: Engine | None = None, limit: int = 100) -> tu
                         display_name=customer.display_name or customer.phone,
                         booking_count=customer.booking_count or 0,
                         vehicle_labels=tuple(label for label in labels if label),
+                        last_bot_stage=customer.last_bot_stage or "",
+                        last_bot_stage_label=customer.last_bot_stage_label or bot_stage_label(customer.last_bot_stage or ""),
                     )
                 )
             db_phones = {item.phone for item in items if item.phone}

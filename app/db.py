@@ -43,8 +43,35 @@ def make_engine(database_url: str | None = None) -> Engine:
 def init_db(engine: Engine) -> None:
     """Create all v0.3 tables. Alembic can replace this after MVP."""
     Base.metadata.create_all(bind=engine)
+    _ensure_customer_bot_stage_columns(engine)
     _ensure_customer_vehicle_reference_columns(engine)
     _backfill_vehicle_reference_data(engine)
+
+
+def _ensure_customer_bot_stage_columns(engine: Engine) -> None:
+    """Add WhatsApp funnel-stage columns for customer rows created before this slice."""
+    inspector = inspect(engine)
+    if "customers" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("customers")}
+    statements: list[str] = []
+    if "last_bot_stage" not in columns:
+        statements.append("ALTER TABLE customers ADD COLUMN last_bot_stage VARCHAR(60) DEFAULT ''")
+    if "last_bot_stage_label" not in columns:
+        statements.append("ALTER TABLE customers ADD COLUMN last_bot_stage_label VARCHAR(160) DEFAULT ''")
+    if "last_bot_stage_at" not in columns:
+        statements.append(f"ALTER TABLE customers ADD COLUMN last_bot_stage_at {_datetime_column_sql(engine)}")
+    if not statements:
+        return
+    with engine.begin() as connection:
+        for statement in statements:
+            connection.execute(text(statement))
+
+
+def _datetime_column_sql(engine: Engine) -> str:
+    if engine.dialect.name == "postgresql":
+        return "TIMESTAMP WITH TIME ZONE"
+    return "DATETIME"
 
 
 def _normalize_reference_value(value: str) -> str:

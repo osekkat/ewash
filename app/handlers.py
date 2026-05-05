@@ -11,7 +11,7 @@ from datetime import date, timedelta
 from . import catalog, meta, state
 from .booking import Booking
 from .config import settings
-from .persistence import assign_booking_ref, persist_booking_addon, persist_confirmed_booking
+from .persistence import assign_booking_ref, persist_booking_addon, persist_confirmed_booking, persist_customer_bot_stage
 
 log = logging.getLogger(__name__)
 
@@ -26,6 +26,15 @@ def _jour_fr(d: date) -> str:
 
 
 # ── Top-level entry ────────────────────────────────────────────────────────
+def _track_bot_stage(phone: str, sess) -> None:
+    """Best-effort mirror of the latest WhatsApp state for admin funnel analysis."""
+    try:
+        display_name = getattr(getattr(sess, "booking", None), "name", "") or ""
+        persist_customer_bot_stage(phone, sess.state, display_name=display_name)
+    except Exception:
+        log.exception("failed to persist bot stage phone=%s state=%s", phone, getattr(sess, "state", ""))
+
+
 async def handle_message(message: dict, contact: dict | None = None) -> None:
     phone = message.get("from")
     if not phone:
@@ -43,16 +52,19 @@ async def handle_message(message: dict, contact: dict | None = None) -> None:
     if text and text.strip().lower() in {"reset", "annuler", "cancel", "/reset"}:
         state.reset(phone)
         await _send_menu(phone, greeting="Conversation réinitialisée.")
+        _track_bot_stage(phone, state.get(phone))
         return
     if text and text.strip().lower() in {"menu", "start", "bonjour", "salam", "hi", "hello"}:
         state.reset(phone)
         await _send_menu(phone)
+        _track_bot_stage(phone, state.get(phone))
         return
 
     # Dispatch on state
     handler = _DISPATCH.get(sess.state, _handle_idle)
     await handler(phone, sess, payload_id=payload_id, text=text, location=location,
                   contact=contact)
+    _track_bot_stage(phone, state.get(phone))
 
 
 # ── Individual state handlers ──────────────────────────────────────────────

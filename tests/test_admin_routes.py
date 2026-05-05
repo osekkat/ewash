@@ -5,7 +5,7 @@ import app.booking as booking_store
 from app.config import settings
 from app.db import init_db, make_engine
 from app.main import app
-from app.persistence import _configured_engine, persist_confirmed_booking
+from app.persistence import _configured_engine, persist_confirmed_booking, persist_customer_bot_stage
 
 
 def test_admin_entrypoint_defaults_to_french_when_not_configured(monkeypatch):
@@ -173,6 +173,30 @@ def test_admin_customers_page_renders_persisted_clients(monkeypatch, tmp_path):
     assert "Porsche — Gris" in response.text
     assert "1 réservation" in response.text
     assert "Cette page arrive dans le prochain lot" not in response.text
+    _configured_engine.cache_clear()
+
+
+def test_admin_customers_page_renders_last_whatsapp_stage_for_unconfirmed_leads(monkeypatch, tmp_path):
+    db_url = f"sqlite+pysqlite:///{tmp_path / 'admin-customer-stages.db'}"
+    engine = make_engine(db_url)
+    init_db(engine)
+    persist_customer_bot_stage("212600000003", "BOOK_SERVICE", engine=engine)
+    monkeypatch.setattr(settings, "database_url", db_url)
+    _configured_engine.cache_clear()
+    monkeypatch.setattr(settings, "admin_password", "secret-pass")
+    client = TestClient(app)
+    client.post(
+        "/admin",
+        content="password=secret-pass",
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+
+    response = client.get("/admin/customers")
+
+    assert response.status_code == 200
+    assert "212600000003" in response.text
+    assert "Liste des prix affichée" in response.text
+    assert "Étape WhatsApp" in response.text
     _configured_engine.cache_clear()
 
 

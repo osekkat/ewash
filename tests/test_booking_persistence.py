@@ -1,13 +1,20 @@
+import asyncio
+
 from sqlalchemy import select
 
+from app import handlers, meta, state
 from app.booking import Booking
+from app.config import settings
 from app.db import init_db, make_engine, session_scope
 from app.models import BookingRow, BookingStatusEventRow, Customer, CustomerVehicle, VehicleColor, VehicleModel
 from app.persistence import (
+    admin_customer_list,
     admin_dashboard_summary,
     assign_booking_ref,
     persist_confirmed_booking,
     persist_booking_addon,
+    persist_customer_bot_stage,
+    _configured_engine,
 )
 
 
@@ -223,3 +230,67 @@ def test_admin_dashboard_summary_counts_db_rows_and_recent_bookings():
     assert len(summary.recent_bookings) == 1
     assert summary.recent_bookings[0].customer_name == "Oussama"
     assert summary.recent_bookings[0].service_label == "Le Complet — 110 DH"
+
+
+def test_persist_customer_bot_stage_tracks_abandoned_price_list_stage():
+    engine = make_engine("sqlite+pysqlite:///:memory:")
+    init_db(engine)
+
+    persist_customer_bot_stage("212600000003", "BOOK_SERVICE", engine=engine)
+
+    with session_scope(engine) as session:
+        customer = session.get(Customer, "212600000003")
+        assert customer is not None
+        assert customer.last_bot_stage == "BOOK_SERVICE"
+        assert customer.last_bot_stage_label == "Liste des prix affichée"
+        assert customer.last_bot_stage_at is not None
+        assert customer.booking_count == 0
+
+    customers = admin_customer_list(engine=engine)
+    customer_item = next(item for item in customers if item.phone == "212600000003")
+    assert customer_item.last_bot_stage == "BOOK_SERVICE"
+    assert customer_item.last_bot_stage_label == "Liste des prix affichée"
+
+
+def test_handle_message_tracks_latest_stage_after_showing_price_list(monkeypatch, tmp_path):
+    db_url = f"sqlite+pysqlite:///{tmp_path / 'bot-stages.db'}"
+    monkeypatch.setattr(settings, "database_url", db_url)
+    _configured_engine.cache_clear()
+    phone = "212600000004"
+    sess = state.start_booking(phone)
+    sess.state = "BOOK_PROMO_ASK"
+    sess.booking.name = "Lead Prix"
+    sess.booking.category = "B"
+    sess.booking.location_mode = "center"
+    sess.booking.center = "Stand Ewash — Bouskoura"
+    sent_lists: list[tuple] = []
+
+    async def fake_send_list(*args, **kwargs):
+        sent_lists.append((args, kwargs))
+        return {}
+
+    monkeypatch.setattr(meta, "send_list", fake_send_list)
+
+    asyncio.run(
+        handlers.handle_message(
+            {
+                "from": phone,
+                "type": "interactive",
+                "interactive": {
+                    "type": "button_reply",
+                    "button_reply": {"id": "promo_no", "title": "Non, continuer"},
+                },
+            }
+        )
+    )
+
+    assert sent_lists
+    with session_scope(_configured_engine()) as session:
+        customer = session.get(Customer, phone)
+        assert customer is not None
+        assert customer.display_name == "Lead Prix"
+        assert customer.last_bot_stage == "BOOK_SERVICE"
+        assert customer.last_bot_stage_label == "Liste des prix affichée"
+        assert customer.booking_count == 0
+    state.reset(phone)
+    _configured_engine.cache_clear()

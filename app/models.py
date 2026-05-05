@@ -87,6 +87,9 @@ class Customer(Base):
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     booking_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_bot_stage: Mapped[str] = mapped_column(String(60), default="", index=True)
+    last_bot_stage_label: Mapped[str] = mapped_column(String(160), default="")
+    last_bot_stage_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     vehicles: Mapped[list["CustomerVehicle"]] = relationship(back_populates="customer", cascade="all, delete-orphan")
     bookings: Mapped[list["BookingRow"]] = relationship(back_populates="customer")
