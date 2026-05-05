@@ -48,6 +48,7 @@ class AdminBookingListItem:
     customer_phone: str
     vehicle_label: str
     service_label: str
+    addon_service_label: str
     status: str
     date_label: str
     slot: str
@@ -401,6 +402,7 @@ def _booking_dict_to_admin_item(row: dict) -> AdminBookingListItem:
         customer_phone=str(row.get("phone") or ""),
         vehicle_label=vehicle_label,
         service_label=str(row.get("service_label") or row.get("service") or ""),
+        addon_service_label=str(row.get("addon_service_label") or ""),
         status="pending_ewash_confirmation" if row.get("ref") else "draft",
         date_label=str(row.get("date_label") or ""),
         slot=str(row.get("slot") or ""),
@@ -461,6 +463,7 @@ def admin_booking_list(*, engine: Engine | None = None, limit: int = 100) -> tup
                         customer_phone=row.customer_phone,
                         vehicle_label=vehicle_label,
                         service_label=row.service_label or row.service_id,
+                        addon_service_label=row.addon_service_label or "",
                         status=row.status,
                         date_label=row.date_label,
                         slot=row.slot,

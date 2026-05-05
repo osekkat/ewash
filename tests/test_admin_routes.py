@@ -148,6 +148,33 @@ def test_admin_bookings_page_renders_persisted_reservations(monkeypatch, tmp_pat
     _configured_engine.cache_clear()
 
 
+def test_admin_bookings_page_includes_esthetique_addons_in_service_column(monkeypatch, tmp_path):
+    db_url = f"sqlite+pysqlite:///{tmp_path / 'admin-bookings-addons.db'}"
+    engine = make_engine(db_url)
+    init_db(engine)
+    booking = _sample_booking()
+    booking.addon_service = "svc_pol"
+    booking.addon_service_label = "Le Polissage — 963 DH (-10%)"
+    booking.addon_price_dh = 963
+    persist_confirmed_booking(booking, engine=engine)
+    monkeypatch.setattr(settings, "database_url", db_url)
+    _configured_engine.cache_clear()
+    monkeypatch.setattr(settings, "admin_password", "secret-pass")
+    client = TestClient(app)
+    client.post(
+        "/admin",
+        content="password=secret-pass",
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+
+    response = client.get("/admin/bookings")
+
+    assert response.status_code == 200
+    assert "Le Complet — 125 DH" in response.text
+    assert "Esthétique : Le Polissage — 963 DH (-10%)" in response.text
+    _configured_engine.cache_clear()
+
+
 def test_admin_customers_page_renders_persisted_clients(monkeypatch, tmp_path):
     db_url = f"sqlite+pysqlite:///{tmp_path / 'admin-customers.db'}"
     engine = make_engine(db_url)
@@ -350,6 +377,64 @@ def test_admin_promos_page_allows_adding_promo_codes(monkeypatch, tmp_path):
     assert "VIP Thirty" in page.text
     assert "90 DH" in page.text
     assert "Promos saved" in page.text
+    catalog.catalog_cache_clear()
+    _configured_engine.cache_clear()
+
+
+def test_admin_promos_page_prefills_public_prices_for_number_steppers(monkeypatch):
+    monkeypatch.setattr(settings, "database_url", "")
+    _configured_engine.cache_clear()
+    import app.catalog as catalog
+    catalog.catalog_cache_clear()
+    monkeypatch.setattr(settings, "admin_password", "secret-pass")
+    client = TestClient(app)
+    client.post(
+        "/admin",
+        content="password=secret-pass",
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+
+    response = client.get("/admin/promos")
+
+    assert response.status_code == 200
+    assert 'name="discount__svc_cpl__B" value="125"' in response.text
+    assert 'data-public-price="125"' in response.text
+    assert "Les tarifs publics sont préremplis" in response.text
+    catalog.catalog_cache_clear()
+    _configured_engine.cache_clear()
+
+
+def test_admin_promos_submit_ignores_unchanged_public_price_prefills(monkeypatch, tmp_path):
+    db_url = f"sqlite+pysqlite:///{tmp_path / 'admin-promos-public-prefill.db'}"
+    engine = make_engine(db_url)
+    init_db(engine)
+    monkeypatch.setattr(settings, "database_url", db_url)
+    _configured_engine.cache_clear()
+    import app.catalog as catalog
+    catalog.catalog_cache_clear()
+    monkeypatch.setattr(settings, "admin_password", "secret-pass")
+    client = TestClient(app)
+    client.post(
+        "/admin",
+        content="password=secret-pass",
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+
+    response = client.post(
+        "/admin/promos?lang=en",
+        data={
+            "code": "PUBLIC",
+            "label": "Public Price",
+            "active": "on",
+            "discount__svc_cpl__B": "125",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    promos = {promo.code: promo for promo in catalog.list_promo_codes()}
+    assert promos["PUBLIC"].discounts == {}
+    assert catalog.service_price("svc_cpl", "B", promo_code="PUBLIC") == 125
     catalog.catalog_cache_clear()
     _configured_engine.cache_clear()
 

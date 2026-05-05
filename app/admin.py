@@ -402,14 +402,16 @@ def _prices_page(*, locale: str, message: str = "", error: str = "") -> HTMLResp
 def _promo_discount_cell(service_id: str, category: str, discounts: dict[tuple[str, str], int] | None = None) -> str:
     discounts = discounts or {}
     value = discounts.get((service_id, category))
-    display = "" if value is None else str(value)
     public = catalog.public_service_price(service_id, category)
+    display_value = value if value is not None else public
+    display = "" if display_value is None else str(display_value)
     placeholder = "" if public is None else str(public)
     discount_label = f"{display} DH" if display else "—"
+    public_attr = "" if public is None else f' data-public-price="{escape(str(public))}"'
     return (
         f'<input class="price-input" type="number" min="0" step="1" '
         f'name="{escape(_discount_input_name(service_id, category))}" value="{escape(display)}" '
-        f'placeholder="{escape(placeholder)}">'
+        f'placeholder="{escape(placeholder)}"{public_attr}>'
         f'<small class="muted">{escape(discount_label)}</small>'
     )
 
@@ -617,6 +619,13 @@ def _placeholder_page(*, locale: str, page_key: str, active_path: str) -> HTMLRe
         status_code=200,
     )
 
+def _booking_service_cell(item) -> str:
+    html = escape(item.service_label)
+    if item.addon_service_label:
+        html += f"<br><small>Esthétique : {escape(item.addon_service_label)}</small>"
+    return html
+
+
 def _bookings_page(*, locale: str) -> HTMLResponse:
     title = t("nav.bookings", locale)
     bookings = admin_booking_list()
@@ -626,7 +635,7 @@ def _bookings_page(*, locale: str) -> HTMLResponse:
             f"<span>{escape(item.ref)}</span>"
             f"<span>{escape(item.customer_name)}<br><small>{escape(item.customer_phone)}</small></span>"
             f"<span>{escape(item.vehicle_label)}</span>"
-            f"<span>{escape(item.service_label)}</span>"
+            f"<span>{_booking_service_cell(item)}</span>"
             f"<span>{escape(item.date_label)}<br><small>{escape(item.slot)}</small></span>"
             f"<span>{escape(_status_label(item.status, locale))}</span>"
             f"<span>{item.price_dh} DH</span>"
@@ -825,7 +834,11 @@ async def admin_promos_submit(request: Request, lang: str | None = Query(default
             _prefix, service_id, category = key.split("__", 2)
             if (service_id, category) not in valid_pairs:
                 raise ValueError(f"Champ promo inconnu: {service_id}/{category}")
-            discounts[(service_id, category)] = _parse_int_field(value, label=f"{service_id} {category}")
+            parsed_price = _parse_int_field(value, label=f"{service_id} {category}")
+            public_price = catalog.public_service_price(service_id, category)
+            if public_price is not None and parsed_price == public_price:
+                continue
+            discounts[(service_id, category)] = parsed_price
         catalog.upsert_promo_code(
             code=(form.get("code", [""])[0]),
             label=(form.get("label", [""])[0]),
