@@ -20,7 +20,7 @@ from .admin_i18n import SUPPORTED_LOCALES, normalize_locale, t
 from .catalog import SERVICES_DETAILING, SERVICES_MOTO, SERVICES_WASH
 from .config import settings
 from .notifications import get_booking_notification_settings, upsert_booking_notification_settings
-from .persistence import admin_booking_list, admin_customer_list, admin_dashboard_summary
+from .persistence import admin_booking_list, admin_customer_list, admin_dashboard_summary, confirm_booking_by_ewash
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 _ADMIN_VERSION = "v0.3.0-alpha17"
@@ -157,7 +157,7 @@ def _layout(*, locale: str, title: str, body: str, active_path: str = "/admin") 
     .empty-panel {{ padding: 22px; min-height: 230px; }}
     .table-shell {{ margin-top: 18px; border: 1px solid var(--border-soft); border-radius: 12px; overflow: hidden; }}
     .table-row {{ display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; padding: 13px 14px; border-bottom: 1px solid var(--border-soft); color: var(--muted); font-size: 13px; }}
-    .booking-row {{ grid-template-columns: .8fr 1.1fr 1fr 1.3fr .9fr .9fr .7fr; align-items: center; }}
+    .booking-row {{ grid-template-columns: .8fr 1.1fr 1fr 1.3fr .9fr .9fr .7fr .85fr; align-items: center; }}
     .customer-row {{ grid-template-columns: 1.1fr .95fr 1.25fr .75fr 1.15fr; align-items: center; }}
     .price-row {{ grid-template-columns: .9fr 1.15fr 2fr .55fr .55fr .55fr; align-items: center; }}
     .table-row:last-child {{ border-bottom: 0; }}
@@ -172,6 +172,8 @@ def _layout(*, locale: str, title: str, body: str, active_path: str = "/admin") 
     textarea {{ min-height: 110px; resize: vertical; }}
     input[type="checkbox"] {{ width: auto; margin-right: 8px; }}
     .admin-form {{ max-width: none; }}
+    .inline-form {{ max-width: none; margin: 0; padding: 0; border: 0; border-radius: 0; background: transparent; }}
+    .inline-form button {{ padding: 8px 10px; font-size: 12px; white-space: nowrap; }}
     .price-input {{ margin: 0; padding: 9px 10px; min-width: 70px; }}
     .form-grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }}
     .notice {{ padding: 12px 14px; border-radius: 12px; margin: 14px 0; border: 1px solid var(--border); }}
@@ -649,9 +651,21 @@ def _booking_service_cell(item) -> str:
     return html
 
 
-def _bookings_page(*, locale: str) -> HTMLResponse:
+def _booking_action_cell(item, *, locale: str) -> str:
+    if item.status != "pending_ewash_confirmation" or not item.ref:
+        return "—"
+    return (
+        f'<form class="inline-form" method="post" action="/admin/bookings/confirm?lang={escape(locale)}">'
+        f'<input type="hidden" name="ref" value="{escape(item.ref)}">'
+        f'<button type="submit">{escape(t("admin.bookings.confirm_action", locale))}</button>'
+        "</form>"
+    )
+
+
+def _bookings_page(*, locale: str, message: str = "", error: str = "") -> HTMLResponse:
     title = t("nav.bookings", locale)
     bookings = admin_booking_list()
+    notice = _notice_html(message=message, error=error)
     if bookings:
         rows = "".join(
             "<div class=\"table-row booking-row\">"
@@ -662,11 +676,12 @@ def _bookings_page(*, locale: str) -> HTMLResponse:
             f"<span>{escape(item.date_label)}<br><small>{escape(item.slot)}</small></span>"
             f"<span>{escape(_status_label(item.status, locale))}</span>"
             f"<span>{item.price_dh} DH</span>"
+            f"<span>{_booking_action_cell(item, locale=locale)}</span>"
             "</div>"
             for item in bookings
         )
     else:
-        rows = '<div class="table-row booking-row"><span>—</span><span>—</span><span>—</span><span>—</span><span>—</span><span>—</span><span>—</span></div>'
+        rows = '<div class="table-row booking-row"><span>—</span><span>—</span><span>—</span><span>—</span><span>—</span><span>—</span><span>—</span><span>—</span></div>'
     if not settings.database_url:
         intro = "Mode temporaire : Railway Postgres / DATABASE_URL n'est pas configuré. Les réservations affichées ici viennent de la mémoire live et disparaissent au redéploiement."
     elif bookings:
@@ -686,8 +701,9 @@ def _bookings_page(*, locale: str) -> HTMLResponse:
 </section>
 <section class="empty-panel">
   <h2>{escape(t('admin.panel.recent_bookings', locale))}</h2>
+  {notice}
   <div class="table-shell" aria-label="Réservations persistées">
-    <div class="table-row table-head booking-row"><span>Réf</span><span>Client</span><span>Véhicule</span><span>Service</span><span>Date</span><span>Statut</span><span>Prix</span></div>
+    <div class="table-row table-head booking-row"><span>Réf</span><span>Client</span><span>Véhicule</span><span>Service</span><span>Date</span><span>Statut</span><span>Prix</span><span>Action</span></div>
     {rows}
   </div>
 </section>
@@ -873,6 +889,19 @@ async def admin_promos_submit(request: Request, lang: str | None = Query(default
     return RedirectResponse(url=f"/admin/promos?lang={locale}&saved=1", status_code=status.HTTP_303_SEE_OTHER)
 
 
+@router.post("/bookings/confirm", response_class=HTMLResponse)
+async def admin_booking_confirm_submit(request: Request, lang: str | None = Query(default=None)):
+    locale = normalize_locale(lang or settings.admin_default_locale)
+    if response := _auth_or_none(request, locale):
+        return response
+    form = await _admin_form(request)
+    try:
+        confirm_booking_by_ewash(form.get("ref", [""])[0])
+    except Exception as exc:
+        return _bookings_page(locale=locale, error=str(exc))
+    return RedirectResponse(url=f"/admin/bookings?lang={locale}&confirmed=1", status_code=status.HTTP_303_SEE_OTHER)
+
+
 async def _admin_form(request: Request) -> dict[str, list[str]]:
     return parse_qs((await request.body()).decode("utf-8"))
 
@@ -1012,7 +1041,8 @@ async def admin_section(request: Request, page_slug: str, lang: str | None = Que
     if not _valid_session_token(request.cookies.get(_SESSION_COOKIE)):
         return _password_form(locale=locale)
     if page_id == "bookings":
-        return _bookings_page(locale=locale)
+        message = t("admin.bookings.confirmed", locale) if request.query_params.get("confirmed") == "1" else ""
+        return _bookings_page(locale=locale, message=message)
     if page_id == "customers":
         return _customers_page(locale=locale)
     if page_id == "prices":

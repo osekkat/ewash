@@ -11,7 +11,7 @@ import logging
 import re
 from dataclasses import dataclass
 from dataclasses import asdict
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from functools import lru_cache
 from typing import Iterable
 from zoneinfo import ZoneInfo
@@ -32,12 +32,15 @@ from .models import (
     ConversationSessionRow,
     Customer,
     CustomerVehicle,
+    ReminderRuleRow,
     WhatsappMessageRow,
     VehicleColor,
     VehicleModel,
 )
 
 log = logging.getLogger(__name__)
+H2_REMINDER_KIND = "H-2"
+H2_REMINDER_OFFSET_MINUTES = 120
 
 
 @dataclass(frozen=True)
@@ -625,6 +628,114 @@ def persist_booking_addon(
             line.unit_price_dh = addon_price_dh
             line.regular_price_dh = addon_price_dh
             line.total_price_dh = addon_price_dh
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _h2_reminder_rule(session) -> ReminderRuleRow | None:
+    exact = session.scalars(
+        select(ReminderRuleRow).where(ReminderRuleRow.name == H2_REMINDER_KIND)
+    ).first()
+    if exact is not None:
+        return exact
+    return session.scalars(
+        select(ReminderRuleRow)
+        .where(
+            ReminderRuleRow.enabled.is_(True),
+            ReminderRuleRow.offset_minutes_before == H2_REMINDER_OFFSET_MINUTES,
+        )
+        .order_by(ReminderRuleRow.id.desc())
+    ).first()
+
+
+def _booking_has_h2_reminder(session, booking_id: int) -> bool:
+    existing = session.scalars(
+        select(BookingReminderRow)
+        .outerjoin(ReminderRuleRow, BookingReminderRow.rule_id == ReminderRuleRow.id)
+        .where(
+            BookingReminderRow.booking_id == booking_id,
+            or_(
+                BookingReminderRow.kind == H2_REMINDER_KIND,
+                ReminderRuleRow.offset_minutes_before == H2_REMINDER_OFFSET_MINUTES,
+            ),
+        )
+        .limit(1)
+    ).first()
+    return existing is not None
+
+
+def _create_h2_reminder_for_confirmed_booking(
+    session,
+    booking: BookingRow,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    if booking.id is None or booking.appointment_start_at is None:
+        return False
+    if _booking_has_h2_reminder(session, int(booking.id)):
+        return False
+
+    scheduled_for = booking.appointment_start_at - timedelta(minutes=H2_REMINDER_OFFSET_MINUTES)
+    if _as_utc(scheduled_for) <= _as_utc(now or _now()):
+        return False
+
+    rule = _h2_reminder_rule(session)
+    session.add(
+        BookingReminderRow(
+            booking_id=int(booking.id),
+            rule_id=rule.id if rule is not None else None,
+            kind=H2_REMINDER_KIND,
+            scheduled_for=scheduled_for,
+            status="pending",
+        )
+    )
+    return True
+
+
+def confirm_booking_by_ewash(
+    ref: str,
+    *,
+    engine: Engine | None = None,
+    now: datetime | None = None,
+) -> BookingRow:
+    """Mark a customer-confirmed booking as accepted by Ewash staff."""
+    normalized_ref = (ref or "").strip()
+    if not normalized_ref:
+        raise ValueError("Référence réservation manquante")
+
+    db_engine = _engine_or_configured(engine)
+    if db_engine is None:
+        raise RuntimeError("DATABASE_URL is not configured")
+
+    with session_scope(db_engine) as session:
+        row = session.scalars(
+            select(BookingRow).where(BookingRow.ref == normalized_ref).with_for_update()
+        ).first()
+        if row is None:
+            raise ValueError(f"Réservation introuvable: {normalized_ref}")
+        if row.status != "pending_ewash_confirmation":
+            raise ValueError(f"La réservation {normalized_ref} n'est pas à confirmer par eWash")
+
+        previous_status = row.status
+        row.status = "confirmed"
+        session.add(
+            BookingStatusEventRow(
+                booking_id=row.id,
+                from_status=previous_status,
+                to_status="confirmed",
+                actor="admin",
+                note="Confirmation eWash depuis le portail admin",
+            )
+        )
+        reminder_created = _create_h2_reminder_for_confirmed_booking(session, row, now=now)
+        log.info("booking confirmed by ewash ref=%s reminder_created=%s", row.ref, reminder_created)
+        session.flush()
+        session.expunge(row)
+        return row
 
 
 def _booking_dict_to_admin_item(row: dict) -> AdminBookingListItem:
