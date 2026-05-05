@@ -25,6 +25,7 @@ from app.persistence import (
     assign_booking_ref,
     persist_confirmed_booking,
     persist_booking_addon,
+    persist_customer_contact,
     persist_customer_bot_stage,
     persist_whatsapp_inbound_message,
     _configured_engine,
@@ -306,6 +307,24 @@ def test_persist_customer_bot_stage_tracks_abandoned_price_list_stage():
     assert customer_item.last_bot_stage_label == "Liste des prix affichée"
 
 
+def test_persist_customer_contact_captures_whatsapp_profile_before_booking():
+    engine = make_engine("sqlite+pysqlite:///:memory:")
+    init_db(engine)
+
+    customer = persist_customer_contact(
+        "212600000004",
+        {"wa_id": "212600000004", "profile": {"name": "Hassan WhatsApp"}},
+        engine=engine,
+    )
+
+    assert customer is not None
+    assert customer.phone == "212600000004"
+    assert customer.display_name == "Hassan WhatsApp"
+    assert customer.whatsapp_profile_name == "Hassan WhatsApp"
+    assert customer.whatsapp_wa_id == "212600000004"
+    assert customer.booking_count == 0
+
+
 def test_handle_message_tracks_latest_stage_after_showing_price_list(monkeypatch, tmp_path):
     db_url = f"sqlite+pysqlite:///{tmp_path / 'bot-stages.db'}"
     monkeypatch.setattr(settings, "database_url", db_url)
@@ -365,3 +384,40 @@ def test_persist_whatsapp_inbound_message_is_idempotent():
         assert rows[0].phone == "212665883062"
         assert rows[0].direction == "inbound"
         assert rows[0].processed_at is not None
+        customer = session.get(Customer, "212665883062")
+        assert customer is not None
+        assert customer.display_name == "Oussama"
+        assert customer.whatsapp_profile_name == "Oussama"
+
+
+def test_handle_message_captures_customer_contact_on_first_hello(monkeypatch, tmp_path):
+    db_url = f"sqlite+pysqlite:///{tmp_path / 'first-contact.db'}"
+    monkeypatch.setattr(settings, "database_url", db_url)
+    _configured_engine.cache_clear()
+    phone = "212600000005"
+    sent_buttons: list[tuple] = []
+
+    async def fake_send_buttons(*args, **kwargs):
+        sent_buttons.append((args, kwargs))
+        return {}
+
+    monkeypatch.setattr(meta, "send_buttons", fake_send_buttons)
+
+    asyncio.run(
+        handlers.handle_message(
+            {"id": "wamid.first-contact", "from": phone, "type": "text", "text": {"body": "hello"}},
+            {"wa_id": phone, "profile": {"name": "Nadia WhatsApp"}},
+        )
+    )
+
+    assert sent_buttons
+    with session_scope(_configured_engine()) as session:
+        customer = session.get(Customer, phone)
+        assert customer is not None
+        assert customer.display_name == "Nadia WhatsApp"
+        assert customer.whatsapp_profile_name == "Nadia WhatsApp"
+        assert customer.whatsapp_wa_id == phone
+        assert customer.last_bot_stage == "MENU"
+        assert customer.booking_count == 0
+    state.reset(phone)
+    _configured_engine.cache_clear()

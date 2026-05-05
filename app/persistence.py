@@ -245,17 +245,71 @@ def _find_or_create_customer(session, booking: Booking) -> Customer:
     return customer
 
 
+def _contact_profile_name(contact: dict | None) -> str:
+    if not contact:
+        return ""
+    profile = contact.get("profile") or {}
+    return str(profile.get("name") or "").strip()
+
+
+def _contact_wa_id(contact: dict | None) -> str:
+    if not contact:
+        return ""
+    return str(contact.get("wa_id") or "").strip()
+
+
+def persist_customer_contact(
+    phone: str,
+    contact: dict | None = None,
+    *,
+    engine: Engine | None = None,
+) -> Customer | None:
+    """Create/update a customer row immediately from Meta's contact envelope."""
+    phone = str(phone or "").strip()
+    if not phone:
+        return None
+    db_engine = _engine_or_configured(engine)
+    if db_engine is None:
+        return None
+
+    profile_name = _contact_profile_name(contact)
+    wa_id = _contact_wa_id(contact) or phone
+    with session_scope(db_engine) as session:
+        customer = session.get(Customer, phone)
+        if customer is None:
+            customer = Customer(
+                phone=phone,
+                display_name=profile_name,
+                whatsapp_profile_name=profile_name,
+                whatsapp_wa_id=wa_id,
+            )
+            session.add(customer)
+            session.flush()
+        else:
+            if profile_name:
+                customer.whatsapp_profile_name = profile_name
+                if not customer.display_name:
+                    customer.display_name = profile_name
+            if wa_id:
+                customer.whatsapp_wa_id = wa_id
+        customer.last_seen_at = _now()
+        session.flush()
+        session.expunge(customer)
+        return customer
+
+
 def persist_whatsapp_inbound_message(message: dict, contact: dict | None = None, *, engine: Engine | None = None) -> bool:
     """Insert an inbound WhatsApp message once.
 
     Returns False when the message id already exists, allowing webhook retries
     to be acknowledged without running the booking state machine twice.
     """
-    message_id = str(message.get("id") or "").strip()
-    if not message_id:
-        return True
     db_engine = _engine_or_configured(engine)
     if db_engine is None:
+        return True
+    persist_customer_contact(str(message.get("from") or ""), contact, engine=db_engine)
+    message_id = str(message.get("id") or "").strip()
+    if not message_id:
         return True
     payload = {"message": message, "contact": contact or {}}
     try:
@@ -690,7 +744,7 @@ def admin_customer_list(*, engine: Engine | None = None, limit: int = 100) -> tu
                 items.append(
                     AdminCustomerListItem(
                         phone=customer.phone,
-                        display_name=customer.display_name or customer.phone,
+                        display_name=customer.display_name or customer.whatsapp_profile_name or customer.phone,
                         booking_count=customer.booking_count or 0,
                         vehicle_labels=tuple(label for label in labels if label),
                         last_bot_stage=customer.last_bot_stage or "",

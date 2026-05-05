@@ -43,6 +43,7 @@ def make_engine(database_url: str | None = None) -> Engine:
 def init_db(engine: Engine) -> None:
     """Create all v0.3 tables. Alembic can replace this after MVP."""
     Base.metadata.create_all(bind=engine)
+    _ensure_customer_contact_columns(engine)
     _ensure_customer_bot_stage_columns(engine)
     _ensure_customer_vehicle_reference_columns(engine)
     _ensure_booking_operational_columns(engine)
@@ -50,6 +51,24 @@ def init_db(engine: Engine) -> None:
     _backfill_vehicle_reference_data(engine)
     _backfill_booking_line_items(engine)
     _backfill_booking_ref_counters(engine)
+
+
+def _ensure_customer_contact_columns(engine: Engine) -> None:
+    """Add WhatsApp contact columns for customer rows created before this slice."""
+    inspector = inspect(engine)
+    if "customers" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("customers")}
+    statements: list[str] = []
+    if "whatsapp_profile_name" not in columns:
+        statements.append("ALTER TABLE customers ADD COLUMN whatsapp_profile_name VARCHAR(120) DEFAULT ''")
+    if "whatsapp_wa_id" not in columns:
+        statements.append("ALTER TABLE customers ADD COLUMN whatsapp_wa_id VARCHAR(32) DEFAULT ''")
+    if not statements:
+        return
+    with engine.begin() as connection:
+        for statement in statements:
+            connection.execute(text(statement))
 
 
 def _ensure_customer_bot_stage_columns(engine: Engine) -> None:

@@ -84,6 +84,8 @@ class Customer(Base):
 
     phone: Mapped[str] = mapped_column(String(32), primary_key=True)
     display_name: Mapped[str] = mapped_column(String(120), default="")
+    whatsapp_profile_name: Mapped[str] = mapped_column(String(120), default="")
+    whatsapp_wa_id: Mapped[str] = mapped_column(String(32), default="", index=True)
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     booking_count: Mapped[int] = mapped_column(Integer, default=0)

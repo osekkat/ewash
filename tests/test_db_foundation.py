@@ -90,6 +90,8 @@ def test_init_db_creates_v03_core_tables():
     assert {"message_id", "phone", "direction", "payload_json", "processed_at"}.issubset(whatsapp_columns)
     conversation_columns = {column["name"] for column in inspect(engine).get_columns("conversation_events")}
     assert {"session_id", "customer_phone", "stage", "stage_label", "event_type"}.issubset(conversation_columns)
+    customer_columns = {column["name"] for column in inspect(engine).get_columns("customers")}
+    assert {"whatsapp_profile_name", "whatsapp_wa_id"}.issubset(customer_columns)
     vehicle_columns = {column["name"] for column in inspect(engine).get_columns("customer_vehicles")}
     assert {"model_id", "color_id"}.issubset(vehicle_columns)
     service_price_columns = {column["name"] for column in inspect(engine).get_columns("service_prices")}
