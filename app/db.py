@@ -5,11 +5,11 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 import re
 
-from sqlalchemy import Engine, create_engine, inspect, text
+from sqlalchemy import Engine, create_engine, inspect, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from .config import settings
-from .models import Base, CustomerVehicle, VehicleColor, VehicleModel
+from .models import Base, BookingRefCounterRow, BookingLineItemRow, BookingRow, CustomerVehicle, ServiceRow, VehicleColor, VehicleModel
 
 
 def normalize_database_url(database_url: str) -> str:
@@ -45,7 +45,11 @@ def init_db(engine: Engine) -> None:
     Base.metadata.create_all(bind=engine)
     _ensure_customer_bot_stage_columns(engine)
     _ensure_customer_vehicle_reference_columns(engine)
+    _ensure_booking_operational_columns(engine)
+    _seed_service_catalog(engine)
     _backfill_vehicle_reference_data(engine)
+    _backfill_booking_line_items(engine)
+    _backfill_booking_ref_counters(engine)
 
 
 def _ensure_customer_bot_stage_columns(engine: Engine) -> None:
@@ -72,6 +76,18 @@ def _datetime_column_sql(engine: Engine) -> str:
     if engine.dialect.name == "postgresql":
         return "TIMESTAMP WITH TIME ZONE"
     return "DATETIME"
+
+
+def _date_column_sql(engine: Engine) -> str:
+    if engine.dialect.name == "postgresql":
+        return "DATE"
+    return "DATE"
+
+
+def _float_column_sql(engine: Engine) -> str:
+    if engine.dialect.name == "postgresql":
+        return "DOUBLE PRECISION"
+    return "FLOAT"
 
 
 def _normalize_reference_value(value: str) -> str:
@@ -146,6 +162,154 @@ def _ensure_customer_vehicle_reference_columns(engine: Engine) -> None:
     with engine.begin() as connection:
         for statement in statements:
             connection.execute(text(statement))
+
+
+def _ensure_booking_operational_columns(engine: Engine) -> None:
+    """Add normalized booking fields for databases created before this schema slice."""
+    inspector = inspect(engine)
+    if "bookings" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("bookings")}
+    column_defs = {
+        "center_id": "VARCHAR(40) DEFAULT ''",
+        "address_text": "TEXT DEFAULT ''",
+        "location_name": "VARCHAR(160) DEFAULT ''",
+        "location_address": "TEXT DEFAULT ''",
+        "latitude": _float_column_sql(engine),
+        "longitude": _float_column_sql(engine),
+        "appointment_date": _date_column_sql(engine),
+        "slot_id": "VARCHAR(40) DEFAULT ''",
+        "total_price_dh": "INTEGER DEFAULT 0",
+    }
+    statements = [
+        f"ALTER TABLE bookings ADD COLUMN {column_name} {column_sql}"
+        for column_name, column_sql in column_defs.items()
+        if column_name not in columns
+    ]
+    if not statements:
+        return
+    with engine.begin() as connection:
+        for statement in statements:
+            connection.execute(text(statement))
+
+
+def _seed_service_catalog(engine: Engine) -> None:
+    """Mirror the code catalog into the DB service table without overwriting admin state."""
+    from . import catalog
+
+    rows: list[tuple[str, str, str, str, str, int]] = []
+    order = 0
+    for bucket, services in (("wash", catalog.SERVICES_WASH), ("detailing", catalog.SERVICES_DETAILING)):
+        for service_id, name, description, _prices in services:
+            rows.append((service_id, name, description, bucket, "car", order))
+            order += 1
+    for service_id, name, description, _price in catalog.SERVICES_MOTO:
+        rows.append((service_id, name, description, "wash", "moto", order))
+        order += 1
+
+    with Session(engine, expire_on_commit=False, future=True) as session:
+        changed = False
+        for service_id, name, description, bucket, vehicle_lane, sort_order in rows:
+            service = session.get(ServiceRow, service_id)
+            if service is None:
+                session.add(
+                    ServiceRow(
+                        service_id=service_id,
+                        name=name,
+                        description=description,
+                        bucket=bucket,
+                        vehicle_lane=vehicle_lane,
+                        active=True,
+                        sort_order=sort_order,
+                    )
+                )
+                changed = True
+            else:
+                service.name = service.name or name
+                service.description = service.description or description
+                service.bucket = service.bucket or bucket
+                service.vehicle_lane = service.vehicle_lane or vehicle_lane
+        if changed:
+            session.commit()
+
+
+def _backfill_booking_line_items(engine: Engine) -> None:
+    """Create normalized line items for bookings persisted before the table existed."""
+    with Session(engine, expire_on_commit=False, future=True) as session:
+        bookings = session.scalars(select(BookingRow)).all()
+        changed = False
+        for booking in bookings:
+            if not booking.total_price_dh:
+                booking.total_price_dh = (booking.price_dh or 0) + (booking.addon_price_dh or 0)
+                changed = True
+            if not booking.address_text and booking.address:
+                booking.address_text = booking.address
+                changed = True
+            existing = session.scalars(
+                select(BookingLineItemRow).where(BookingLineItemRow.booking_id == booking.id)
+            ).first()
+            if existing is not None:
+                continue
+            if booking.service_id:
+                session.add(
+                    BookingLineItemRow(
+                        booking_id=booking.id,
+                        kind="main",
+                        service_id=booking.service_id,
+                        service_bucket=booking.service_bucket,
+                        label_snapshot=booking.service_label or booking.service_id,
+                        quantity=1,
+                        unit_price_dh=booking.price_dh or 0,
+                        regular_price_dh=booking.price_regular_dh or booking.price_dh or 0,
+                        total_price_dh=booking.price_dh or 0,
+                        sort_order=0,
+                    )
+                )
+                changed = True
+            if booking.addon_service:
+                session.add(
+                    BookingLineItemRow(
+                        booking_id=booking.id,
+                        kind="addon",
+                        service_id=booking.addon_service,
+                        service_bucket="detailing",
+                        label_snapshot=booking.addon_service_label or booking.addon_service,
+                        quantity=1,
+                        unit_price_dh=booking.addon_price_dh or 0,
+                        regular_price_dh=booking.addon_price_dh or 0,
+                        total_price_dh=booking.addon_price_dh or 0,
+                        discount_label="-10%",
+                        sort_order=10,
+                    )
+                )
+                changed = True
+        if changed:
+            session.commit()
+
+
+def _backfill_booking_ref_counters(engine: Engine) -> None:
+    """Seed DB-backed yearly booking ref counters from existing rows."""
+    ref_re = re.compile(r"^EW-(\d{4})-(\d+)$")
+    with Session(engine, expire_on_commit=False, future=True) as session:
+        refs = session.scalars(select(BookingRow.ref)).all()
+        counters: dict[int, int] = {}
+        for ref in refs:
+            match = ref_re.match(ref or "")
+            if not match:
+                continue
+            year = int(match.group(1))
+            counters[year] = max(counters.get(year, 0), int(match.group(2)))
+        changed = False
+        for year, max_counter in counters.items():
+            row = session.get(BookingRefCounterRow, year)
+            if row is None:
+                session.add(BookingRefCounterRow(year=year, last_counter=max_counter))
+                changed = True
+            elif row.last_counter < max_counter:
+                row.last_counter = max_counter
+                changed = True
+        if changed:
+            session.commit()
 
 
 @contextmanager

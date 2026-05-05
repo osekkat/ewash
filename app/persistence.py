@@ -11,21 +11,28 @@ import logging
 import re
 from dataclasses import dataclass
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timezone
 from functools import lru_cache
 from typing import Iterable
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import Engine, func, select, or_
+from sqlalchemy.exc import IntegrityError
 
 from .booking import Booking, all_bookings
 from .config import settings
 from .db import init_db, make_engine, session_scope
 from .models import (
+    BookingLineItemRow,
     BookingReminderRow,
+    BookingRefCounterRow,
     BookingRow,
     BookingStatusEventRow,
+    ConversationEventRow,
+    ConversationSessionRow,
     Customer,
     CustomerVehicle,
+    WhatsappMessageRow,
     VehicleColor,
     VehicleModel,
 )
@@ -139,6 +146,23 @@ def _max_ref_counter(refs: Iterable[str], *, year: int) -> int:
     return max_counter
 
 
+def _next_booking_ref_counter(session, *, year: int) -> int:
+    refs = session.scalars(
+        select(BookingRow.ref).where(BookingRow.ref.like(f"EW-{year}-%"))
+    ).all()
+    existing_floor = _max_ref_counter(refs, year=year)
+    counter = session.get(BookingRefCounterRow, year, with_for_update=True)
+    if counter is None:
+        counter = BookingRefCounterRow(year=year, last_counter=existing_floor)
+        session.add(counter)
+        session.flush()
+    if counter.last_counter < existing_floor:
+        counter.last_counter = existing_floor
+    counter.last_counter += 1
+    session.flush()
+    return int(counter.last_counter)
+
+
 def assign_booking_ref(booking: Booking, *, engine: Engine | None = None) -> str:
     """Assign a booking reference that is monotonic against persisted refs.
 
@@ -154,14 +178,11 @@ def assign_booking_ref(booking: Booking, *, engine: Engine | None = None) -> str
     year = _now().year
     try:
         with session_scope(db_engine) as session:
-            refs = session.scalars(
-                select(BookingRow.ref).where(BookingRow.ref.like(f"EW-{year}-%"))
-            ).all()
-            counter_floor = _max_ref_counter(refs, year=year)
+            next_counter = _next_booking_ref_counter(session, year=year)
     except Exception:
-        log.exception("assign_booking_ref failed to read DB refs; falling back to process counter")
-        counter_floor = 0
-    return booking.assign_ref(counter_floor=counter_floor)
+        log.exception("assign_booking_ref failed to reserve DB ref; falling back to process counter")
+        return booking.assign_ref()
+    return booking.assign_ref(counter_value=next_counter)
 
 
 def _vehicle_label(booking: Booking) -> str:
@@ -224,6 +245,37 @@ def _find_or_create_customer(session, booking: Booking) -> Customer:
     return customer
 
 
+def persist_whatsapp_inbound_message(message: dict, contact: dict | None = None, *, engine: Engine | None = None) -> bool:
+    """Insert an inbound WhatsApp message once.
+
+    Returns False when the message id already exists, allowing webhook retries
+    to be acknowledged without running the booking state machine twice.
+    """
+    message_id = str(message.get("id") or "").strip()
+    if not message_id:
+        return True
+    db_engine = _engine_or_configured(engine)
+    if db_engine is None:
+        return True
+    payload = {"message": message, "contact": contact or {}}
+    try:
+        with session_scope(db_engine) as session:
+            session.add(
+                WhatsappMessageRow(
+                    message_id=message_id,
+                    phone=str(message.get("from") or ""),
+                    direction="inbound",
+                    message_type=str(message.get("type") or ""),
+                    payload_json=json.dumps(payload, ensure_ascii=False, default=str),
+                    status="processed",
+                    processed_at=_now(),
+                )
+            )
+    except IntegrityError:
+        return False
+    return True
+
+
 def persist_customer_bot_stage(
     phone: str,
     stage: str,
@@ -253,6 +305,33 @@ def persist_customer_bot_stage(
         customer.last_bot_stage = stage or ""
         customer.last_bot_stage_label = label
         customer.last_bot_stage_at = _now()
+        conversation = session.scalars(
+            select(ConversationSessionRow).where(
+                ConversationSessionRow.customer_phone == phone,
+                ConversationSessionRow.status == "open",
+            ).order_by(ConversationSessionRow.last_event_at.desc())
+        ).first()
+        if conversation is None:
+            conversation = ConversationSessionRow(
+                customer_phone=phone,
+                status="open",
+                current_stage=stage or "",
+                last_event_at=_now(),
+            )
+            session.add(conversation)
+            session.flush()
+        else:
+            conversation.current_stage = stage or ""
+            conversation.last_event_at = _now()
+        session.add(
+            ConversationEventRow(
+                session_id=conversation.id,
+                customer_phone=phone,
+                stage=stage or "",
+                stage_label=label,
+                event_type="stage_seen",
+            )
+        )
         session.flush()
         session.expunge(customer)
         return customer
@@ -303,6 +382,68 @@ def _find_or_create_vehicle(session, booking: Booking) -> CustomerVehicle | None
     return vehicle
 
 
+def _slot_hours(slot_id: str, slot_label: str) -> tuple[int, int] | None:
+    match = re.match(r"^slot_(\d{1,2})_(\d{1,2})$", slot_id or "")
+    if match:
+        return int(match.group(1)), int(match.group(2))
+    match = re.search(r"(\d{1,2})h?\s*[–-]\s*(\d{1,2})h?", slot_label or "")
+    if match:
+        return int(match.group(1)), int(match.group(2))
+    return None
+
+
+def _appointment_bounds(booking: Booking) -> tuple[date | None, datetime | None, datetime | None]:
+    if not booking.date_iso:
+        return None, None, None
+    try:
+        appointment_date = date.fromisoformat(booking.date_iso)
+    except ValueError:
+        return None, None, None
+    hours = _slot_hours(booking.slot_id, booking.slot)
+    if hours is None:
+        return appointment_date, None, None
+    start_hour, end_hour = hours
+    tz = ZoneInfo("Africa/Casablanca")
+    start_at = datetime.combine(appointment_date, time(hour=start_hour), tzinfo=tz)
+    end_at = datetime.combine(appointment_date, time(hour=end_hour), tzinfo=tz)
+    return appointment_date, start_at, end_at
+
+
+def _add_booking_line_items(session, row: BookingRow, booking: Booking) -> None:
+    if booking.service:
+        session.add(
+            BookingLineItemRow(
+                booking_id=row.id,
+                kind="main",
+                service_id=booking.service,
+                service_bucket=booking.service_bucket,
+                label_snapshot=booking.service_label or booking.service,
+                quantity=1,
+                unit_price_dh=booking.price_dh or 0,
+                regular_price_dh=booking.price_regular_dh or booking.price_dh or 0,
+                total_price_dh=booking.price_dh or 0,
+                discount_label=booking.promo_label or "",
+                sort_order=0,
+            )
+        )
+    if booking.addon_service:
+        session.add(
+            BookingLineItemRow(
+                booking_id=row.id,
+                kind="addon",
+                service_id=booking.addon_service,
+                service_bucket="detailing",
+                label_snapshot=booking.addon_service_label or booking.addon_service,
+                quantity=1,
+                unit_price_dh=booking.addon_price_dh or 0,
+                regular_price_dh=booking.addon_price_dh or 0,
+                total_price_dh=booking.addon_price_dh or 0,
+                discount_label="-10%",
+                sort_order=10,
+            )
+        )
+
+
 def persist_confirmed_booking(booking: Booking, *, engine: Engine | None = None) -> BookingRow | None:
     """Mirror a confirmed WhatsApp booking into the CRM database.
 
@@ -325,6 +466,7 @@ def persist_confirmed_booking(booking: Booking, *, engine: Engine | None = None)
 
         customer = _find_or_create_customer(session, booking)
         vehicle = _find_or_create_vehicle(session, booking)
+        appointment_date, appointment_start_at, appointment_end_at = _appointment_bounds(booking)
         row = BookingRow(
             ref=booking.ref,
             customer_phone=customer.phone,
@@ -343,18 +485,30 @@ def persist_confirmed_booking(booking: Booking, *, engine: Engine | None = None)
             promo_label=booking.promo_label,
             location_mode=booking.location_mode,
             center=booking.center,
+            center_id=booking.center_id,
             geo=booking.geo,
             address=booking.address,
+            address_text=booking.address,
+            location_name=booking.location_name,
+            location_address=booking.location_address,
+            latitude=booking.latitude,
+            longitude=booking.longitude,
             date_label=booking.date_label,
             slot=booking.slot,
+            appointment_date=appointment_date,
+            slot_id=booking.slot_id,
             note=booking.note,
             addon_service=booking.addon_service,
             addon_service_label=booking.addon_service_label,
             addon_price_dh=booking.addon_price_dh,
+            total_price_dh=(booking.price_dh or 0) + (booking.addon_price_dh or 0),
+            appointment_start_at=appointment_start_at,
+            appointment_end_at=appointment_end_at,
             raw_booking_json=json.dumps(asdict(booking), ensure_ascii=False, default=str),
         )
         session.add(row)
         session.flush()
+        _add_booking_line_items(session, row, booking)
         session.add(
             BookingStatusEventRow(
                 booking_id=row.id,
@@ -388,6 +542,35 @@ def persist_booking_addon(
         row.addon_service = addon_service
         row.addon_service_label = addon_service_label
         row.addon_price_dh = addon_price_dh
+        row.total_price_dh = (row.price_dh or 0) + (row.addon_price_dh or 0)
+        line = session.scalars(
+            select(BookingLineItemRow).where(
+                BookingLineItemRow.booking_id == row.id,
+                BookingLineItemRow.kind == "addon",
+            )
+        ).first()
+        if line is None:
+            session.add(
+                BookingLineItemRow(
+                    booking_id=row.id,
+                    kind="addon",
+                    service_id=addon_service,
+                    service_bucket="detailing",
+                    label_snapshot=addon_service_label,
+                    quantity=1,
+                    unit_price_dh=addon_price_dh,
+                    regular_price_dh=addon_price_dh,
+                    total_price_dh=addon_price_dh,
+                    discount_label="-10%",
+                    sort_order=10,
+                )
+            )
+        else:
+            line.service_id = addon_service
+            line.label_snapshot = addon_service_label
+            line.unit_price_dh = addon_price_dh
+            line.regular_price_dh = addon_price_dh
+            line.total_price_dh = addon_price_dh
 
 
 def _booking_dict_to_admin_item(row: dict) -> AdminBookingListItem:
@@ -457,15 +640,19 @@ def admin_booking_list(*, engine: Engine | None = None, limit: int = 100) -> tup
             for row in rows:
                 vehicle_label = " — ".join(part for part in (row.car_model, row.color) if part) or row.vehicle_type
                 location_label = row.center if row.location_mode == "center" else (row.address or row.geo or row.location_mode)
-                total_price_dh = (row.price_dh or 0) + (row.addon_price_dh or 0)
+                line_items = list(row.line_items or [])
+                main_line = next((item for item in line_items if item.kind == "main"), None)
+                addon_labels = [item.label_snapshot for item in line_items if item.kind == "addon" and item.label_snapshot]
+                addon_label = " + ".join(addon_labels) or row.addon_service_label or ""
+                total_price_dh = sum(item.total_price_dh or 0 for item in line_items) if line_items else ((row.price_dh or 0) + (row.addon_price_dh or 0))
                 items.append(
                     AdminBookingListItem(
                         ref=row.ref,
                         customer_name=row.customer_name or row.customer_phone,
                         customer_phone=row.customer_phone,
                         vehicle_label=vehicle_label,
-                        service_label=row.service_label or row.service_id,
-                        addon_service_label=row.addon_service_label or "",
+                        service_label=(main_line.label_snapshot if main_line else "") or row.service_label or row.service_id,
+                        addon_service_label=addon_label,
                         status=row.status,
                         date_label=row.date_label,
                         slot=row.slot,

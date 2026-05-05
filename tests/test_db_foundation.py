@@ -6,19 +6,25 @@ from app.db import init_db, make_engine, normalize_database_url, session_scope
 from app.models import (
     AdminTextRow,
     BookingReminderRow,
+    BookingLineItemRow,
+    BookingRefCounterRow,
     BookingRow,
     BookingStatusEventRow,
     CenterRow,
     ClosedDateRow,
+    ConversationEventRow,
+    ConversationSessionRow,
     Customer,
     CustomerVehicle,
     PromoCodeRow,
     PromoDiscountRow,
     ReminderRuleRow,
+    ServiceRow,
     ServicePriceRow,
     TimeSlotRow,
     VehicleColor,
     VehicleModel,
+    WhatsappMessageRow,
 )
 
 
@@ -47,17 +53,43 @@ def test_init_db_creates_v03_core_tables():
         "vehicle_models",
         "vehicle_colors",
         "bookings",
+        "booking_line_items",
+        "booking_ref_counters",
         "booking_status_events",
+        "conversation_sessions",
+        "conversation_events",
         "reminder_rules",
         "booking_reminders",
+        "services",
         "service_prices",
         "promo_codes",
         "promo_discounts",
+        "whatsapp_messages",
         "closed_dates",
         "time_slots",
         "centers",
         "admin_texts",
     }.issubset(tables)
+    booking_uniques = {tuple(item["column_names"]) for item in inspect(engine).get_unique_constraints("bookings")}
+    assert ("ref",) in booking_uniques
+    booking_columns = {column["name"] for column in inspect(engine).get_columns("bookings")}
+    assert {
+        "appointment_date",
+        "slot_id",
+        "center_id",
+        "address_text",
+        "latitude",
+        "longitude",
+        "total_price_dh",
+    }.issubset(booking_columns)
+    service_columns = {column["name"] for column in inspect(engine).get_columns("services")}
+    assert {"service_id", "name", "bucket", "vehicle_lane", "active", "sort_order"}.issubset(service_columns)
+    line_item_columns = {column["name"] for column in inspect(engine).get_columns("booking_line_items")}
+    assert {"booking_id", "kind", "service_id", "unit_price_dh", "total_price_dh"}.issubset(line_item_columns)
+    whatsapp_columns = {column["name"] for column in inspect(engine).get_columns("whatsapp_messages")}
+    assert {"message_id", "phone", "direction", "payload_json", "processed_at"}.issubset(whatsapp_columns)
+    conversation_columns = {column["name"] for column in inspect(engine).get_columns("conversation_events")}
+    assert {"session_id", "customer_phone", "stage", "stage_label", "event_type"}.issubset(conversation_columns)
     vehicle_columns = {column["name"] for column in inspect(engine).get_columns("customer_vehicles")}
     assert {"model_id", "color_id"}.issubset(vehicle_columns)
     service_price_columns = {column["name"] for column in inspect(engine).get_columns("service_prices")}
@@ -74,6 +106,10 @@ def test_init_db_creates_v03_core_tables():
     assert {"center_id", "name", "details", "active"}.issubset(center_columns)
     admin_text_columns = {column["name"] for column in inspect(engine).get_columns("admin_texts")}
     assert {"text_key", "title", "body"}.issubset(admin_text_columns)
+
+    with session_scope(engine) as session:
+        service_ids = {row.service_id for row in session.scalars(select(ServiceRow)).all()}
+    assert {"svc_ext", "svc_cpl", "svc_pol", "svc_moto"}.issubset(service_ids)
 
 
 def test_init_db_migrates_legacy_customer_vehicles_to_normalized_refs():

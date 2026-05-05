@@ -7,10 +7,10 @@ admin UI around them.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Iterable
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 BOOKING_STATUSES = (
@@ -93,6 +93,7 @@ class Customer(Base):
 
     vehicles: Mapped[list["CustomerVehicle"]] = relationship(back_populates="customer", cascade="all, delete-orphan")
     bookings: Mapped[list["BookingRow"]] = relationship(back_populates="customer")
+    conversation_sessions: Mapped[list["ConversationSessionRow"]] = relationship(back_populates="customer")
 
 
 class VehicleModel(Base):
@@ -150,11 +151,31 @@ class ServicePriceRow(Base):
     __table_args__ = (UniqueConstraint("service_id", "category", name="uq_service_price_service_category"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    service_id: Mapped[str] = mapped_column(String(40), index=True)
+    service_id: Mapped[str] = mapped_column(ForeignKey("services.service_id"), index=True)
     category: Mapped[str] = mapped_column(String(8), index=True)
     price_dh: Mapped[int] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    service: Mapped["ServiceRow"] = relationship(back_populates="prices")
+
+
+class ServiceRow(Base):
+    __tablename__ = "services"
+
+    service_id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    name: Mapped[str] = mapped_column(String(120), default="")
+    description: Mapped[str] = mapped_column(String(240), default="")
+    bucket: Mapped[str] = mapped_column(String(40), default="", index=True)
+    vehicle_lane: Mapped[str] = mapped_column(String(40), default="car", index=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    prices: Mapped[list[ServicePriceRow]] = relationship(back_populates="service", cascade="all, delete-orphan")
+    promo_discounts: Mapped[list["PromoDiscountRow"]] = relationship(back_populates="service")
+    booking_line_items: Mapped[list["BookingLineItemRow"]] = relationship(back_populates="service")
 
 
 class PromoCodeRow(Base):
@@ -175,13 +196,14 @@ class PromoDiscountRow(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     promo_code: Mapped[str] = mapped_column(ForeignKey("promo_codes.code"), index=True)
-    service_id: Mapped[str] = mapped_column(String(40), index=True)
+    service_id: Mapped[str] = mapped_column(ForeignKey("services.service_id"), index=True)
     category: Mapped[str] = mapped_column(String(8), index=True)
     price_dh: Mapped[int] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     promo: Mapped[PromoCodeRow] = relationship(back_populates="discounts")
+    service: Mapped[ServiceRow] = relationship(back_populates="promo_discounts")
 
 
 class ClosedDateRow(Base):
@@ -230,6 +252,16 @@ class AdminTextRow(Base):
 
 class BookingRow(Base):
     __tablename__ = "bookings"
+    __table_args__ = (
+        UniqueConstraint("ref", name="uq_bookings_ref"),
+        CheckConstraint(
+            "status IN ('draft','awaiting_confirmation','pending_ewash_confirmation','confirmed','rescheduled','customer_cancelled','admin_cancelled','expired','no_show','technician_en_route','arrived','in_progress','completed','completed_with_issue','refunded')",
+            name="ck_bookings_status",
+        ),
+        CheckConstraint("price_dh >= 0", name="ck_bookings_price_nonnegative"),
+        CheckConstraint("price_regular_dh >= 0", name="ck_bookings_regular_price_nonnegative"),
+        CheckConstraint("addon_price_dh >= 0", name="ck_bookings_addon_price_nonnegative"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     ref: Mapped[str] = mapped_column(String(32), default="", index=True)
@@ -249,14 +281,23 @@ class BookingRow(Base):
     promo_label: Mapped[str] = mapped_column(String(120), default="")
     location_mode: Mapped[str] = mapped_column(String(40), default="")
     center: Mapped[str] = mapped_column(String(80), default="")
+    center_id: Mapped[str] = mapped_column(String(40), default="", index=True)
     geo: Mapped[str] = mapped_column(Text, default="")
     address: Mapped[str] = mapped_column(Text, default="")
+    address_text: Mapped[str] = mapped_column(Text, default="")
+    location_name: Mapped[str] = mapped_column(String(160), default="")
+    location_address: Mapped[str] = mapped_column(Text, default="")
+    latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
     date_label: Mapped[str] = mapped_column(String(80), default="")
     slot: Mapped[str] = mapped_column(String(80), default="")
+    appointment_date: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
+    slot_id: Mapped[str] = mapped_column(String(40), default="", index=True)
     note: Mapped[str] = mapped_column(Text, default="")
     addon_service: Mapped[str] = mapped_column(String(40), default="")
     addon_service_label: Mapped[str] = mapped_column(String(160), default="")
     addon_price_dh: Mapped[int] = mapped_column(Integer, default=0)
+    total_price_dh: Mapped[int] = mapped_column(Integer, default=0)
     appointment_start_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     appointment_end_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     timezone_name: Mapped[str] = mapped_column(String(80), default="Africa/Casablanca")
@@ -272,6 +313,45 @@ class BookingRow(Base):
     reminders: Mapped[list["BookingReminderRow"]] = relationship(
         back_populates="booking", cascade="all, delete-orphan", order_by="BookingReminderRow.scheduled_for"
     )
+    line_items: Mapped[list["BookingLineItemRow"]] = relationship(
+        back_populates="booking", cascade="all, delete-orphan", order_by="BookingLineItemRow.sort_order"
+    )
+
+
+class BookingLineItemRow(Base):
+    __tablename__ = "booking_line_items"
+    __table_args__ = (
+        CheckConstraint("quantity > 0", name="ck_booking_line_items_quantity_positive"),
+        CheckConstraint("unit_price_dh >= 0", name="ck_booking_line_items_unit_price_nonnegative"),
+        CheckConstraint("regular_price_dh >= 0", name="ck_booking_line_items_regular_price_nonnegative"),
+        CheckConstraint("total_price_dh >= 0", name="ck_booking_line_items_total_price_nonnegative"),
+        Index("ix_booking_line_items_booking_kind", "booking_id", "kind"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    booking_id: Mapped[int] = mapped_column(ForeignKey("bookings.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(40), default="main", index=True)
+    service_id: Mapped[str] = mapped_column(ForeignKey("services.service_id"), index=True)
+    service_bucket: Mapped[str] = mapped_column(String(40), default="")
+    label_snapshot: Mapped[str] = mapped_column(String(180), default="")
+    quantity: Mapped[int] = mapped_column(Integer, default=1)
+    unit_price_dh: Mapped[int] = mapped_column(Integer, default=0)
+    regular_price_dh: Mapped[int] = mapped_column(Integer, default=0)
+    total_price_dh: Mapped[int] = mapped_column(Integer, default=0)
+    discount_label: Mapped[str] = mapped_column(String(120), default="")
+    sort_order: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    booking: Mapped[BookingRow] = relationship(back_populates="line_items")
+    service: Mapped[ServiceRow] = relationship(back_populates="booking_line_items")
+
+
+class BookingRefCounterRow(Base):
+    __tablename__ = "booking_ref_counters"
+
+    year: Mapped[int] = mapped_column(Integer, primary_key=True)
+    last_counter: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
 class BookingStatusEventRow(Base):
@@ -307,6 +387,9 @@ class ReminderRuleRow(Base):
 
 class BookingReminderRow(Base):
     __tablename__ = "booking_reminders"
+    __table_args__ = (
+        CheckConstraint("status IN ('pending','sent','cancelled','failed','skipped')", name="ck_booking_reminders_status"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     booking_id: Mapped[int] = mapped_column(ForeignKey("bookings.id"), index=True)
@@ -321,6 +404,58 @@ class BookingReminderRow(Base):
 
     booking: Mapped[BookingRow] = relationship(back_populates="reminders")
     rule: Mapped[ReminderRuleRow | None] = relationship(back_populates="reminders")
+
+
+class WhatsappMessageRow(Base):
+    __tablename__ = "whatsapp_messages"
+    __table_args__ = (
+        CheckConstraint("direction IN ('inbound','outbound')", name="ck_whatsapp_messages_direction"),
+        UniqueConstraint("message_id", name="uq_whatsapp_messages_message_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    message_id: Mapped[str] = mapped_column(String(160), default="", index=True)
+    phone: Mapped[str] = mapped_column(String(32), default="", index=True)
+    direction: Mapped[str] = mapped_column(String(16), default="inbound", index=True)
+    message_type: Mapped[str] = mapped_column(String(40), default="")
+    payload_json: Mapped[str] = mapped_column(Text, default="{}")
+    status: Mapped[str] = mapped_column(String(40), default="received", index=True)
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ConversationSessionRow(Base):
+    __tablename__ = "conversation_sessions"
+    __table_args__ = (
+        Index("ix_conversation_sessions_phone_status", "customer_phone", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    customer_phone: Mapped[str] = mapped_column(ForeignKey("customers.phone"), index=True)
+    status: Mapped[str] = mapped_column(String(40), default="open", index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_event_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    current_stage: Mapped[str] = mapped_column(String(60), default="", index=True)
+
+    customer: Mapped[Customer] = relationship(back_populates="conversation_sessions")
+    events: Mapped[list["ConversationEventRow"]] = relationship(
+        back_populates="session", cascade="all, delete-orphan", order_by="ConversationEventRow.created_at"
+    )
+
+
+class ConversationEventRow(Base):
+    __tablename__ = "conversation_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[int] = mapped_column(ForeignKey("conversation_sessions.id"), index=True)
+    customer_phone: Mapped[str] = mapped_column(String(32), default="", index=True)
+    stage: Mapped[str] = mapped_column(String(60), default="", index=True)
+    stage_label: Mapped[str] = mapped_column(String(160), default="")
+    event_type: Mapped[str] = mapped_column(String(60), default="stage_seen", index=True)
+    payload_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    session: Mapped[ConversationSessionRow] = relationship(back_populates="events")
 
 
 def utcnow() -> datetime:

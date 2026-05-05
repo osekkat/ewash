@@ -6,7 +6,19 @@ from app import handlers, meta, state
 from app.booking import Booking
 from app.config import settings
 from app.db import init_db, make_engine, session_scope
-from app.models import BookingRow, BookingStatusEventRow, Customer, CustomerVehicle, VehicleColor, VehicleModel
+from app.models import (
+    BookingLineItemRow,
+    BookingRefCounterRow,
+    BookingRow,
+    BookingStatusEventRow,
+    ConversationEventRow,
+    ConversationSessionRow,
+    Customer,
+    CustomerVehicle,
+    VehicleColor,
+    VehicleModel,
+    WhatsappMessageRow,
+)
 from app.persistence import (
     admin_customer_list,
     admin_dashboard_summary,
@@ -14,6 +26,7 @@ from app.persistence import (
     persist_confirmed_booking,
     persist_booking_addon,
     persist_customer_bot_stage,
+    persist_whatsapp_inbound_message,
     _configured_engine,
 )
 
@@ -34,8 +47,14 @@ def _sample_booking(phone: str = "212665883062") -> Booking:
     booking.promo_label = "Yasmine Signature"
     booking.location_mode = "home"
     booking.geo = "📍 33.5, -7.6"
+    booking.location_name = "Villa Oussama"
+    booking.location_address = "Bouskoura"
+    booking.latitude = 33.5
+    booking.longitude = -7.6
     booking.address = "Bouskoura, portail bleu"
     booking.date_label = "Demain"
+    booking.date_iso = "2026-05-01"
+    booking.slot_id = "slot_9_11"
     booking.slot = "09h – 11h"
     booking.note = "Appeler en arrivant"
     booking.assign_ref()
@@ -80,9 +99,28 @@ def test_persist_confirmed_booking_upserts_customer_vehicle_and_status_event():
         assert saved.promo_code == "YS26"
         assert saved.location_mode == "home"
         assert saved.geo == "📍 33.5, -7.6"
+        assert saved.location_name == "Villa Oussama"
+        assert saved.location_address == "Bouskoura"
+        assert saved.latitude == 33.5
+        assert saved.longitude == -7.6
         assert saved.address == "Bouskoura, portail bleu"
+        assert saved.address_text == "Bouskoura, portail bleu"
+        assert saved.appointment_date.isoformat() == "2026-05-01"
+        assert saved.slot_id == "slot_9_11"
+        assert saved.appointment_start_at.hour == 9
+        assert saved.appointment_end_at.hour == 11
         assert saved.note == "Appeler en arrivant"
+        assert saved.total_price_dh == 110
         assert "BMW 330i" in saved.raw_booking_json
+
+        line_item = session.scalars(select(BookingLineItemRow)).one()
+        assert line_item.booking_id == saved.id
+        assert line_item.kind == "main"
+        assert line_item.service_id == "svc_cpl"
+        assert line_item.label_snapshot == "Le Complet — 110 DH"
+        assert line_item.unit_price_dh == 110
+        assert line_item.regular_price_dh == 125
+        assert line_item.total_price_dh == 110
 
         event = session.scalars(select(BookingStatusEventRow)).one()
         assert event.booking_id == saved.id
@@ -191,6 +229,9 @@ def test_assign_booking_ref_advances_past_existing_db_refs_when_memory_counter_r
         refs = {row.ref for row in session.scalars(select(BookingRow)).all()}
         assert refs == {f"EW-{year}-0007", f"EW-{year}-0008"}
         assert session.get(Customer, "212600000002") is not None
+        counter = session.get(BookingRefCounterRow, int(year))
+        assert counter is not None
+        assert counter.last_counter == 8
 
 
 def test_persist_booking_addon_updates_confirmed_booking_row():
@@ -212,6 +253,12 @@ def test_persist_booking_addon_updates_confirmed_booking_row():
         assert saved.addon_service == "svc_pol"
         assert saved.addon_service_label == "Le Polissage — 770 DH (-10%)"
         assert saved.addon_price_dh == 770
+        assert saved.total_price_dh == 880
+        line_items = session.scalars(select(BookingLineItemRow).order_by(BookingLineItemRow.sort_order)).all()
+        assert [(item.kind, item.service_id, item.total_price_dh) for item in line_items] == [
+            ("main", "svc_cpl", 110),
+            ("addon", "svc_pol", 770),
+        ]
 
 
 def test_admin_dashboard_summary_counts_db_rows_and_recent_bookings():
@@ -245,6 +292,13 @@ def test_persist_customer_bot_stage_tracks_abandoned_price_list_stage():
         assert customer.last_bot_stage_label == "Liste des prix affichée"
         assert customer.last_bot_stage_at is not None
         assert customer.booking_count == 0
+        conversation = session.scalars(select(ConversationSessionRow)).one()
+        assert conversation.customer_phone == "212600000003"
+        assert conversation.current_stage == "BOOK_SERVICE"
+        event = session.scalars(select(ConversationEventRow)).one()
+        assert event.session_id == conversation.id
+        assert event.stage == "BOOK_SERVICE"
+        assert event.stage_label == "Liste des prix affichée"
 
     customers = admin_customer_list(engine=engine)
     customer_item = next(item for item in customers if item.phone == "212600000003")
@@ -294,3 +348,20 @@ def test_handle_message_tracks_latest_stage_after_showing_price_list(monkeypatch
         assert customer.booking_count == 0
     state.reset(phone)
     _configured_engine.cache_clear()
+
+
+def test_persist_whatsapp_inbound_message_is_idempotent():
+    engine = make_engine("sqlite+pysqlite:///:memory:")
+    init_db(engine)
+    message = {"id": "wamid.test-1", "from": "212665883062", "type": "text", "text": {"body": "hello"}}
+
+    assert persist_whatsapp_inbound_message(message, {"profile": {"name": "Oussama"}}, engine=engine) is True
+    assert persist_whatsapp_inbound_message(message, {"profile": {"name": "Oussama"}}, engine=engine) is False
+
+    with session_scope(engine) as session:
+        rows = session.scalars(select(WhatsappMessageRow)).all()
+        assert len(rows) == 1
+        assert rows[0].message_id == "wamid.test-1"
+        assert rows[0].phone == "212665883062"
+        assert rows[0].direction == "inbound"
+        assert rows[0].processed_at is not None

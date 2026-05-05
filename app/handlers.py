@@ -11,7 +11,13 @@ from datetime import date, timedelta
 from . import catalog, meta, state
 from .booking import Booking
 from .config import settings
-from .persistence import assign_booking_ref, persist_booking_addon, persist_confirmed_booking, persist_customer_bot_stage
+from .persistence import (
+    assign_booking_ref,
+    persist_booking_addon,
+    persist_confirmed_booking,
+    persist_customer_bot_stage,
+    persist_whatsapp_inbound_message,
+)
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +44,9 @@ def _track_bot_stage(phone: str, sess) -> None:
 async def handle_message(message: dict, contact: dict | None = None) -> None:
     phone = message.get("from")
     if not phone:
+        return
+    if not persist_whatsapp_inbound_message(message, contact):
+        log.info("duplicate inbound WhatsApp message ignored id=%s phone=%s", message.get("id"), phone)
         return
 
     payload_id = meta.extract_interactive_id(message)
@@ -278,6 +287,7 @@ async def _handle_book_where(phone, sess, payload_id=None, **kw):
         if len(centers) == 1:
             # Only one center → auto-pick and skip selection.
             row = centers[0]
+            sess.booking.center_id = row[0]
             sess.booking.center = f"{row[1]} — {row[2]}"
             await _after_location(phone, sess)
         else:
@@ -311,6 +321,7 @@ async def _handle_book_center(phone, sess, payload_id=None, **kw):
         await meta.send_list(phone, "Choisissez un centre :", "Choisir le centre",
                              centers, "Centres disponibles")
         return
+    sess.booking.center_id = payload_id
     sess.booking.center = catalog.label_for(centers, payload_id)
     await _after_location(phone, sess)
 
@@ -326,9 +337,15 @@ async def _handle_book_geo(phone, sess, location=None, **kw):
         return
     parts = []
     if location.get("name"):
+        sess.booking.location_name = str(location["name"])[:160]
         parts.append(location["name"])
     if location.get("address"):
+        sess.booking.location_address = str(location["address"])[:300]
         parts.append(location["address"])
+    if location.get("latitude") is not None:
+        sess.booking.latitude = float(location.get("latitude"))
+    if location.get("longitude") is not None:
+        sess.booking.longitude = float(location.get("longitude"))
     parts.append(f"📍 {location.get('latitude')}, {location.get('longitude')}")
     sess.booking.geo = " | ".join(parts)
     sess.state = "BOOK_ADDRESS"
@@ -500,6 +517,7 @@ async def _handle_book_when(phone, sess, payload_id=None, **kw):
         else:
             label = f"{_jour_fr(d)} {d.strftime('%d/%m/%Y')}"
         sess.booking.date_label = label
+        sess.booking.date_iso = d.isoformat()
         sess.state = "BOOK_SLOT"
         slots = catalog.active_time_slots()
         await meta.send_list(phone, "À quelle heure ?", "Choisir un créneau",
@@ -516,6 +534,7 @@ async def _handle_book_slot(phone, sess, payload_id=None, **kw):
         await meta.send_list(phone, "Choisissez un créneau :", "Choisir un créneau",
                              slots, "Créneaux")
         return
+    sess.booking.slot_id = payload_id
     sess.booking.slot = catalog.label_for(slots, payload_id)
     sess.state = "BOOK_NOTE"
     await meta.send_buttons(

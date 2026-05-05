@@ -26,10 +26,17 @@ class Booking:
     service_label: str = ""     # "Le Complet — 125 DH" (what customer saw)
     price_dh: int = 0           # resolved price in DH at the time of booking
     location_mode: str = ""     # "home" or "center"
+    center_id: str = ""         # ctr_casa / ... stable center key
     center: str = ""            # ctr_casa / ...
     geo: str = ""               # WhatsApp location pin (home only) — "name | address | 📍 lat, lng"
+    location_name: str = ""     # WhatsApp location name, if provided
+    location_address: str = ""  # WhatsApp location address, if provided
+    latitude: float | None = None
+    longitude: float | None = None
     address: str = ""           # free-text address + access notes (home only)
     date_label: str = ""        # "Aujourd'hui" / "Demain" / "2026-04-19"
+    date_iso: str = ""          # YYYY-MM-DD stable appointment date
+    slot_id: str = ""           # slot_9_11 / ...
     slot: str = ""              # slot_9_11 / ...
     note: str = ""              # optional customer note
     ref: str = ""               # assigned at confirmation
@@ -51,13 +58,19 @@ class Booking:
     when_page: int = 0
     when_dates: list[str] = field(default_factory=list)  # ISO dates currently offered
 
-    def assign_ref(self, *, counter_floor: int = 0) -> str:
+    def assign_ref(self, *, counter_floor: int = 0, counter_value: int | None = None) -> str:
         global _counter
-        if counter_floor > _counter:
-            _counter = counter_floor
-        _counter += 1
+        if counter_value is None:
+            if counter_floor > _counter:
+                _counter = counter_floor
+            _counter += 1
+            counter = _counter
+        else:
+            counter = counter_value
+            if counter > _counter:
+                _counter = counter
         year = datetime.now(timezone.utc).year
-        self.ref = f"EW-{year}-{_counter:04d}"
+        self.ref = f"EW-{year}-{counter:04d}"
         self.created_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         _bookings.append(asdict(self))
         log.info("booking confirmed ref=%s phone=%s payload=%s",
