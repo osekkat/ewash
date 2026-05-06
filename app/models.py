@@ -93,9 +93,24 @@ class Customer(Base):
     last_bot_stage_label: Mapped[str] = mapped_column(String(160), default="")
     last_bot_stage_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    names: Mapped[list["CustomerName"]] = relationship(back_populates="customer", cascade="all, delete-orphan")
     vehicles: Mapped[list["CustomerVehicle"]] = relationship(back_populates="customer", cascade="all, delete-orphan")
     bookings: Mapped[list["BookingRow"]] = relationship(back_populates="customer")
     conversation_sessions: Mapped[list["ConversationSessionRow"]] = relationship(back_populates="customer")
+
+
+class CustomerName(Base):
+    __tablename__ = "customer_names"
+    __table_args__ = (UniqueConstraint("customer_phone", "normalized_name", name="uq_customer_names_phone_normalized"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    customer_phone: Mapped[str] = mapped_column(ForeignKey("customers.phone"), index=True)
+    display_name: Mapped[str] = mapped_column(String(120), default="")
+    normalized_name: Mapped[str] = mapped_column(String(120), default="", index=True)
+    first_used_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_used_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), index=True)
+
+    customer: Mapped[Customer] = relationship(back_populates="names")
 
 
 class VehicleModel(Base):

@@ -15,6 +15,7 @@ from app.models import (
     ConversationEventRow,
     ConversationSessionRow,
     Customer,
+    CustomerName,
     CustomerVehicle,
     PromoCodeRow,
     PromoDiscountRow,
@@ -49,6 +50,7 @@ def test_init_db_creates_v03_core_tables():
     tables = set(inspect(engine).get_table_names())
     assert {
         "customers",
+        "customer_names",
         "customer_vehicles",
         "vehicle_models",
         "vehicle_colors",
@@ -93,6 +95,8 @@ def test_init_db_creates_v03_core_tables():
     assert {"session_id", "customer_phone", "stage", "stage_label", "event_type"}.issubset(conversation_columns)
     customer_columns = {column["name"] for column in inspect(engine).get_columns("customers")}
     assert {"whatsapp_profile_name", "whatsapp_wa_id"}.issubset(customer_columns)
+    customer_name_columns = {column["name"] for column in inspect(engine).get_columns("customer_names")}
+    assert {"customer_phone", "display_name", "normalized_name", "last_used_at"}.issubset(customer_name_columns)
     vehicle_columns = {column["name"] for column in inspect(engine).get_columns("customer_vehicles")}
     assert {"model_id", "color_id"}.issubset(vehicle_columns)
     service_price_columns = {column["name"] for column in inspect(engine).get_columns("service_prices")}
@@ -168,6 +172,7 @@ def test_customer_vehicle_booking_status_and_reminder_rows_round_trip():
         customer = Customer(phone="212665883062", display_name="Oussama")
         session.add(customer)
         session.flush()
+        session.add(CustomerName(customer_phone=customer.phone, display_name="Oussama", normalized_name="oussama"))
 
         model = VehicleModel(category="B", name="BMW 330i", normalized_name="bmw 330i")
         color = VehicleColor(name="Noir", normalized_name="noir")

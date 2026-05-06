@@ -31,6 +31,7 @@ from .models import (
     ConversationEventRow,
     ConversationSessionRow,
     Customer,
+    CustomerName,
     CustomerVehicle,
     ReminderRuleRow,
     WhatsappMessageRow,
@@ -77,6 +78,16 @@ class AdminCustomerListItem:
 
 
 @dataclass(frozen=True)
+class ReturningCustomerProfile:
+    phone: str
+    display_name: str
+    vehicle_label: str
+    category: str
+    model: str
+    color: str
+
+
+@dataclass(frozen=True)
 class DashboardSummary:
     total_bookings: int = 0
     confirmed_bookings: int = 0
@@ -109,6 +120,7 @@ def _now() -> datetime:
 
 _BOT_STAGE_LABELS = {
     "IDLE": "Hors parcours",
+    "RETURNING_CUSTOMER": "Confirmation client connu",
     "MENU": "Menu principal affiché",
     "HANDOFF": "Message à l'équipe",
     "BOOK_NAME": "Saisie du nom",
@@ -245,7 +257,69 @@ def _find_or_create_customer(session, booking: Booking) -> Customer:
         customer.display_name = booking.name
     customer.last_seen_at = _now()
     customer.booking_count = (customer.booking_count or 0) + 1
+    if booking.name:
+        _upsert_customer_name(session, customer, booking.name)
     return customer
+
+
+def _normalize_customer_name(value: str) -> str:
+    return re.sub(r"\s+", " ", (value or "").strip()).casefold()
+
+
+def _upsert_customer_name(session, customer: Customer, display_name: str) -> CustomerName | None:
+    cleaned = re.sub(r"\s+", " ", (display_name or "").strip())[:120]
+    normalized = _normalize_customer_name(cleaned)
+    if not normalized:
+        return None
+    row = session.scalars(
+        select(CustomerName).where(
+            CustomerName.customer_phone == customer.phone,
+            CustomerName.normalized_name == normalized,
+        )
+    ).first()
+    if row is None:
+        row = CustomerName(
+            customer_phone=customer.phone,
+            display_name=cleaned,
+            normalized_name=normalized,
+            last_used_at=_now(),
+        )
+        session.add(row)
+        session.flush()
+    else:
+        row.display_name = cleaned
+        row.last_used_at = _now()
+    customer.display_name = cleaned
+    customer.last_seen_at = _now()
+    return row
+
+
+def persist_customer_name(
+    phone: str,
+    display_name: str,
+    *,
+    engine: Engine | None = None,
+) -> CustomerName | None:
+    """Record a name used by a phone number and mark it as the latest one."""
+    phone = str(phone or "").strip()
+    cleaned = re.sub(r"\s+", " ", (display_name or "").strip())[:120]
+    if not phone or not cleaned:
+        return None
+    db_engine = _engine_or_configured(engine)
+    if db_engine is None:
+        return None
+    with session_scope(db_engine) as session:
+        customer = session.get(Customer, phone)
+        if customer is None:
+            customer = Customer(phone=phone, display_name=cleaned)
+            session.add(customer)
+            session.flush()
+        row = _upsert_customer_name(session, customer, cleaned)
+        session.flush()
+        if row is None:
+            return None
+        session.expunge(row)
+        return row
 
 
 def _contact_profile_name(contact: dict | None) -> str:
@@ -437,6 +511,98 @@ def _find_or_create_vehicle(session, booking: Booking) -> CustomerVehicle | None
     session.add(vehicle)
     session.flush()
     return vehicle
+
+
+def _ensure_customer_identity(session, *, phone: str, display_name: str = "") -> Customer:
+    customer = session.get(Customer, phone)
+    if customer is None:
+        customer = Customer(phone=phone, display_name=display_name or "")
+        session.add(customer)
+        session.flush()
+    elif display_name:
+        customer.display_name = display_name
+    customer.last_seen_at = _now()
+    if display_name:
+        _upsert_customer_name(session, customer, display_name)
+    return customer
+
+
+def persist_booking_identity(
+    booking: Booking,
+    *,
+    engine: Engine | None = None,
+) -> CustomerVehicle | None:
+    """Persist the latest customer name and vehicle before booking confirmation."""
+    if not booking.phone:
+        return None
+    db_engine = _engine_or_configured(engine)
+    if db_engine is None:
+        return None
+    category = booking.category or ""
+    if not category:
+        if booking.name:
+            persist_customer_name(booking.phone, booking.name, engine=db_engine)
+        return None
+    if category != "MOTO" and not ((booking.car_model or "").strip() and (booking.color or "").strip()):
+        if booking.name:
+            persist_customer_name(booking.phone, booking.name, engine=db_engine)
+        return None
+
+    with session_scope(db_engine) as session:
+        _ensure_customer_identity(session, phone=booking.phone, display_name=booking.name or "")
+        vehicle = _find_or_create_vehicle(session, booking)
+        session.flush()
+        if vehicle is None:
+            return None
+        session.expunge(vehicle)
+        return vehicle
+
+
+def get_returning_customer_profile(
+    phone: str,
+    *,
+    engine: Engine | None = None,
+) -> ReturningCustomerProfile | None:
+    """Return the latest known name and active vehicle for a phone number."""
+    phone = str(phone or "").strip()
+    if not phone:
+        return None
+    db_engine = _engine_or_configured(engine)
+    if db_engine is None:
+        return None
+    with session_scope(db_engine) as session:
+        customer = session.get(Customer, phone)
+        if customer is None:
+            return None
+        name_row = session.scalars(
+            select(CustomerName)
+            .where(CustomerName.customer_phone == phone)
+            .order_by(CustomerName.last_used_at.desc(), CustomerName.id.desc())
+        ).first()
+        vehicle = session.scalars(
+            select(CustomerVehicle)
+            .where(
+                CustomerVehicle.customer_phone == phone,
+                CustomerVehicle.active.is_(True),
+            )
+            .order_by(CustomerVehicle.last_used_at.desc(), CustomerVehicle.id.desc())
+        ).first()
+        if vehicle is None:
+            return None
+        label = vehicle.label or " — ".join(part for part in (vehicle.model, vehicle.color) if part) or vehicle.category
+        return ReturningCustomerProfile(
+            phone=phone,
+            display_name=(
+                (name_row.display_name if name_row is not None else "")
+                or customer.display_name
+                or customer.whatsapp_profile_name
+                or ""
+            ),
+            vehicle_label=label,
+            category=vehicle.category or "",
+            model=vehicle.model or "",
+            color=vehicle.color or "",
+        )
 
 
 def _slot_hours(slot_id: str, slot_label: str) -> tuple[int, int] | None:

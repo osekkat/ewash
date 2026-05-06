@@ -1,7 +1,7 @@
 """In-memory conversation state keyed by phone number.
 
 State machine:
-  IDLE → MENU → (book path | services info | handoff)
+  IDLE → RETURNING_CUSTOMER? → MENU → (book path | services info | handoff)
   BOOK_NAME → BOOK_VEHICLE → BOOK_MODEL → BOOK_COLOR
   → BOOK_WHERE → (BOOK_GEO → BOOK_ADDRESS  ← home: pin first, then address+notes
                   | BOOK_CENTER)

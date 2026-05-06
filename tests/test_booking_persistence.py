@@ -14,6 +14,7 @@ from app.models import (
     ConversationEventRow,
     ConversationSessionRow,
     Customer,
+    CustomerName,
     CustomerVehicle,
     VehicleColor,
     VehicleModel,
@@ -23,9 +24,12 @@ from app.persistence import (
     admin_customer_list,
     admin_dashboard_summary,
     assign_booking_ref,
+    get_returning_customer_profile,
+    persist_booking_identity,
     persist_confirmed_booking,
     persist_booking_addon,
     persist_customer_contact,
+    persist_customer_name,
     persist_customer_bot_stage,
     persist_whatsapp_inbound_message,
     _configured_engine,
@@ -323,6 +327,38 @@ def test_persist_customer_contact_captures_whatsapp_profile_before_booking():
     assert customer.whatsapp_profile_name == "Hassan WhatsApp"
     assert customer.whatsapp_wa_id == "212600000004"
     assert customer.booking_count == 0
+
+
+def test_customer_name_history_keeps_multiple_names_and_latest_profile():
+    engine = make_engine("sqlite+pysqlite:///:memory:")
+    init_db(engine)
+
+    persist_customer_name("212600000005", "Hassan", engine=engine)
+    persist_customer_name("212600000005", "Samira", engine=engine)
+    booking = _sample_booking(phone="212600000005")
+    booking.name = "Samira"
+    booking.car_model = "Nissan Sentra"
+    booking.color = "Jaune"
+    persist_booking_identity(booking, engine=engine)
+
+    with session_scope(engine) as session:
+        customer = session.get(Customer, "212600000005")
+        assert customer is not None
+        assert customer.display_name == "Samira"
+        names = session.scalars(select(CustomerName).where(CustomerName.customer_phone == "212600000005")).all()
+        assert sorted(name.display_name for name in names) == ["Hassan", "Samira"]
+        vehicles = session.scalars(select(CustomerVehicle).where(CustomerVehicle.customer_phone == "212600000005")).all()
+        assert len(vehicles) == 1
+        assert vehicles[0].label == "Nissan Sentra — Jaune"
+        assert vehicles[0].last_used_at is not None
+
+    profile = get_returning_customer_profile("212600000005", engine=engine)
+    assert profile is not None
+    assert profile.display_name == "Samira"
+    assert profile.vehicle_label == "Nissan Sentra — Jaune"
+    assert profile.category == "B"
+    assert profile.model == "Nissan Sentra"
+    assert profile.color == "Jaune"
 
 
 def test_handle_message_tracks_latest_stage_after_showing_price_list(monkeypatch, tmp_path):

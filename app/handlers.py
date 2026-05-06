@@ -13,10 +13,14 @@ from .booking import Booking
 from .config import settings
 from .persistence import (
     assign_booking_ref,
+    get_returning_customer_profile,
     persist_booking_addon,
+    persist_booking_identity,
     persist_confirmed_booking,
     persist_customer_bot_stage,
+    persist_customer_name,
     persist_whatsapp_inbound_message,
+    ReturningCustomerProfile,
 )
 from .notifications import notify_booking_confirmation
 
@@ -55,6 +59,7 @@ async def handle_message(message: dict, contact: dict | None = None) -> None:
     location = meta.extract_location(message)
 
     sess = state.get(phone)
+    current_state = sess.state
     log.info("inbound phone=%s state=%s payload=%s text=%r",
              phone, sess.state, payload_id, text)
 
@@ -66,6 +71,9 @@ async def handle_message(message: dict, contact: dict | None = None) -> None:
         return
     if text and text.strip().lower() in {"menu", "start", "bonjour", "salam", "hi", "hello"}:
         state.reset(phone)
+        if current_state == "IDLE" and await _send_returning_customer_prompt(phone):
+            _track_bot_stage(phone, state.get(phone))
+            return
         await _send_menu(phone)
         _track_bot_stage(phone, state.get(phone))
         return
@@ -79,8 +87,73 @@ async def handle_message(message: dict, contact: dict | None = None) -> None:
 
 # ── Individual state handlers ──────────────────────────────────────────────
 async def _handle_idle(phone, sess, **kw):
-    # Anything in IDLE → show the welcome menu.
+    if await _send_returning_customer_prompt(phone):
+        return
+    # Anything else in IDLE → show the welcome menu.
     await _send_menu(phone)
+
+
+def _vehicle_type_for_category(category: str) -> str:
+    if category == "MOTO":
+        return catalog.label_for(catalog.VEHICLE_CATEGORIES, "veh_moto")
+    for row_id, _title, _desc in catalog.VEHICLE_CATEGORIES:
+        if catalog.VEHICLE_CATEGORY_KEY.get(row_id) == category:
+            return catalog.label_for(catalog.VEHICLE_CATEGORIES, row_id)
+    return category or "Véhicule"
+
+
+def _apply_returning_profile(booking: Booking, profile: ReturningCustomerProfile) -> None:
+    booking.name = profile.display_name
+    booking.category = profile.category
+    booking.vehicle_type = _vehicle_type_for_category(profile.category)
+    if profile.category != "MOTO":
+        booking.car_model = profile.model
+        booking.color = profile.color
+
+
+async def _send_returning_customer_prompt(phone: str) -> bool:
+    profile = get_returning_customer_profile(phone)
+    if profile is None:
+        return False
+    state.reset(phone)
+    sess = state.get(phone)
+    sess.state = "RETURNING_CUSTOMER"
+    sess.booking = Booking(phone=phone)
+    _apply_returning_profile(sess.booking, profile)
+    name_part = f" {profile.display_name}" if profile.display_name else ""
+    await meta.send_buttons(
+        phone,
+        f"Bonjour{name_part}, est-ce pour {profile.vehicle_label} ?",
+        [
+            ("returning_yes", "✅ Oui"),
+            ("returning_no", "Non, autre voiture"),
+            ("returning_menu", "Menu"),
+        ],
+    )
+    return True
+
+
+async def _handle_returning_customer(phone, sess, payload_id=None, **kw):
+    if payload_id == "returning_yes":
+        persist_booking_identity(sess.booking)
+        await _ask_where(phone, sess)
+        return
+    if payload_id == "returning_no":
+        state.start_booking(phone)
+        await meta.send_text(phone, "Pas de souci.\n\nComment vous appelez-vous ?")
+        return
+    if payload_id == "returning_menu":
+        await _send_menu(phone)
+        return
+    await meta.send_buttons(
+        phone,
+        f"Est-ce pour {sess.booking.car_model or sess.booking.vehicle_type or 'ce véhicule'} ?",
+        [
+            ("returning_yes", "✅ Oui"),
+            ("returning_no", "Non, autre voiture"),
+            ("returning_menu", "Menu"),
+        ],
+    )
 
 
 async def _handle_menu(phone, sess, payload_id=None, text=None, **kw):
@@ -123,6 +196,7 @@ async def _handle_book_name(phone, sess, text=None, **kw):
         await meta.send_text(phone, "Pouvez-vous me donner votre nom ?")
         return
     sess.booking.name = text.strip()[:60]
+    persist_customer_name(phone, sess.booking.name)
     sess.state = "BOOK_VEHICLE"
     await meta.send_list(
         phone,
@@ -146,6 +220,7 @@ async def _handle_book_vehicle(phone, sess, payload_id=None, **kw):
 
     # Moto lane skips model/color questions — straight to location, then service.
     if sess.booking.category == "MOTO":
+        persist_booking_identity(sess.booking)
         await _ask_where(phone, sess)
         return
 
@@ -177,6 +252,7 @@ async def _handle_book_color(phone, sess, payload_id=None, text=None, **kw):
             "Merci d'indiquer la couleur du véhicule (ex: *Blanc*, *Gris*, *Bleu nuit*).",
         )
         return
+    persist_booking_identity(sess.booking)
     # Ask location BEFORE showing the service menu — so customers commit to
     # home vs stand before seeing prices (and so the prompt can reflect lieu).
     await _ask_where(phone, sess)
@@ -818,6 +894,7 @@ def _public_asset_url(path: str) -> str:
 # ── Dispatch table ─────────────────────────────────────────────────────────
 _DISPATCH = {
     "IDLE":                  _handle_idle,
+    "RETURNING_CUSTOMER":    _handle_returning_customer,
     "MENU":                  _handle_menu,
     "HANDOFF":               _handle_handoff,
     "BOOK_NAME":             _handle_book_name,
