@@ -1,5 +1,6 @@
 import asyncio
 
+import pytest
 from sqlalchemy import select
 
 from app import handlers, meta, state
@@ -454,6 +455,39 @@ def test_handle_message_captures_customer_contact_on_first_hello(monkeypatch, tm
         assert customer.whatsapp_profile_name == "Nadia WhatsApp"
         assert customer.whatsapp_wa_id == phone
         assert customer.last_bot_stage == "MENU"
+        assert customer.booking_count == 0
+    state.reset(phone)
+    _configured_engine.cache_clear()
+
+
+def test_handle_message_captures_customer_and_menu_stage_on_first_salam_before_send_failure(monkeypatch, tmp_path):
+    db_url = f"sqlite+pysqlite:///{tmp_path / 'first-salam-send-failure.db'}"
+    monkeypatch.setattr(settings, "database_url", db_url)
+    _configured_engine.cache_clear()
+    phone = "212600000006"
+
+    async def failing_send_buttons(*args, **kwargs):
+        raise RuntimeError("meta send failed")
+
+    monkeypatch.setattr(meta, "send_buttons", failing_send_buttons)
+
+    with pytest.raises(RuntimeError):
+        asyncio.run(
+            handlers.handle_message(
+                {"id": "wamid.first-salam", "from": phone, "type": "text", "text": {"body": "salam"}},
+                {"wa_id": phone, "profile": {"name": "Hassan WhatsApp"}},
+            )
+        )
+
+    with session_scope(_configured_engine()) as session:
+        customer = session.get(Customer, phone)
+        assert customer is not None
+        assert customer.display_name == "Hassan WhatsApp"
+        assert customer.whatsapp_profile_name == "Hassan WhatsApp"
+        assert customer.whatsapp_wa_id == phone
+        assert customer.last_bot_stage == "MENU"
+        assert customer.last_bot_stage_label == "Menu principal affiché"
+        assert customer.last_bot_stage_at is not None
         assert customer.booking_count == 0
     state.reset(phone)
     _configured_engine.cache_clear()

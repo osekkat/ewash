@@ -120,6 +120,7 @@ async def _send_returning_customer_prompt(phone: str) -> bool:
     sess.state = "RETURNING_CUSTOMER"
     sess.booking = Booking(phone=phone)
     _apply_returning_profile(sess.booking, profile)
+    _track_bot_stage(phone, sess)
     name_part = f" {profile.display_name}" if profile.display_name else ""
     await meta.send_buttons(
         phone,
@@ -861,6 +862,7 @@ async def _send_menu(phone: str, greeting: str | None = None) -> None:
     body = (greeting + "\n\n" if greeting else
             "👋 *Bienvenue chez Ewash* — lavage auto écologique sans eau.\n\n")
     body += "Que souhaitez-vous faire ?"
+    _track_bot_stage(phone, sess)
     await meta.send_buttons(
         phone, body,
         [("menu_book",     "📅 Prendre RDV"),

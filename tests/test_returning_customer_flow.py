@@ -5,7 +5,7 @@ from app import handlers, meta, state
 from app.booking import Booking
 from app.config import settings
 from app.db import init_db, make_engine, session_scope
-from app.models import CustomerName, CustomerVehicle
+from app.models import Customer, CustomerName, CustomerVehicle
 from app.persistence import _configured_engine, get_returning_customer_profile, persist_booking_identity
 
 
@@ -66,6 +66,11 @@ async def test_known_number_gets_returning_customer_prompt(monkeypatch, tmp_path
         "returning_menu",
     ]
     assert state.get(phone).state == "RETURNING_CUSTOMER"
+    with session_scope(engine) as session:
+        customer = session.get(Customer, phone)
+        assert customer is not None
+        assert customer.last_bot_stage == "RETURNING_CUSTOMER"
+        assert customer.last_bot_stage_label == "Confirmation client connu"
     _configured_engine.cache_clear()
 
 
