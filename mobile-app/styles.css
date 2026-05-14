@@ -838,7 +838,10 @@ button.chip:active { transform: scale(0.95); }
 /* ============ PWA standalone ============ */
 [data-pwa-standalone] body { background: var(--bg); }
 [data-pwa-standalone] .app-root {
+  /* dvh tracks the *visible* viewport (excluding mobile URL bars).
+   * The vh line is the fallback for browsers that don't support dvh. */
   height: 100vh;
+  height: 100dvh;
   width: 100vw;
   max-width: 100vw;
 }

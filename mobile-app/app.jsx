@@ -114,7 +114,7 @@ function App() {
   return (
     <>
       {isStandalone ? (
-        <div className="app-root" dir={dir} style={{ direction: dir, height: '100vh' }}>
+        <div className="app-root" dir={dir} style={{ direction: dir }}>
           {phaseContent}
           <Toast message={toast} onDone={() => setToast(null)} />
         </div>
