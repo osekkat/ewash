@@ -1,13 +1,38 @@
 /* eslint-disable */
 // ewash — main tabs: Home, Bookings, Services, Profile + Support
 
-const { useState: useS_h, useEffect: useE_h, useMemo: useM_h } = React;
+const { useState: useS_h, useEffect: useE_h, useMemo: useM_h, useRef: useR_h } = React;
+
+// Smoothly count from 0 to `target` over `duration` ms (ease-out cubic).
+// Respects prefers-reduced-motion.
+function useCountUp(target, duration = 1200) {
+  const [value, setValue] = useS_h(0);
+  useE_h(() => {
+    if (typeof window === 'undefined') { setValue(target); return; }
+    const reduced = window.matchMedia &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (reduced) { setValue(target); return; }
+    let raf, start;
+    const tick = (ts) => {
+      if (start == null) start = ts;
+      const t = Math.min(1, (ts - start) / duration);
+      const eased = 1 - Math.pow(1 - t, 3);
+      setValue(Math.round(target * eased));
+      if (t < 1) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [target, duration]);
+  return value;
+}
 
 // ─────────────────────────────────────────────────────────────
 // HOME
 // ─────────────────────────────────────────────────────────────
 function HomeScreen({ t, lang, openBooking, gotoSupport, gotoTariffs, theme, variant, profile }) {
   const litersSaved = 2147;
+  const litersCount = useCountUp(litersSaved, 1400);
+  const washCount = useCountUp(23, 900);
   return (
     <div className="app-scroll">
       <div className="appbar">
@@ -28,17 +53,19 @@ function HomeScreen({ t, lang, openBooking, gotoSupport, gotoTariffs, theme, var
               <Icons.Bell size={22} />
               <span style={{
                 position: 'absolute', top: -2, right: -2,
-                width: 8, height: 8, borderRadius: 99,
+                width: 9, height: 9, borderRadius: 99,
                 background: 'var(--accent)', border: '2px solid var(--bg)',
+                boxShadow: '0 0 0 0 color-mix(in srgb, var(--accent) 70%, transparent)',
+                animation: 'dotPulse 2.4s ease-out infinite',
               }}/>
             </div>
           </button>
         </div>
       </div>
 
-      <div className="px-16 col gap-20" style={{ paddingBottom: 24 }}>
+      <div className="px-16 col gap-20 anim-stagger" style={{ paddingBottom: 24 }}>
         {/* HERO */}
-        <div className="hero anim-fade">
+        <div className="hero">
           <div className="row gap-8" style={{ position: 'relative', zIndex: 1, marginBottom: 12 }}>
             <span className="chip" style={{
               background: 'rgba(255,255,255,0.14)',
@@ -59,13 +86,16 @@ function HomeScreen({ t, lang, openBooking, gotoSupport, gotoTariffs, theme, var
             {t.tagline} · Casablanca
           </div>
           <button onClick={openBooking}
+            className="press"
             style={{
               background: variant === 'premium' ? 'var(--gold)' : '#fff',
               color: variant === 'premium' ? '#0a0a0a' : 'var(--primary)',
               border: 'none', borderRadius: 999,
-              padding: '13px 22px', fontWeight: 700, fontSize: 15,
+              padding: '14px 24px', fontWeight: 700, fontSize: 15,
+              letterSpacing: '-0.01em',
               display: 'inline-flex', alignItems: 'center', gap: 8,
               position: 'relative', zIndex: 1, cursor: 'pointer',
+              boxShadow: '0 8px 22px -8px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.6)',
             }}>
             {t.bookCta}
             <Icons.ChevronRight size={18} stroke={2.5} />
@@ -85,7 +115,7 @@ function HomeScreen({ t, lang, openBooking, gotoSupport, gotoTariffs, theme, var
               <span className="t-tiny" style={{ color: 'var(--text-2)', fontWeight: 600 }}>{t.waterSaved}</span>
             </div>
             <div className="t-num" style={{ fontWeight: 800, fontSize: 26, color: 'var(--text)' }}>
-              {litersSaved.toLocaleString('fr-FR')}<span style={{ fontSize: 14, color: 'var(--text-2)', marginInlineStart: 4 }}>L</span>
+              {litersCount.toLocaleString('fr-FR')}<span style={{ fontSize: 14, color: 'var(--text-2)', marginInlineStart: 4 }}>L</span>
             </div>
           </div>
           <div className="card" style={{ flex: 1, padding: 14, borderRadius: 18 }}>
@@ -94,7 +124,7 @@ function HomeScreen({ t, lang, openBooking, gotoSupport, gotoTariffs, theme, var
               <span className="t-tiny" style={{ color: 'var(--text-2)', fontWeight: 600 }}>Lavages</span>
             </div>
             <div className="t-num" style={{ fontWeight: 800, fontSize: 26, color: 'var(--text)' }}>
-              23
+              {washCount}
             </div>
           </div>
         </div>
@@ -119,10 +149,11 @@ function HomeScreen({ t, lang, openBooking, gotoSupport, gotoTariffs, theme, var
                 background: 'var(--primary-soft)',
                 color: 'var(--primary-soft-text)',
                 textAlign: 'center',
+                boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.5), 0 6px 14px -8px color-mix(in srgb, var(--primary) 35%, transparent)',
               }}>
-                <div className="t-tiny" style={{ fontWeight: 700, opacity: 0.9, letterSpacing: '0.1em' }}>SAM</div>
-                <div className="t-num" style={{ fontWeight: 800, fontSize: 22, lineHeight: 1 }}>16</div>
-                <div className="t-tiny" style={{ opacity: 0.9 }}>MAI</div>
+                <div className="t-tiny" style={{ fontWeight: 700, opacity: 0.85, letterSpacing: '0.12em' }}>SAM</div>
+                <div className="t-num" style={{ fontWeight: 800, fontSize: 22, lineHeight: 1, letterSpacing: '-0.02em' }}>16</div>
+                <div className="t-tiny" style={{ opacity: 0.85, letterSpacing: '0.08em' }}>MAI</div>
               </div>
               <div className="col gap-4 flex-1">
                 <div style={{ fontWeight: 700, fontSize: 15 }}>Le Complet · Berline</div>
@@ -213,7 +244,7 @@ function BookingsScreen({ t, lang, openBooking, theme }) {
   return (
     <div className="app-scroll">
       <TopBar title={t.bookings} right={<button className="icon-btn"><Icons.Search size={20}/></button>}/>
-      <div className="px-16 col gap-16" style={{ paddingBottom: 24 }}>
+      <div className="px-16 col gap-16 anim-stagger" style={{ paddingBottom: 24 }}>
         <div className="row" style={{
           background: 'var(--surface-2)',
           borderRadius: 999, padding: 4,
@@ -330,7 +361,7 @@ function ServicesScreen({ t, lang, openBooking, theme }) {
   return (
     <div className="app-scroll">
       <TopBar title={t.tariffs} />
-      <div className="px-16 col gap-16" style={{ paddingBottom: 24 }}>
+      <div className="px-16 col gap-16 anim-stagger" style={{ paddingBottom: 24 }}>
         <div className="row" style={{ background: 'var(--surface-2)', borderRadius: 999, padding: 4 }}>
           {['lavage', 'esthetique'].map(k => (
             <button key={k} onClick={() => setTab(k)} style={{
@@ -417,7 +448,7 @@ function ProfileScreen({ t, lang, setLang, theme, setTheme, variant, setVariant,
   return (
     <div className="app-scroll">
       <TopBar title={t.myProfile} />
-      <div className="px-16 col gap-20" style={{ paddingBottom: 24 }}>
+      <div className="px-16 col gap-20 anim-stagger" style={{ paddingBottom: 24 }}>
         {/* User card */}
         <div className="card card-elev" style={{ padding: 16, display: 'flex', gap: 14, alignItems: 'center' }}>
           <div style={{
@@ -435,19 +466,30 @@ function ProfileScreen({ t, lang, setLang, theme, setTheme, variant, setVariant,
 
         {/* Eco impact card */}
         <div className="card-soft" style={{
-          padding: 16, borderRadius: 20,
+          padding: '20px 18px', borderRadius: 22,
           background: 'var(--hero-grad)', color: '#fff',
+          position: 'relative', overflow: 'hidden',
+          boxShadow: '0 20px 40px -16px rgba(15,120,120,0.45)',
         }}>
-          <div className="row gap-8 mb-8">
+          <div style={{
+            position: 'absolute', insetInlineEnd: -30, top: -30,
+            width: 160, height: 160, borderRadius: '50%',
+            background: 'radial-gradient(circle, rgba(255,255,255,0.16) 0%, transparent 65%)',
+            pointerEvents: 'none',
+          }}/>
+          <div className="row gap-8 mb-8" style={{ position: 'relative' }}>
             <Icons.Drop size={18} />
-            <div className="t-tiny" style={{ fontWeight: 700, letterSpacing: '0.1em', color: 'rgba(255,255,255,0.85)' }}>VOTRE IMPACT</div>
+            <div className="t-tiny" style={{ fontWeight: 700, letterSpacing: '0.12em', color: 'rgba(255,255,255,0.78)' }}>VOTRE IMPACT</div>
           </div>
-          <div className="row" style={{ alignItems: 'baseline', gap: 8 }}>
-            <div style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: 32, letterSpacing: '-0.02em' }}>2 147 L</div>
-            <div style={{ opacity: 0.8, fontSize: 13 }}>{t.waterSaved.toLowerCase()}</div>
+          <div className="row" style={{ alignItems: 'baseline', gap: 8, position: 'relative' }}>
+            <div style={{
+              fontFamily: 'var(--font-display)', fontWeight: 800,
+              fontSize: 40, letterSpacing: '-0.03em', lineHeight: 1.0,
+              fontVariantNumeric: 'tabular-nums',
+            }}>2 147<span style={{ fontSize: 22, marginInlineStart: 4, opacity: 0.85 }}>L</span></div>
           </div>
-          <div className="t-muted" style={{ color: 'rgba(255,255,255,0.7)', marginTop: 4 }}>
-            soit {Math.round(2147 / 12)} douches évitées 🌱
+          <div className="t-muted" style={{ color: 'rgba(255,255,255,0.78)', marginTop: 6, position: 'relative' }}>
+            {t.waterSaved.toLowerCase()} · soit {Math.round(2147 / 12)} douches évitées
           </div>
         </div>
 

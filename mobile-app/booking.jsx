@@ -228,7 +228,7 @@ function CategoryStep({ t, data, patch, onNext }) {
         <div className="t-h1">{t.chooseCategory}</div>
         <div className="t-muted">{t.chooseCategorySub}</div>
       </div>
-      <div className="px-16 col gap-10" style={{ paddingBottom: 100 }}>
+      <div className="px-16 col gap-10 anim-stagger" style={{ paddingBottom: 100 }}>
         {CATEGORIES.map(c => (
           <SelectCard key={c.id}
             selected={data.category === c.id}
@@ -449,7 +449,7 @@ function CentersStep({ t, data, onNext }) {
         <div className="t-h1">{t.pickCenter}</div>
         <div className="t-muted">Mall Triangle Vert · Bouskoura</div>
       </div>
-      <div className="px-16 col gap-10" style={{ paddingBottom: 24 }}>
+      <div className="px-16 col gap-10 anim-stagger" style={{ paddingBottom: 24 }}>
         {CENTERS.map(c => (
           <button key={c.id} onClick={() => onNext(c.id)} className="card" style={{
             padding: 14, display: 'flex', gap: 12, alignItems: 'flex-start',
@@ -585,7 +585,7 @@ function ServiceStep({ t, data, patch, onNext, services }) {
         <div className="t-h1">{t.chooseService}</div>
         <div className="t-muted">{t.serviceSub}</div>
       </div>
-      <div className="px-16 col gap-10" style={{ paddingBottom: 100 }}>
+      <div className="px-16 col gap-10 anim-stagger" style={{ paddingBottom: 100 }}>
         {services.map((s, i) => {
           const selected = data.service?.name === s.name;
           let price = s.prices[catKey] || s.prices.A;
@@ -666,27 +666,35 @@ function DateStep({ t, lang, data, patch, onNext }) {
       </div>
       <div className="px-16 col gap-12" style={{ paddingBottom: 100 }}>
         <div className="row wrap gap-8">
-          {days.map((d, i) => (
-            <button key={i} onClick={() => patch({ date: d })}
-              style={{
-                width: 'calc(25% - 6px)',
-                padding: '12px 0', borderRadius: 14,
-                background: isSel(d) ? 'var(--primary)' : 'var(--surface)',
-                color: isSel(d) ? 'var(--primary-text)' : 'var(--text)',
-                border: `1px solid ${isSel(d) ? 'var(--primary)' : 'var(--border)'}`,
-                display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2,
-                cursor: 'pointer',
-              }}>
-              <span className="t-tiny" style={{
-                fontWeight: 600, letterSpacing: '0.05em',
-                color: isSel(d) ? 'rgba(255,255,255,0.85)' : 'var(--text-3)',
-              }}>{d.dow.toUpperCase()}</span>
-              <span className="t-num" style={{ fontWeight: 800, fontSize: 20 }}>{d.d}</span>
-              <span className="t-tiny" style={{
-                color: isSel(d) ? 'rgba(255,255,255,0.8)' : 'var(--text-2)',
-              }}>{t.months[d.m]}</span>
-            </button>
-          ))}
+          {days.map((d, i) => {
+            const sel = isSel(d);
+            return (
+              <button key={i} onClick={() => patch({ date: d })} className="press"
+                style={{
+                  width: 'calc(25% - 6px)',
+                  padding: '12px 0', borderRadius: 14,
+                  background: sel ? 'var(--primary)' : 'var(--surface)',
+                  color: sel ? 'var(--primary-text)' : 'var(--text)',
+                  border: `1px solid ${sel ? 'var(--primary)' : 'var(--border)'}`,
+                  display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2,
+                  cursor: 'pointer',
+                  boxShadow: sel
+                    ? '0 8px 18px -8px color-mix(in srgb, var(--primary) 60%, transparent)'
+                    : 'none',
+                  transform: sel ? 'translateY(-1px)' : 'translateY(0)',
+                  transition: 'background 0.18s var(--ease-soft), border-color 0.18s var(--ease-soft), color 0.18s var(--ease-soft), box-shadow 0.22s var(--ease-soft), transform 0.22s var(--ease-spring)',
+                }}>
+                <span className="t-tiny" style={{
+                  fontWeight: 700, letterSpacing: '0.06em',
+                  color: sel ? 'rgba(255,255,255,0.86)' : 'var(--text-3)',
+                }}>{d.dow.toUpperCase()}</span>
+                <span className="t-num" style={{ fontWeight: 800, fontSize: 20 }}>{d.d}</span>
+                <span className="t-tiny" style={{
+                  color: sel ? 'rgba(255,255,255,0.78)' : 'var(--text-2)',
+                }}>{t.months[d.m]}</span>
+              </button>
+            );
+          })}
         </div>
         <button onClick={() => setShowMore(!showMore)}
           className="t-muted"
@@ -765,6 +773,7 @@ function TimeStep({ t, data, patch, onNext }) {
                   return (
                     <button key={time}
                       onClick={() => patch({ time })}
+                      className="press"
                       style={{
                         width: 'calc(25% - 6px)',
                         padding: '12px 0', borderRadius: 12,
@@ -774,6 +783,12 @@ function TimeStep({ t, data, patch, onNext }) {
                         fontWeight: 700, fontSize: 14,
                         cursor: 'pointer',
                         fontFamily: 'var(--font-display)',
+                        letterSpacing: '-0.01em',
+                        boxShadow: sel
+                          ? '0 8px 18px -8px color-mix(in srgb, var(--primary) 55%, transparent)'
+                          : 'none',
+                        transform: sel ? 'translateY(-1px)' : 'translateY(0)',
+                        transition: 'background 0.18s var(--ease-soft), border-color 0.18s var(--ease-soft), color 0.18s var(--ease-soft), box-shadow 0.22s var(--ease-soft), transform 0.22s var(--ease-spring)',
                       }}>{time}</button>
                   );
                 })}
@@ -882,16 +897,24 @@ function RecapStep({ t, lang, data, patch, totalPrice, onEdit, onCancel, onConfi
         {/* Total card */}
         <div className="card" style={{
           background: 'var(--primary-soft)',
-          borderColor: 'transparent', padding: 16,
+          borderColor: 'transparent', padding: '18px 18px 16px',
+          boxShadow: '0 12px 28px -12px color-mix(in srgb, var(--primary) 35%, transparent)',
+          position: 'relative', overflow: 'hidden',
         }}>
-          <div className="row between" style={{ alignItems: 'baseline' }}>
+          <div style={{
+            position: 'absolute', insetInlineEnd: -20, top: -30,
+            width: 120, height: 120, borderRadius: '50%',
+            background: 'radial-gradient(circle, color-mix(in srgb, var(--primary) 14%, transparent) 0%, transparent 70%)',
+            pointerEvents: 'none',
+          }}/>
+          <div className="row between" style={{ alignItems: 'baseline', position: 'relative' }}>
             <div className="col">
-              <div className="t-tiny" style={{ fontWeight: 700, color: 'var(--primary-soft-text)', opacity: 0.7 }}>{t.total}</div>
-              <div className="t-num" style={{ fontWeight: 800, fontSize: 30, color: 'var(--primary-soft-text)' }}>
-                {totalPrice}<span style={{ fontSize: 14, marginInlineStart: 4 }}>DH</span>
+              <div className="t-tiny" style={{ fontWeight: 700, color: 'var(--primary-soft-text)', opacity: 0.7, letterSpacing: '0.08em', textTransform: 'uppercase' }}>{t.total}</div>
+              <div className="t-num" style={{ fontWeight: 800, fontSize: 34, color: 'var(--primary-soft-text)', letterSpacing: '-0.025em', lineHeight: 1.05, marginTop: 2 }}>
+                {totalPrice}<span style={{ fontSize: 15, marginInlineStart: 4, fontWeight: 700 }}>DH</span>
               </div>
             </div>
-            <div className="t-tiny" style={{ textAlign: 'end', color: 'var(--primary-soft-text)', opacity: 0.8, maxWidth: 140 }}>
+            <div className="t-tiny" style={{ textAlign: 'end', color: 'var(--primary-soft-text)', opacity: 0.78, maxWidth: 140, lineHeight: 1.4 }}>
               <Icons.Wallet size={14} style={{ verticalAlign: '-2px', marginInlineEnd: 4 }}/>
               {t.paymentCashSub}
             </div>

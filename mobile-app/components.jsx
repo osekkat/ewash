@@ -173,6 +173,9 @@ function SelectCard({ selected, onClick, children, icon, badge }) {
           background: selected ? 'var(--primary)' : 'transparent',
           color: 'var(--primary-text)',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
+          transition: 'border-color 0.18s var(--ease-soft), background 0.18s var(--ease-soft), transform 0.22s var(--ease-spring)',
+          transform: selected ? 'scale(1)' : 'scale(0.92)',
+          boxShadow: selected ? '0 4px 12px -4px color-mix(in srgb, var(--primary) 50%, transparent)' : 'none',
         }}>
           {selected && <Icons.Check size={14} stroke={3} />}
         </div>
