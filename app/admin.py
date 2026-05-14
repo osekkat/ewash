@@ -271,6 +271,11 @@ def _dashboard(*, locale: str) -> HTMLResponse:
     <div class="metric-note">{escape(t('admin.metric.from_db', locale))}</div>
   </article>
   <article class="metric-card">
+    <div class="metric-label">{escape(t('admin.metric.dropped_leads', locale))}</div>
+    <div class="metric-value">{summary.abandoned_conversations}</div>
+    <div class="metric-note">{escape(t('admin.metric.from_db', locale))}</div>
+  </article>
+  <article class="metric-card">
     <div class="metric-label">{escape(t('admin.metric.reminders', locale))}</div>
     <div class="metric-value">{summary.pending_reminders}</div>
     <div class="metric-note">{escape(t('admin.metric.from_db', locale))}</div>

@@ -9,12 +9,13 @@ Endpoints:
 import logging
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import admin, booking, handlers, meta
 from .config import settings
+from .persistence import mark_abandoned_conversations
 
 APP_VERSION = "v0.3.0-alpha17"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -39,6 +40,19 @@ async def health():
 async def bookings():
     """Debug endpoint — returns in-memory bookings. Drop before real launch."""
     return {"count": len(booking.all_bookings()), "bookings": booking.all_bookings()}
+
+
+@app.post("/internal/conversations/abandon")
+async def abandon_stale_conversations(
+    x_internal_cron_secret: str | None = Header(default=None, alias="X-Internal-Cron-Secret"),
+):
+    """Protected maintenance hook for marking inactive conversation sessions abandoned."""
+    if not settings.internal_cron_secret:
+        raise HTTPException(status_code=503, detail="Internal cron is not configured")
+    if x_internal_cron_secret != settings.internal_cron_secret:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    count = mark_abandoned_conversations()
+    return {"abandoned": count}
 
 
 @app.get("/webhook", response_class=PlainTextResponse)

@@ -1,10 +1,14 @@
+from datetime import datetime, timedelta, timezone
+
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from app.booking import Booking
 import app.booking as booking_store
 from app.config import settings
-from app.db import init_db, make_engine
+from app.db import init_db, make_engine, session_scope
 from app.main import app
+from app.models import ConversationSessionRow
 from app.notifications import get_booking_notification_settings, notification_cache_clear
 from app.persistence import _configured_engine, persist_confirmed_booking, persist_customer_bot_stage
 
@@ -589,3 +593,29 @@ def test_admin_logout_clears_password_session(monkeypatch):
 
     login = client.get("/admin")
     assert "Mot de passe" in login.text
+
+
+def test_internal_conversation_abandon_endpoint_requires_secret_and_marks_stale_sessions(monkeypatch, tmp_path):
+    db_url = f"sqlite+pysqlite:///{tmp_path / 'internal-abandon.db'}"
+    engine = make_engine(db_url)
+    init_db(engine)
+    persist_customer_bot_stage("212600000777", "MENU", engine=engine)
+    with session_scope(engine) as session:
+        conversation = session.scalars(select(ConversationSessionRow)).one()
+        conversation.last_event_at = datetime.now(timezone.utc) - timedelta(hours=3)
+
+    monkeypatch.setattr(settings, "database_url", db_url)
+    monkeypatch.setattr(settings, "internal_cron_secret", "cron-secret")
+    _configured_engine.cache_clear()
+    client = TestClient(app)
+
+    forbidden = client.post("/internal/conversations/abandon")
+    response = client.post("/internal/conversations/abandon", headers={"X-Internal-Cron-Secret": "cron-secret"})
+
+    assert forbidden.status_code == 403
+    assert response.status_code == 200
+    assert response.json() == {"abandoned": 1}
+    with session_scope(engine) as session:
+        conversation = session.scalars(select(ConversationSessionRow)).one()
+        assert conversation.status == "abandoned"
+    _configured_engine.cache_clear()

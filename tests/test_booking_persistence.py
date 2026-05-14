@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import select
@@ -26,6 +27,7 @@ from app.persistence import (
     admin_dashboard_summary,
     assign_booking_ref,
     get_returning_customer_profile,
+    mark_abandoned_conversations,
     persist_booking_identity,
     persist_confirmed_booking,
     persist_booking_addon,
@@ -310,6 +312,41 @@ def test_persist_customer_bot_stage_tracks_abandoned_price_list_stage():
     customer_item = next(item for item in customers if item.phone == "212600000003")
     assert customer_item.last_bot_stage == "BOOK_SERVICE"
     assert customer_item.last_bot_stage_label == "Liste des prix affichée"
+
+
+def test_mark_abandoned_conversations_marks_stale_open_sessions_and_admin_counts():
+    engine = make_engine("sqlite+pysqlite:///:memory:")
+    init_db(engine)
+    now = datetime(2026, 5, 6, 20, 0, tzinfo=timezone.utc)
+    persist_customer_bot_stage("212600000099", "MENU", engine=engine)
+    with session_scope(engine) as session:
+        conversation = session.scalars(select(ConversationSessionRow)).one()
+        conversation.last_event_at = now - timedelta(hours=3)
+
+    count = mark_abandoned_conversations(now=now, engine=engine)
+
+    assert count == 1
+    with session_scope(engine) as session:
+        customer = session.get(Customer, "212600000099")
+        conversation = session.scalars(select(ConversationSessionRow)).one()
+        events = session.scalars(
+            select(ConversationEventRow).order_by(ConversationEventRow.created_at, ConversationEventRow.id)
+        ).all()
+        assert customer is not None
+        assert customer.last_bot_stage == "MENU"
+        assert customer.last_bot_stage_label == "Abandonné - Menu principal affiché"
+        assert conversation.status == "abandoned"
+        assert conversation.current_stage == "MENU"
+        assert events[-1].event_type == "abandoned"
+        assert events[-1].stage == "MENU"
+
+    customers = admin_customer_list(engine=engine)
+    customer_item = next(item for item in customers if item.phone == "212600000099")
+    assert customer_item.last_bot_stage_label == "Abandonné - Menu principal affiché"
+    assert customer_item.conversation_status == "abandoned"
+
+    summary = admin_dashboard_summary(engine=engine)
+    assert summary.abandoned_conversations == 1
 
 
 def test_persist_customer_contact_captures_whatsapp_profile_before_booking():

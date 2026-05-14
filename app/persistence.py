@@ -42,6 +42,7 @@ from .models import (
 log = logging.getLogger(__name__)
 H2_REMINDER_KIND = "H-2"
 H2_REMINDER_OFFSET_MINUTES = 120
+CONVERSATION_ABANDON_AFTER_SECONDS = 60 * 60 * 2
 
 
 @dataclass(frozen=True)
@@ -75,6 +76,7 @@ class AdminCustomerListItem:
     vehicle_labels: tuple[str, ...]
     last_bot_stage: str = ""
     last_bot_stage_label: str = ""
+    conversation_status: str = ""
 
 
 @dataclass(frozen=True)
@@ -94,6 +96,7 @@ class DashboardSummary:
     awaiting_confirmation: int = 0
     pending_ewash_confirmation: int = 0
     customers: int = 0
+    abandoned_conversations: int = 0
     pending_reminders: int = 0
     recent_bookings: tuple[RecentBooking, ...] = ()
     db_available: bool = False
@@ -466,6 +469,64 @@ def persist_customer_bot_stage(
         session.flush()
         session.expunge(customer)
         return customer
+
+
+def _abandoned_label(stage: str) -> str:
+    return f"Abandonné - {bot_stage_label(stage)}"
+
+
+def mark_abandoned_conversations(
+    *,
+    stale_after_seconds: int = CONVERSATION_ABANDON_AFTER_SECONDS,
+    now: datetime | None = None,
+    engine: Engine | None = None,
+) -> int:
+    """Mark inactive open conversation sessions as abandoned leads."""
+    if stale_after_seconds <= 0:
+        raise ValueError("stale_after_seconds must be positive")
+    db_engine = _engine_or_configured(engine)
+    if db_engine is None:
+        return 0
+
+    current_time = now or _now()
+    cutoff = current_time - timedelta(seconds=stale_after_seconds)
+    count = 0
+    with session_scope(db_engine) as session:
+        conversations = session.scalars(
+            select(ConversationSessionRow).where(
+                ConversationSessionRow.status == "open",
+                ConversationSessionRow.last_event_at <= cutoff,
+            )
+        ).all()
+        for conversation in conversations:
+            stage = conversation.current_stage or ""
+            conversation.status = "abandoned"
+            conversation.last_event_at = current_time
+            customer = session.get(Customer, conversation.customer_phone)
+            if customer is not None:
+                customer.last_seen_at = current_time
+                customer.last_bot_stage = stage
+                customer.last_bot_stage_label = _abandoned_label(stage)
+                customer.last_bot_stage_at = current_time
+            session.add(
+                ConversationEventRow(
+                    session_id=conversation.id,
+                    customer_phone=conversation.customer_phone,
+                    stage=stage,
+                    stage_label=bot_stage_label(stage),
+                    event_type="abandoned",
+                    payload_json=json.dumps(
+                        {
+                            "reason": "inactivity",
+                            "stale_after_seconds": stale_after_seconds,
+                        },
+                        ensure_ascii=False,
+                    ),
+                    created_at=current_time,
+                )
+            )
+            count += 1
+    return count
 
 
 def _find_or_create_vehicle(session, booking: Booking) -> CustomerVehicle | None:
@@ -1018,6 +1079,15 @@ def admin_customer_list(*, engine: Engine | None = None, limit: int = 100) -> tu
                     )
                 ).all()
                 labels = tuple(vehicle.label or " — ".join(part for part in (vehicle.model, vehicle.color) if part) for vehicle in vehicles)
+                conversation = session.scalars(
+                    select(ConversationSessionRow)
+                    .where(ConversationSessionRow.customer_phone == customer.phone)
+                    .order_by(ConversationSessionRow.last_event_at.desc(), ConversationSessionRow.id.desc())
+                ).first()
+                conversation_status = conversation.status if conversation is not None else ""
+                stage_label = customer.last_bot_stage_label or bot_stage_label(customer.last_bot_stage or "")
+                if conversation_status == "abandoned" and not stage_label.startswith("Abandonné"):
+                    stage_label = _abandoned_label(customer.last_bot_stage or (conversation.current_stage if conversation else ""))
                 items.append(
                     AdminCustomerListItem(
                         phone=customer.phone,
@@ -1025,7 +1095,8 @@ def admin_customer_list(*, engine: Engine | None = None, limit: int = 100) -> tu
                         booking_count=customer.booking_count or 0,
                         vehicle_labels=tuple(label for label in labels if label),
                         last_bot_stage=customer.last_bot_stage or "",
-                        last_bot_stage_label=customer.last_bot_stage_label or bot_stage_label(customer.last_bot_stage or ""),
+                        last_bot_stage_label=stage_label,
+                        conversation_status=conversation_status,
                     )
                 )
             db_phones = {item.phone for item in items if item.phone}
@@ -1057,6 +1128,9 @@ def admin_dashboard_summary(*, engine: Engine | None = None, recent_limit: int =
             reminders = session.scalar(
                 select(func.count()).select_from(BookingReminderRow).where(BookingReminderRow.status == "pending")
             ) or 0
+            abandoned = session.scalar(
+                select(func.count()).select_from(ConversationSessionRow).where(ConversationSessionRow.status == "abandoned")
+            ) or 0
             rows = session.scalars(
                 select(BookingRow).order_by(BookingRow.created_at.desc()).limit(recent_limit)
             ).all()
@@ -1075,6 +1149,7 @@ def admin_dashboard_summary(*, engine: Engine | None = None, recent_limit: int =
                 awaiting_confirmation=awaiting,
                 pending_ewash_confirmation=pending_ewash,
                 customers=customers,
+                abandoned_conversations=abandoned,
                 pending_reminders=reminders,
                 recent_bookings=recent,
                 db_available=True,
