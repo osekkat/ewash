@@ -37,15 +37,23 @@ function App() {
     document.documentElement.setAttribute('dir', dir);
   }, [variant, theme, dir]);
 
-  // PWA: when installed (display-mode: standalone) or launched with ?pwa=1,
-  // render the app full-viewport without the desktop phone-frame chrome.
+  // Render full-viewport (no desktop phone-frame stage) when:
+  //   - PWA is installed (display-mode: standalone)
+  //   - iOS Safari standalone
+  //   - URL has ?pwa=1 (manual preview)
+  //   - Viewport is phone-sized → real mobile visitors see the real app.
+  // The stage is only useful on wide screens (design preview / sharing
+  // the link to a desktop browser to show off the mockup).
   const isStandalone = useM_a(() => {
     if (typeof window === 'undefined') return false;
     try {
       if (window.matchMedia('(display-mode: standalone)').matches) return true;
     } catch (e) { /* ignore */ }
     if (window.navigator && window.navigator.standalone) return true;
-    return new URLSearchParams(window.location.search).has('pwa');
+    if (new URLSearchParams(window.location.search).has('pwa')) return true;
+    if (typeof window.matchMedia === 'function' &&
+        window.matchMedia('(max-width: 600px)').matches) return true;
+    return false;
   }, []);
 
   useE_a(() => {
