@@ -381,6 +381,18 @@ button.chip:active { transform: scale(0.95); }
   color: var(--primary-soft-text);
   border-color: transparent;
 }
+/* Live-status dot — small breathing pulse for "à venir" / "en cours". */
+.chip .live-dot {
+  width: 6px; height: 6px; border-radius: 99px;
+  background: currentColor;
+  box-shadow: 0 0 0 0 currentColor;
+  animation: livePulse 2.2s ease-out infinite;
+}
+@keyframes livePulse {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 60%, transparent); }
+  60% { box-shadow: 0 0 0 6px color-mix(in srgb, currentColor 0%, transparent); }
+  100% { box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 0%, transparent); }
+}
 
 /* ============ Type ============ */
 .t-display {
@@ -713,6 +725,11 @@ button.chip:active { transform: scale(0.95); }
 @keyframes sheetUp {
   from { transform: translateY(100%); }
   to { transform: translateY(0); }
+}
+@keyframes confirmedPop {
+  0% { transform: scale(0.6); opacity: 0; }
+  60% { transform: scale(1.06); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
 }
 @keyframes dotPulse {
   0% {

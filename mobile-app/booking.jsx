@@ -283,6 +283,10 @@ function VehicleStep({ t, data, patch, onNext }) {
                       color: sel ? 'var(--primary-soft-text)' : 'var(--text-2)',
                       padding: '8px 14px',
                       fontSize: 13,
+                      fontWeight: sel ? 700 : 600,
+                      boxShadow: sel
+                        ? '0 4px 10px -4px color-mix(in srgb, var(--primary) 35%, transparent)'
+                        : 'none',
                     }}>{c}</button>
                 );
               })}
@@ -1017,45 +1021,53 @@ function ConfirmedStep({ t, lang, data, totalPrice, variant, onAddons, onDone })
       {/* Confirmation hero */}
       <div style={{
         background: 'var(--hero-grad)',
-        padding: '32px 24px 36px',
+        padding: '36px 24px 40px',
         color: '#fff',
         position: 'relative', overflow: 'hidden',
       }}>
         <div style={{
-          width: 76, height: 76, borderRadius: 99,
-          background: 'rgba(255,255,255,0.14)',
-          border: '2px solid rgba(255,255,255,0.3)',
+          position: 'absolute', inset: 0,
+          background: 'radial-gradient(600px 200px at 50% 0%, rgba(255,255,255,0.18), transparent 60%)',
+          pointerEvents: 'none',
+        }}/>
+        <div style={{
+          width: 80, height: 80, borderRadius: 99,
+          background: 'rgba(255,255,255,0.16)',
+          border: '2px solid rgba(255,255,255,0.35)',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           marginInline: 'auto', marginBottom: 16,
           position: 'relative', zIndex: 1,
-          animation: 'slideUp 0.4s',
+          animation: 'confirmedPop 0.6s var(--ease-spring)',
+          boxShadow: '0 8px 32px rgba(0,0,0,0.18), inset 0 1px 0 rgba(255,255,255,0.3)',
         }}>
-          <Icons.Check size={40} stroke={2.5}/>
+          <Icons.Check size={42} stroke={2.8}/>
         </div>
         <div style={{
           fontFamily: 'var(--font-display)', fontWeight: 800,
-          fontSize: 24, textAlign: 'center', letterSpacing: '-0.02em',
-          position: 'relative', zIndex: 1,
+          fontSize: 26, textAlign: 'center', letterSpacing: '-0.025em',
+          position: 'relative', zIndex: 1, lineHeight: 1.1,
         }}>{t.bookingConfirmed}</div>
         <div style={{
-          textAlign: 'center', fontSize: 13.5,
-          color: 'rgba(255,255,255,0.78)', marginTop: 6,
-          position: 'relative', zIndex: 1,
+          textAlign: 'center', fontSize: 14,
+          color: 'rgba(255,255,255,0.78)', marginTop: 8,
+          position: 'relative', zIndex: 1, lineHeight: 1.45,
+          maxWidth: 280, marginInline: 'auto',
         }}>{t.confirmedSub}</div>
         <div className="t-tiny" style={{
-          textAlign: 'center', marginTop: 12,
-          letterSpacing: '0.1em', fontWeight: 700,
+          textAlign: 'center', marginTop: 14,
+          letterSpacing: '0.14em', fontWeight: 700,
           color: 'rgba(255,255,255,0.7)',
           position: 'relative', zIndex: 1,
         }}>{t.bookingRef.toUpperCase()} · {ref}</div>
         {/* ambient ripples */}
         {[1,2,3].map(i => (
           <div key={i} style={{
-            position: 'absolute', left: '50%', top: 64,
+            position: 'absolute', left: '50%', top: 66,
             transform: 'translate(-50%, 0)',
-            width: 76, height: 76, borderRadius: 99,
-            border: '2px solid rgba(255,255,255,0.4)',
-            animation: `ripple 2.5s infinite ${i * 0.4}s`,
+            width: 80, height: 80, borderRadius: 99,
+            border: '2px solid rgba(255,255,255,0.35)',
+            animation: `ripple 2.8s ease-out infinite ${i * 0.5}s`,
+            pointerEvents: 'none',
           }}/>
         ))}
       </div>

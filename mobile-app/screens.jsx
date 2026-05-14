@@ -134,10 +134,7 @@ function HomeScreen({ t, lang, openBooking, gotoSupport, gotoTariffs, theme, var
           <div className="row between" style={{ marginBottom: 10 }}>
             <div className="t-h3">{t.nextAppointment}</div>
             <span className="chip chip-accent">
-              <span style={{
-                width: 6, height: 6, borderRadius: 99,
-                background: 'currentColor', animation: 'pulse 1.5s infinite',
-              }}/>
+              <span className="live-dot" />
               {t.upcoming}
             </span>
           </div>
@@ -178,29 +175,31 @@ function HomeScreen({ t, lang, openBooking, gotoSupport, gotoTariffs, theme, var
         <div>
           <div className="t-h3 mb-12">{t.quickActions}</div>
           <div className="row gap-10">
-            <button onClick={gotoTariffs} className="card" style={{
+            <button onClick={gotoTariffs} className="card press" style={{
               flex: 1, padding: 14, borderRadius: 18, textAlign: 'inherit',
-              display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-start',
+              display: 'flex', flexDirection: 'column', gap: 10, alignItems: 'flex-start',
               cursor: 'pointer',
             }}>
               <div style={{
-                width: 36, height: 36, borderRadius: 12,
+                width: 38, height: 38, borderRadius: 12,
                 background: 'var(--accent-soft)', color: 'var(--accent-soft-text)',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
+                boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.5)',
               }}><Icons.Tag size={18}/></div>
-              <div style={{ fontWeight: 700, fontSize: 13.5 }}>{t.viewTariffs}</div>
+              <div style={{ fontWeight: 700, fontSize: 13.5, letterSpacing: '-0.005em' }}>{t.viewTariffs}</div>
             </button>
-            <button onClick={gotoSupport} className="card" style={{
+            <button onClick={gotoSupport} className="card press" style={{
               flex: 1, padding: 14, borderRadius: 18, textAlign: 'inherit',
-              display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-start',
+              display: 'flex', flexDirection: 'column', gap: 10, alignItems: 'flex-start',
               cursor: 'pointer',
             }}>
               <div style={{
-                width: 36, height: 36, borderRadius: 12,
+                width: 38, height: 38, borderRadius: 12,
                 background: 'var(--primary-soft)', color: 'var(--primary-soft-text)',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
+                boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.5)',
               }}><Icons.Message size={18}/></div>
-              <div style={{ fontWeight: 700, fontSize: 13.5 }}>{t.talkTeam}</div>
+              <div style={{ fontWeight: 700, fontSize: 13.5, letterSpacing: '-0.005em' }}>{t.talkTeam}</div>
             </button>
           </div>
         </div>
@@ -251,20 +250,40 @@ function BookingsScreen({ t, lang, openBooking, theme }) {
         }}>
           {['upcoming', 'past'].map(k => (
             <button key={k} onClick={() => setTab(k)} style={{
-              flex: 1, padding: '10px 16px', borderRadius: 999,
+              flex: 1, padding: '11px 16px', borderRadius: 999,
               background: tab === k ? 'var(--surface)' : 'transparent',
               color: tab === k ? 'var(--text)' : 'var(--text-2)',
-              fontWeight: 600, fontSize: 13.5,
-              boxShadow: tab === k ? 'var(--shadow-sm)' : 'none',
-              transition: 'background 0.15s',
+              fontWeight: tab === k ? 700 : 600, fontSize: 13.5,
+              letterSpacing: '-0.005em',
+              boxShadow: tab === k
+                ? '0 1px 2px rgba(14,42,42,0.05), 0 4px 8px -2px rgba(14,42,42,0.06)'
+                : 'none',
+              transition: 'background 0.22s var(--ease-soft), color 0.22s var(--ease-soft), box-shadow 0.22s var(--ease-soft), font-weight 0.18s',
             }}>{t[k]}</button>
           ))}
         </div>
 
         {items[tab].length === 0 && (
-          <div className="card center" style={{ padding: 32, flexDirection: 'column', gap: 8 }}>
-            <Icons.Calendar size={32} style={{ color: 'var(--text-3)' }}/>
-            <div className="t-muted">Aucune réservation</div>
+          <div className="card center" style={{
+            padding: '36px 24px', flexDirection: 'column', gap: 12,
+            background: 'var(--surface-2)', border: 'none',
+          }}>
+            <div style={{
+              width: 56, height: 56, borderRadius: 18,
+              background: 'var(--surface)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              color: 'var(--text-3)',
+              boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.5), 0 4px 12px -4px rgba(14,42,42,0.08)',
+            }}>
+              <Icons.Calendar size={26}/>
+            </div>
+            <div className="col gap-4" style={{ alignItems: 'center', textAlign: 'center' }}>
+              <div style={{ fontWeight: 700, fontSize: 14.5 }}>Aucune réservation</div>
+              <div className="t-muted" style={{ fontSize: 13 }}>Vos rendez-vous apparaîtront ici</div>
+            </div>
+            <Btn variant="soft" onClick={openBooking} style={{ marginTop: 4 }}>
+              {t.bookCta}
+            </Btn>
           </div>
         )}
 
@@ -365,11 +384,15 @@ function ServicesScreen({ t, lang, openBooking, theme }) {
         <div className="row" style={{ background: 'var(--surface-2)', borderRadius: 999, padding: 4 }}>
           {['lavage', 'esthetique'].map(k => (
             <button key={k} onClick={() => setTab(k)} style={{
-              flex: 1, padding: '10px 16px', borderRadius: 999,
+              flex: 1, padding: '11px 16px', borderRadius: 999,
               background: tab === k ? 'var(--surface)' : 'transparent',
               color: tab === k ? 'var(--text)' : 'var(--text-2)',
-              fontWeight: 600, fontSize: 13.5,
-              boxShadow: tab === k ? 'var(--shadow-sm)' : 'none',
+              fontWeight: tab === k ? 700 : 600, fontSize: 13.5,
+              letterSpacing: '-0.005em',
+              boxShadow: tab === k
+                ? '0 1px 2px rgba(14,42,42,0.05), 0 4px 8px -2px rgba(14,42,42,0.06)'
+                : 'none',
+              transition: 'background 0.22s var(--ease-soft), color 0.22s var(--ease-soft), box-shadow 0.22s var(--ease-soft)',
             }}>{t[k]}</button>
           ))}
         </div>
@@ -406,11 +429,12 @@ function ServicesScreen({ t, lang, openBooking, theme }) {
                   background: 'var(--surface-2)',
                   borderRadius: 12, padding: '12px 14px',
                   display: 'flex', alignItems: 'baseline', justifyContent: 'space-between',
+                  boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.4)',
                 }}>
-                  <span className="t-tiny" style={{ letterSpacing: '0.08em', fontWeight: 700, color: 'var(--text-2)' }}>
+                  <span className="t-tiny" style={{ letterSpacing: '0.1em', fontWeight: 700, color: 'var(--text-2)' }}>
                     TOUTES CATÉGORIES
                   </span>
-                  <span className="t-num" style={{ fontWeight: 800, fontSize: 20, color: 'var(--text)' }}>
+                  <span className="t-num" style={{ fontWeight: 800, fontSize: 22, color: 'var(--text)', letterSpacing: '-0.02em' }}>
                     {s.prices.A}<span style={{ fontSize: 12, color: 'var(--text-2)', marginInlineStart: 4 }}>DH</span>
                   </span>
                 </div>
@@ -421,9 +445,10 @@ function ServicesScreen({ t, lang, openBooking, theme }) {
                       background: 'var(--surface-2)',
                       borderRadius: 12, padding: '10px 8px',
                       textAlign: 'center',
+                      boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.4)',
                     }}>
-                      <div className="t-tiny" style={{ letterSpacing: '0.1em', fontWeight: 700 }}>{c}</div>
-                      <div className="t-num" style={{ fontWeight: 800, fontSize: 16, color: 'var(--text)', marginTop: 2 }}>
+                      <div className="t-tiny" style={{ letterSpacing: '0.12em', fontWeight: 800, color: 'var(--text-3)' }}>{c}</div>
+                      <div className="t-num" style={{ fontWeight: 800, fontSize: 17, color: 'var(--text)', marginTop: 2, letterSpacing: '-0.015em' }}>
                         {s.prices[c]}<span style={{ fontSize: 10, color: 'var(--text-2)', marginInlineStart: 2 }}>DH</span>
                       </div>
                     </div>
@@ -453,9 +478,13 @@ function ProfileScreen({ t, lang, setLang, theme, setTheme, variant, setVariant,
         <div className="card card-elev" style={{ padding: 16, display: 'flex', gap: 14, alignItems: 'center' }}>
           <div style={{
             width: 60, height: 60, borderRadius: 18,
-            background: 'var(--primary)', color: 'var(--primary-text)',
+            background: 'linear-gradient(135deg, color-mix(in srgb, var(--primary) 92%, white) 0%, var(--primary) 50%, color-mix(in srgb, var(--primary) 70%, black) 100%)',
+            color: 'var(--primary-text)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: 24,
+            fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: 26,
+            letterSpacing: '-0.02em',
+            boxShadow:
+              'inset 0 1px 0 rgba(255,255,255,0.25), 0 8px 18px -8px color-mix(in srgb, var(--primary) 50%, transparent)',
           }}>{profile.name[0]}</div>
           <div className="col gap-2 flex-1">
             <div style={{ fontWeight: 700, fontSize: 16 }}>{profile.name}</div>
@@ -587,15 +616,21 @@ function ProfileRow({ icon, label, value, right, onClick, danger }) {
 function ProfileSwitch({ on, onChange }) {
   return (
     <button onClick={() => onChange && onChange(!on)} style={{
-      width: 44, height: 26, borderRadius: 99,
+      width: 46, height: 28, borderRadius: 99,
       background: on ? 'var(--primary)' : 'var(--border-strong)',
-      position: 'relative', transition: 'background 0.2s', flexShrink: 0,
+      position: 'relative',
+      transition: 'background 0.25s var(--ease-soft)',
+      flexShrink: 0,
+      boxShadow: on
+        ? 'inset 0 1px 1px rgba(0,0,0,0.06), 0 4px 10px -4px color-mix(in srgb, var(--primary) 35%, transparent)'
+        : 'inset 0 1px 2px rgba(0,0,0,0.05)',
     }}>
       <span style={{
         position: 'absolute', top: 3, insetInlineStart: on ? 21 : 3,
-        width: 20, height: 20, borderRadius: 99,
-        background: '#fff', transition: 'inset-inline-start 0.2s',
-        boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
+        width: 22, height: 22, borderRadius: 99,
+        background: '#fff',
+        transition: 'inset-inline-start 0.28s var(--ease-spring), box-shadow 0.2s',
+        boxShadow: '0 1px 2px rgba(0,0,0,0.2), 0 3px 6px rgba(0,0,0,0.15)',
       }}/>
     </button>
   );
