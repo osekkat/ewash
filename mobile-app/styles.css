@@ -398,6 +398,11 @@ input, textarea { outline: none; border: none; background: none; }
 .bottom-nav .navitem.active .pill {
   background: var(--primary-soft);
 }
+.bottom-nav .navitem .pill svg {
+  flex-shrink: 0;
+  display: block;
+  color: inherit;
+}
 
 /* ============ Stepper ============ */
 .stepbar {

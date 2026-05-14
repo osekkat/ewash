@@ -1,9 +1,12 @@
 /* eslint-disable */
 // ewash — icon set (lucide-inspired, all stroke-based)
 
+// Note: rest is spread FIRST so our explicit attributes (especially
+// stroke="currentColor") aren't clobbered if Babel-standalone leaks the
+// numeric `stroke` prop or the custom `size` prop into rest.
 const Icon = ({ d, size = 22, stroke = 1.8, fill = 'none', children, ...rest }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill={fill} stroke="currentColor"
-    strokeWidth={stroke} strokeLinecap="round" strokeLinejoin="round" {...rest}>
+  <svg {...rest} width={size} height={size} viewBox="0 0 24 24" fill={fill} stroke="currentColor"
+    strokeWidth={stroke} strokeLinecap="round" strokeLinejoin="round">
     {d && <path d={d} />}
     {children}
   </svg>

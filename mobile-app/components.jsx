@@ -56,21 +56,33 @@ function TopBar({ title, onBack, right, subtitle, large = false }) {
 // Bottom Nav
 // ─────────────────────────────────────────────────────────────
 function BottomNav({ screen, setScreen, t }) {
+  const ICON_BY_KEY = {
+    home: Icons.Home,
+    bookings: Icons.Calendar,
+    services: Icons.Sparkle,
+    profile: Icons.User,
+  };
   const items = [
-    { key: 'home', label: t.home, Icon: Icons.Home },
-    { key: 'bookings', label: t.bookings, Icon: Icons.Calendar },
-    { key: 'services', label: t.services, Icon: Icons.Sparkle },
-    { key: 'profile', label: t.profile, Icon: Icons.User },
+    { key: 'home', label: t.home },
+    { key: 'bookings', label: t.bookings },
+    { key: 'services', label: t.services },
+    { key: 'profile', label: t.profile },
   ];
   return (
     <div className="bottom-nav">
-      {items.map(({ key, label, Icon }) => (
-        <button key={key} className={`navitem ${screen === key ? 'active' : ''}`}
-          onClick={() => setScreen(key)}>
-          <div className="pill"><Icon size={22} stroke={screen === key ? 2 : 1.7} /></div>
-          <span>{label}</span>
-        </button>
-      ))}
+      {items.map((item) => {
+        const IconComp = ICON_BY_KEY[item.key];
+        const active = screen === item.key;
+        return (
+          <button key={item.key} className={`navitem ${active ? 'active' : ''}`}
+            onClick={() => setScreen(item.key)}>
+            <div className="pill">
+              <IconComp size={22} stroke={active ? 2.4 : 2} />
+            </div>
+            <span>{item.label}</span>
+          </button>
+        );
+      })}
     </div>
   );
 }
