@@ -6,6 +6,7 @@ so the admin dashboard can show real operational data.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -16,7 +17,7 @@ from functools import lru_cache
 from typing import Iterable
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import Engine, delete, func, or_, select
+from sqlalchemy import Engine, delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -36,6 +37,7 @@ from .models import (
     CustomerName,
     CustomerTokenRow,
     CustomerVehicle,
+    DataErasureAuditRow,
     ReminderRuleRow,
     WhatsappMessageRow,
     VehicleColor,
@@ -1537,3 +1539,112 @@ def find_booking_by_client_request_id(
         if row is not None:
             sess.expunge(row)
         return row
+
+
+def anonymize_customer(
+    customer_phone: str,
+    *,
+    actor: str = "customer_self_serve",
+    engine: Engine | None = None,
+) -> dict:
+    """Self-serve data erasure (Loi 09-08 / GDPR right-to-erasure).
+
+    Deletes every customer-side row (tokens, names, vehicles, conversation
+    sessions) and anonymizes the customer's bookings in-place: phone replaced
+    with ``DEL-<sha256[:12]>``, identifying fields scrubbed, but the row
+    itself preserved so admin views still see the slot was booked. Writes an
+    append-only audit entry to ``data_erasure_audit`` for compliance reporting.
+
+    Returns ``{"deleted_count": int, "anonymized_bookings": int}``. A configured
+    engine that resolves to ``None`` (e.g. test path without DATABASE_URL)
+    yields zeros — the caller treats that as "nothing to delete".
+
+    Dialect notes
+    -------------
+    * On Postgres (production), migration 0006 declares
+      ``ON UPDATE CASCADE`` on ``bookings.customer_phone``. Renaming the
+      ``customers.phone`` primary key automatically rewrites the matching
+      booking rows.
+    * On SQLite (tests), FK actions are not enforced and CASCADE is unavailable.
+      The helper follows the customer-rename with an explicit
+      ``UPDATE bookings SET customer_phone = <anon>`` so both dialects converge
+      on the same final state.
+
+    The audit row uses the full SHA-256 hex digest (64 chars) rather than the
+    truncated 12-char prefix used for the FK pivot — the audit log is meant to
+    survive standalone, and the longer digest stays collision-resistant for
+    long-tail historical reporting.
+    """
+    if not customer_phone:
+        return {"deleted_count": 0, "anonymized_bookings": 0}
+    db_engine = _engine_or_configured(engine)
+    if db_engine is None:
+        return {"deleted_count": 0, "anonymized_bookings": 0}
+
+    phone_hash_full = hashlib.sha256(customer_phone.encode("utf-8")).hexdigest()
+    anon_phone = "DEL-" + phone_hash_full[:12]
+
+    with session_scope(db_engine) as session:
+        deleted = 0
+        for model in (
+            CustomerTokenRow,
+            CustomerName,
+            CustomerVehicle,
+            ConversationSessionRow,
+        ):
+            result = session.execute(
+                delete(model).where(model.customer_phone == customer_phone)
+            )
+            deleted += int(result.rowcount or 0)
+
+        bookings = session.scalars(
+            select(BookingRow).where(BookingRow.customer_phone == customer_phone)
+        ).all()
+        anonymized = len(bookings)
+        for booking_row in bookings:
+            booking_row.customer_name = "Anonyme"
+            booking_row.car_model = ""
+            booking_row.color = ""
+            booking_row.address = ""
+            booking_row.address_text = ""
+            booking_row.location_name = ""
+            booking_row.location_address = ""
+            booking_row.note = ""
+            booking_row.latitude = None
+            booking_row.longitude = None
+            booking_row.raw_booking_json = "{}"
+        session.flush()
+
+        customer = session.scalar(
+            select(Customer).where(Customer.phone == customer_phone)
+        )
+        if customer is not None:
+            customer.display_name = "Anonyme"
+            customer.whatsapp_profile_name = ""
+            customer.whatsapp_wa_id = ""
+            customer.last_bot_stage = ""
+            customer.last_bot_stage_label = ""
+            customer.last_bot_stage_at = None
+            customer.phone = anon_phone
+            session.flush()
+
+        # SQLite has no ON UPDATE CASCADE; explicitly migrate any bookings that
+        # still reference the original phone over to the anonymized value. On
+        # Postgres this WHERE matches zero rows because the CASCADE already
+        # rewrote them during the customers.phone update above.
+        session.execute(
+            update(BookingRow)
+            .where(BookingRow.customer_phone == customer_phone)
+            .values(customer_phone=anon_phone)
+        )
+
+        session.add(
+            DataErasureAuditRow(
+                phone_hash=phone_hash_full,
+                actor=(actor or "")[:64],
+                deleted_count=deleted,
+                anonymized_bookings=anonymized,
+            )
+        )
+
+        return {"deleted_count": deleted, "anonymized_bookings": anonymized}

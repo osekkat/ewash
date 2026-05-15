@@ -215,6 +215,28 @@ class TokenRevokeResponse(BaseModel):
     revoked_count: int
 
 
+# ── Data erasure (Loi 09-08 / GDPR right-to-erasure) ──────────────────────
+
+
+# The exact phrase the customer must type to authorize self-serve account
+# deletion. Kept as a module-level constant so the test suite, the PWA, and
+# any future translation layer all reference the same string.
+ME_DELETE_CONFIRM_PHRASE = "I confirm I want to delete my data"
+
+
+class MeDeleteRequest(StrictBase):
+    # `Literal` enforces the exact phrase — a misspelling (or a casual "yes")
+    # returns 422 from Pydantic before the route ever runs. The PWA's confirm
+    # sheet asks the customer to type the phrase out, so this doubles as a
+    # tap-to-delete safety net.
+    confirm: Literal["I confirm I want to delete my data"]
+
+
+class MeDeleteResponse(BaseModel):
+    deleted_count: int  # rows purged from tokens/names/vehicles/sessions
+    anonymized_bookings: int  # bookings whose PII was scrubbed in-place
+
+
 # ── Errors ────────────────────────────────────────────────────────────────
 
 
@@ -244,5 +266,8 @@ __all__ = [
     "BookingsListResponse",
     "TokenRevokeRequest",
     "TokenRevokeResponse",
+    "ME_DELETE_CONFIRM_PHRASE",
+    "MeDeleteRequest",
+    "MeDeleteResponse",
     "ErrorResponse",
 ]

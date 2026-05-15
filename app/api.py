@@ -23,6 +23,8 @@ from app.api_schemas import (
     CategoryOut,
     CenterOut,
     ErrorResponse,
+    MeDeleteRequest,
+    MeDeleteResponse,
     PromoValidateRequest,
     PromoValidateResponse,
     ServiceOut,
@@ -390,6 +392,27 @@ async def create_booking(
             total_dh,
         )
 
+    returned_token = ""
+    if body.bookings_token:
+        matched_phone = persistence.verify_customer_token(
+            body.bookings_token,
+            expected_phone=phone,
+        )
+        if matched_phone == phone:
+            returned_token = body.bookings_token
+            logger.info(
+                "bookings.token reused ref=%s phone_hash=%s",
+                booking.ref,
+                _hash_for_log(phone),
+            )
+    if not returned_token:
+        returned_token = persistence.mint_customer_token(phone)
+        logger.info(
+            "bookings.token minted ref=%s phone_hash=%s",
+            booking.ref,
+            _hash_for_log(phone),
+        )
+
     background_tasks.add_task(
         notifications.notify_booking_confirmation_safe,
         booking,
@@ -446,7 +469,7 @@ async def create_booking(
                 addon_regular_price,
             ) in enumerate(addons_resolved)
         ],
-        bookings_token="",
+        bookings_token=returned_token,
         is_idempotent_replay=False,
     )
 
@@ -873,11 +896,86 @@ async def revoke_token(
     return TokenRevokeResponse(revoked_count=count)
 
 
+# ── Data erasure (Loi 09-08 / GDPR right-to-erasure) ─────────────────────
+
+
+@router.delete("/me", response_model=MeDeleteResponse)
+@limiter.limit("3/hour", key_func=_token_key_func)
+async def delete_my_account(
+    request: Request,
+    response: Response,
+    body: MeDeleteRequest = Body(...),
+) -> MeDeleteResponse | JSONResponse:
+    """Customer-initiated full data erasure under Loi 09-08 / GDPR.
+
+    The request must carry both ``X-Ewash-Token`` and a JSON body containing
+    the literal phrase ``"I confirm I want to delete my data"`` (the Pydantic
+    ``Literal`` enforces the exact value — anything else yields 422 from the
+    framework before we ever reach the handler body).
+
+    On success every customer-side row (tokens, names, vehicles, conversation
+    sessions) is deleted and every booking owned by the phone is anonymized
+    in-place — the slot history survives for revenue accounting but no PII
+    remains. An append-only ``data_erasure_audit`` row records the action so
+    compliance reports can answer "how many erasures last quarter?" without
+    revealing who.
+
+    Rate-limited at 3/hour per token because legitimate use is a single tap;
+    repeated calls would only happen during abuse or accidental retries.
+
+    ``response`` is unused but the slowapi decorator requires it on the
+    handler signature to inject the ``X-RateLimit-*`` headers.
+    """
+    del response
+    started = time.perf_counter()
+
+    token = request.headers.get("X-Ewash-Token", "")
+    if not token:
+        logger.warning(
+            "me.delete error=missing_token ip_hash=%s",
+            _hash_for_log(get_remote_address(request) or ""),
+        )
+        return _json_error(401, "missing_token", "X-Ewash-Token required")
+
+    phone = persistence.verify_customer_token(token)
+    if phone is None:
+        logger.warning(
+            "me.delete error=invalid_token token_prefix=%s ip_hash=%s",
+            hash_token(token)[:8],
+            _hash_for_log(get_remote_address(request) or ""),
+        )
+        return _json_error(401, "invalid_token", "Token not recognized")
+
+    request.state.phone_normalized = phone
+    # `body` is intentionally not read further — the Pydantic ``Literal`` on
+    # ``MeDeleteRequest.confirm`` rejected every value but the exact phrase
+    # before this point.
+    del body
+
+    result = persistence.anonymize_customer(phone, actor="customer_self_serve")
+    deleted_count = result["deleted_count"]
+    anonymized_bookings = result["anonymized_bookings"]
+
+    duration_ms = (time.perf_counter() - started) * 1000
+    logger.info(
+        "me.delete phone_hash=%s deleted_count=%d anonymized_bookings=%d duration_ms=%.1f",
+        _hash_for_log(phone),
+        deleted_count,
+        anonymized_bookings,
+        duration_ms,
+    )
+    return MeDeleteResponse(
+        deleted_count=deleted_count,
+        anonymized_bookings=anonymized_bookings,
+    )
+
+
 __all__ = [
     "_DOMAIN_EXC_MAP",
     "_slots_with_lead_filter",
     "api_exception_handler",
     "create_booking",
+    "delete_my_account",
     "domain_error_response",
     "get_bootstrap",
     "get_services",
