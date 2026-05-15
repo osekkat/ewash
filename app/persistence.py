@@ -217,6 +217,7 @@ def assign_booking_ref(
     *,
     engine: Engine | None = None,
     session: Session | None = None,
+    record_shadow: bool = True,
 ) -> str:
     """Assign a booking reference that is monotonic against persisted refs.
 
@@ -228,11 +229,11 @@ def assign_booking_ref(
     if session is not None:
         year = _now().year
         next_counter = _next_booking_ref_counter(session, year=year)
-        return booking.assign_ref(counter_value=next_counter)
+        return booking.assign_ref(counter_value=next_counter, record_shadow=record_shadow)
 
     db_engine = _engine_or_configured(engine)
     if db_engine is None:
-        return booking.assign_ref()
+        return booking.assign_ref(record_shadow=record_shadow)
 
     year = _now().year
     try:
@@ -240,8 +241,8 @@ def assign_booking_ref(
             next_counter = _next_booking_ref_counter(session, year=year)
     except Exception:
         log.exception("assign_booking_ref failed to reserve DB ref; falling back to process counter")
-        return booking.assign_ref()
-    return booking.assign_ref(counter_value=next_counter)
+        return booking.assign_ref(record_shadow=record_shadow)
+    return booking.assign_ref(counter_value=next_counter, record_shadow=record_shadow)
 
 
 def _vehicle_label(booking: Booking) -> str:

@@ -491,7 +491,7 @@ async def create_booking(
 
     try:
         with persistence.session_scope(engine) as session:
-            persistence.assign_booking_ref(booking, session=session)
+            persistence.assign_booking_ref(booking, session=session, record_shadow=False)
             request.state.booking_ref = booking.ref
             booking.client_request_id = body.client_request_id
             persistence.persist_confirmed_booking(booking, source="api", session=session)

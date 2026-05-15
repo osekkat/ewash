@@ -14,7 +14,7 @@ from slowapi.errors import RateLimitExceeded
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
-from app import api, catalog, main as main_module, notifications, persistence
+from app import api, booking as booking_store, catalog, main as main_module, notifications, persistence
 from app.config import settings
 from app.db import init_db, make_engine, session_scope
 from app.models import (
@@ -49,6 +49,8 @@ def _client(
 
 @pytest.fixture
 def api_db(monkeypatch, tmp_path):
+    booking_store._bookings.clear()
+    monkeypatch.setattr(booking_store, "_counter", 0)
     db_url = f"sqlite+pysqlite:///{tmp_path / 'api-bookings.db'}"
     engine = make_engine(db_url)
     init_db(engine)
@@ -62,6 +64,7 @@ def api_db(monkeypatch, tmp_path):
         persistence._configured_engine.cache_clear()
         catalog.catalog_cache_clear()
         notifications.notification_cache_clear()
+        booking_store._bookings.clear()
 
 
 def _payload(**overrides) -> dict:
@@ -614,6 +617,8 @@ def test_create_booking_rolls_back_if_late_write_fails(api_db, monkeypatch):
         assert session.scalars(select(BookingLineItemRow)).all() == []
         assert session.scalars(select(BookingStatusEventRow)).all() == []
         assert session.scalars(select(CustomerName)).all() == []
+    assert booking_store.all_bookings() == []
+    assert persistence.admin_booking_list(engine=api_db) == ()
 
 
 def test_create_booking_returns_503_when_database_absent(monkeypatch):

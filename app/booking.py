@@ -67,7 +67,13 @@ class Booking:
     when_page: int = 0
     when_dates: list[str] = field(default_factory=list)  # ISO dates currently offered
 
-    def assign_ref(self, *, counter_floor: int = 0, counter_value: int | None = None) -> str:
+    def assign_ref(
+        self,
+        *,
+        counter_floor: int = 0,
+        counter_value: int | None = None,
+        record_shadow: bool = True,
+    ) -> str:
         global _counter
         if counter_value is None:
             if counter_floor > _counter:
@@ -81,7 +87,8 @@ class Booking:
         year = datetime.now(timezone.utc).year
         self.ref = f"EW-{year}-{counter:04d}"
         self.created_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        _bookings.append(asdict(self))
+        if record_shadow:
+            _bookings.append(asdict(self))
         log.info(
             "booking confirmed ref=%s phone_hash=%s",
             self.ref,
