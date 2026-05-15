@@ -1702,6 +1702,17 @@ def anonymize_customer(
             )
         )
         deleted += int(event_result.rowcount or 0)
+        # bookings.customer_vehicle_id FK has no ON DELETE CASCADE, so the
+        # customer_vehicles delete below would raise ForeignKeyViolation on
+        # Postgres if a booking still pointed at the vehicle. Null the
+        # reference first; the booking row itself is preserved and scrubbed
+        # of PII further down. SQLite test paths don't enforce FKs and so
+        # quietly tolerated the wrong ordering until prod tripped it.
+        session.execute(
+            update(BookingRow)
+            .where(BookingRow.customer_phone == customer_phone)
+            .values(customer_vehicle_id=None)
+        )
         for model in (
             CustomerTokenRow,
             CustomerName,

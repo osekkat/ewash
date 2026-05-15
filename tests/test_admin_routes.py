@@ -486,6 +486,10 @@ def test_admin_erase_customer_happy_path(monkeypatch, tmp_path):
         assert booking.customer_phone.startswith("DEL-")
         assert booking.car_model == ""
         assert booking.raw_booking_json == "{}"
+        # FK to customer_vehicles must be nulled — the vehicle row is gone,
+        # and on Postgres the FK has no ON DELETE CASCADE, so a non-null
+        # value here would have raised ForeignKeyViolation during erasure.
+        assert booking.customer_vehicle_id is None
         # Actor identifies the admin session + client IP so concurrent
         # admins sharing one password are still distinguishable in the audit.
         assert audit.actor.startswith("admin:")
