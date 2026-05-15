@@ -356,8 +356,8 @@ def test_create_booking_replays_same_client_request_id_for_same_caller(
 ):
     """The legitimate retry case: same phone + same client_request_id within
     the same device hits the replay path and gets back the original ref.
-    Each replay mints a fresh bookings_token so the PWA's localStorage stays
-    in sync after a retry that lost the prior response."""
+    A retry carrying the device's existing bookings_token echoes that token
+    instead of creating an orphaned customer_tokens row."""
     caplog.set_level(logging.INFO, logger="ewash.api")
 
     with _client() as client:
@@ -367,7 +367,10 @@ def test_create_booking_replays_same_client_request_id_for_same_caller(
         ).json()
         same_response = client.post(
             "/api/v1/bookings",
-            json=_payload(client_request_id="booking-idempotent-1"),
+            json=_payload(
+                client_request_id="booking-idempotent-1",
+                bookings_token=first["bookings_token"],
+            ),
         )
 
     assert same_response.status_code == 200
@@ -376,14 +379,15 @@ def test_create_booking_replays_same_client_request_id_for_same_caller(
     assert same["line_items"] == first["line_items"]
     assert same["is_idempotent_replay"] is True
     assert same["bookings_token"]
-    assert same["bookings_token"] != first["bookings_token"]
+    assert same["bookings_token"] == first["bookings_token"]
 
     with session_scope(api_db) as session:
         rows = session.scalars(select(BookingRow)).all()
         assert len(rows) == 1
         assert rows[0].client_request_id == "booking-idempotent-1"
         tokens = session.scalars(select(CustomerTokenRow)).all()
-        assert len(tokens) == 2  # original + replay
+        assert len(tokens) == 1
+        assert tokens[0].token_hash == hash_token(first["bookings_token"])
 
     messages = "\n".join(record.getMessage() for record in caplog.records)
     assert "ewash.api.bookings.create ref=" in messages
@@ -529,7 +533,10 @@ def test_create_booking_integrity_error_replays_existing_client_request_id(
 
         replay_response = client.post(
             "/api/v1/bookings",
-            json=_payload(client_request_id="booking-race-1"),
+            json=_payload(
+                client_request_id="booking-race-1",
+                bookings_token=first["bookings_token"],
+            ),
         )
 
     assert replay_response.status_code == 200
@@ -537,7 +544,7 @@ def test_create_booking_integrity_error_replays_existing_client_request_id(
     assert replay["ref"] == first["ref"]
     assert replay["is_idempotent_replay"] is True
     assert replay["bookings_token"]
-    assert replay["bookings_token"] != first["bookings_token"]
+    assert replay["bookings_token"] == first["bookings_token"]
     assert calls["find"] == 2
 
     with session_scope(api_db) as session:
@@ -545,7 +552,7 @@ def test_create_booking_integrity_error_replays_existing_client_request_id(
         assert len(rows) == 1
         assert rows[0].client_request_id == "booking-race-1"
         tokens = session.scalars(select(CustomerTokenRow)).all()
-        assert len(tokens) == 2
+        assert len(tokens) == 1
 
 
 def test_create_booking_single_addon_persists_legacy_and_line_item(api_db):

@@ -376,6 +376,7 @@ def _idempotent_booking_response(
     engine,
     request: Request,
     caller_phone_raw: str,
+    caller_bookings_token: str | None = None,
 ) -> BookingCreateResponse | None:
     """Replay a cached booking response only when the caller owns the booking.
 
@@ -437,7 +438,29 @@ def _idempotent_booking_response(
         ref = row.ref
         phone = row.customer_phone
 
-    response.bookings_token = persistence.mint_customer_token(phone, engine=engine)
+    returned_token = ""
+    if caller_bookings_token:
+        matched_phone = persistence.verify_customer_token(
+            caller_bookings_token,
+            expected_phone=phone,
+            engine=engine,
+        )
+        if matched_phone == phone:
+            returned_token = caller_bookings_token
+            logger.info(
+                "bookings.token reused ref=%s phone_hash=%s replay=true",
+                ref,
+                _hash_for_log(phone),
+            )
+    if not returned_token:
+        returned_token = persistence.mint_customer_token(phone, engine=engine)
+        logger.info(
+            "bookings.token minted ref=%s phone_hash=%s replay=true",
+            ref,
+            _hash_for_log(phone),
+        )
+
+    response.bookings_token = returned_token
     request.state.booking_ref = ref
     request.state.phone_normalized = phone
     logger.info(
@@ -475,6 +498,7 @@ async def create_booking(
         engine=engine,
         request=request,
         caller_phone_raw=body.phone,
+        caller_bookings_token=body.bookings_token,
     )
     if replay is not None:
         return replay
@@ -575,6 +599,7 @@ async def create_booking(
             engine=engine,
             request=request,
             caller_phone_raw=body.phone,
+            caller_bookings_token=body.bookings_token,
         )
         if replay is not None:
             return replay

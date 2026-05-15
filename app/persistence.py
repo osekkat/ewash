@@ -1385,9 +1385,9 @@ def mint_customer_token(
     A DB dump never yields an active token because only the hash is stored.
 
     Multiple tokens per phone are allowed by design — every fresh booking
-    that doesn't carry an existing token mints a new one (the design accepts
-    that an idempotent-replay scenario where the original response was lost
-    leaves the old token orphaned but still valid).
+    that doesn't carry an existing token mints a new one. Idempotent replays
+    should echo a caller-provided valid token instead of calling this helper
+    again and creating avoidable orphan rows.
 
     If no engine is configured (DB-absent test paths), the plaintext is
     still returned so the API response shape stays valid; the PWA's
