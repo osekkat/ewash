@@ -47,6 +47,35 @@ def test_services_moto_category_returns_moto_group_only() -> None:
     assert all(item["regular_price_dh"] is None for item in body["moto"])
 
 
+def test_services_all_categories_match_catalog_pricing() -> None:
+    expected_groups = {
+        "A": {"wash": catalog.SERVICES_WASH, "detailing": catalog.SERVICES_DETAILING},
+        "B": {"wash": catalog.SERVICES_WASH, "detailing": catalog.SERVICES_DETAILING},
+        "C": {"wash": catalog.SERVICES_WASH, "detailing": catalog.SERVICES_DETAILING},
+        "MOTO": {"moto": catalog.SERVICES_MOTO},
+    }
+
+    with _client() as client:
+        for category, groups in expected_groups.items():
+            response = client.get("/api/v1/catalog/services", params={"category": category})
+            assert response.status_code == 200
+            body = response.json()
+            assert set(body) == set(groups)
+
+            for bucket, services in groups.items():
+                assert len(body[bucket]) == len(services)
+                for item, service in zip(body[bucket], services):
+                    service_id, name, desc, _prices = service
+                    assert item == {
+                        "id": service_id,
+                        "name": name,
+                        "desc": desc,
+                        "price_dh": catalog.service_price(service_id, category),
+                        "regular_price_dh": None,
+                        "bucket": bucket,
+                    }
+
+
 def test_services_valid_promo_populates_strike_through_price() -> None:
     with _client() as client:
         response = client.get("/api/v1/catalog/services?category=B&promo=ys26")
@@ -269,5 +298,89 @@ def test_closed_dates_endpoint_logs_first_and_last(caplog):
         "catalog.closed_dates listed count=" in rec.message
         and "first=" in rec.message
         and "last=" in rec.message
+        for rec in caplog.records
+    )
+
+
+# ── /catalog/time-slots ────────────────────────────────────────────────────
+
+
+def test_time_slots_endpoint_without_date_returns_all_active():
+    with _client() as client:
+        response = client.get("/api/v1/catalog/time-slots")
+    assert response.status_code == 200
+    payload = response.json()
+    # Static catalog seeds 6 slots (slot_9_11 through slot_20_22). The DB may
+    # add or hide some; assert we get at least one and that they all match the
+    # expected shape.
+    assert len(payload) >= 1
+    for row in payload:
+        assert set(row.keys()) == {"id", "label", "period"}
+
+
+def test_time_slots_endpoint_filters_using_2h_casablanca_cutoff():
+    """A date with all slots in the past should return an empty list."""
+    # 1996-01-01 is far enough in the past that every slot is filtered out
+    # regardless of wall-clock skew. This pins the filter logic without
+    # needing to mock the clock.
+    with _client() as client:
+        response = client.get("/api/v1/catalog/time-slots?date=1996-01-01")
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_time_slots_endpoint_includes_far_future_slots():
+    """A date in 2099 should return every active slot — none filtered out."""
+    with _client() as client:
+        all_slots = client.get("/api/v1/catalog/time-slots").json()
+        future_slots = client.get("/api/v1/catalog/time-slots?date=2099-12-31").json()
+    assert len(future_slots) == len(all_slots)
+    assert {row["id"] for row in future_slots} == {row["id"] for row in all_slots}
+
+
+def test_time_slots_endpoint_rejects_bad_date_format():
+    with _client() as client:
+        # Pydantic regex pattern rejects malformed dates at the boundary
+        # before the handler is reached.
+        response = client.get("/api/v1/catalog/time-slots?date=not-a-date")
+    assert response.status_code == 422
+
+
+def test_time_slots_helper_includes_slot_at_exact_2h_boundary():
+    """The helper filter uses ``>=``, so a slot starting exactly 2h after now
+    is INCLUDED. Pins the >= vs > boundary."""
+    from datetime import datetime, timedelta
+    from app.api import _slots_with_lead_filter
+    from app.api_validation import CASABLANCA_TZ
+
+    # Pin "now" to 07:00 on a date so slot_9_11 is exactly 2h ahead.
+    now = datetime(2099, 6, 15, 7, 0, tzinfo=CASABLANCA_TZ)
+    available, cutoff, _total = _slots_with_lead_filter(date_iso="2099-06-15", now=now)
+    available_ids = {row.id for row in available}
+    assert "slot_9_11" in available_ids
+    assert cutoff == now + timedelta(hours=2)
+
+
+def test_time_slots_helper_excludes_slot_strictly_before_cutoff():
+    from datetime import datetime
+    from app.api import _slots_with_lead_filter
+    from app.api_validation import CASABLANCA_TZ
+
+    # Pin "now" to 07:01 — slot_9_11 starts at 09:00, which is < 09:01 cutoff.
+    now = datetime(2099, 6, 15, 7, 1, tzinfo=CASABLANCA_TZ)
+    available, _cutoff, _total = _slots_with_lead_filter(date_iso="2099-06-15", now=now)
+    available_ids = {row.id for row in available}
+    assert "slot_9_11" not in available_ids
+    # slot_11_13 is well past the cutoff.
+    assert "slot_11_13" in available_ids
+
+
+def test_time_slots_endpoint_logs_cutoff_when_date_supplied(caplog):
+    caplog.set_level(logging.INFO, logger="ewash.api")
+    with _client() as client:
+        client.get("/api/v1/catalog/time-slots?date=2099-12-31")
+    assert any(
+        "catalog.time_slots listed date=2099-12-31" in rec.message
+        and "cutoff=" in rec.message
         for rec in caplog.records
     )
