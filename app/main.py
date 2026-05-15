@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
-from . import admin, handlers, meta
+from . import admin, api as api_module, handlers, meta
 from .config import settings
 from .persistence import mark_abandoned_conversations
 from .rate_limit import limiter
@@ -54,10 +54,21 @@ def _configure_cors(target_app: FastAPI) -> None:
     )
 
 
+def _configure_api(target_app: FastAPI) -> None:
+    """Mount the PWA API only when the rollout flag is enabled."""
+    if settings.api_enabled:
+        api_module.install_exception_handlers(target_app)
+        target_app.include_router(api_module.router)
+        log.info("ewash.api enabled - /api/v1/* mounted")
+    else:
+        log.warning("ewash.api disabled - /api/v1/* NOT mounted (feature flag off)")
+
+
 app = FastAPI(title="Ewash WhatsApp Agent", version=APP_VERSION.removeprefix("v"))
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 _configure_cors(app)
+_configure_api(app)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.include_router(admin.router)
 

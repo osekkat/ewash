@@ -155,3 +155,53 @@ def test_api_disabled_skips_cors_middleware(monkeypatch):
     case.assertEqual(response.status_code, 405)
     lowered_headers = {name.lower() for name in response.headers}
     case.assertNotIn("access-control-allow-origin", lowered_headers)
+
+
+def test_api_enabled_mounts_router(monkeypatch, caplog):
+    caplog.set_level(logging.INFO, logger="ewash")
+    monkeypatch.setattr(main.settings, "api_enabled", True)
+    app = FastAPI()
+
+    main._configure_api(app)
+    response = TestClient(app).get("/api/v1/catalog/categories")
+
+    case.assertEqual(response.status_code, 200)
+    case.assertTrue(
+        any(
+            "ewash.api enabled - /api/v1/* mounted" in record.getMessage()
+            for record in caplog.records
+        )
+    )
+
+
+def test_api_disabled_leaves_router_unmounted(monkeypatch, caplog):
+    caplog.set_level(logging.WARNING, logger="ewash")
+    monkeypatch.setattr(main.settings, "api_enabled", False)
+    app = FastAPI()
+
+    main._configure_api(app)
+    response = TestClient(app).get("/api/v1/catalog/categories")
+
+    case.assertEqual(response.status_code, 404)
+    case.assertTrue(
+        any(
+            "ewash.api disabled - /api/v1/* NOT mounted" in record.getMessage()
+            for record in caplog.records
+        )
+    )
+
+
+def test_api_flag_does_not_affect_webhook_route(monkeypatch):
+    for enabled in (True, False):
+        monkeypatch.setattr(main.settings, "api_enabled", enabled)
+        app = FastAPI()
+
+        @app.get("/webhook")
+        async def webhook():
+            return {"ok": True}
+
+        main._configure_api(app)
+        response = TestClient(app).get("/webhook")
+
+        case.assertEqual(response.status_code, 200)
+        case.assertEqual(response.json(), {"ok": True})
