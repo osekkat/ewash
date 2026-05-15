@@ -82,8 +82,11 @@ class Booking:
         self.ref = f"EW-{year}-{counter:04d}"
         self.created_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         _bookings.append(asdict(self))
-        log.info("booking confirmed ref=%s phone=%s payload=%s",
-                 self.ref, self.phone, asdict(self))
+        log.info(
+            "booking confirmed ref=%s phone_hash=%s",
+            self.ref,
+            hashlib.sha256(self.phone.encode("utf-8")).hexdigest()[:12] if self.phone else "-",
+        )
         return self.ref
 
 
