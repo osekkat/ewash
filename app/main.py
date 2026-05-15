@@ -100,6 +100,7 @@ def _configure_cors(target_app: FastAPI) -> None:
         allow_credentials=False,
         allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["Content-Type", "X-Ewash-Token", "If-None-Match"],
+        expose_headers=["ETag"],
         max_age=600,
     )
 

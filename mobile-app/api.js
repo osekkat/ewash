@@ -1,6 +1,9 @@
 (function () {
   const BOOKINGS_STORAGE_KEY = ["ewash.bookings", "token"].join("_");
   const PHONE_STORAGE_KEY = "ewash.phone";
+  const BOOTSTRAP_CACHE_KEY = "ewash.bootstrap_cache.v1";
+  const BOOTSTRAP_CACHE_VERSION = 1;
+  const BOOTSTRAP_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
   const DEFAULT_TIMEOUT_MS = 10000;
   const LOG_RING_LIMIT = 200;
 
@@ -137,6 +140,7 @@
     const timeout = Object.prototype.hasOwnProperty.call(options, "timeout")
       ? options.timeout
       : DEFAULT_TIMEOUT_MS;
+    const includeResponseMeta = options.include_response_meta === true;
 
     const controller = new AbortController();
     const timeoutId = setTimeout(function () {
@@ -168,6 +172,20 @@
       });
       const duration = _durationMs(startedAt);
 
+      if (resp.status === 204 || resp.status === 304) {
+        EwashLog.info(scope, {
+          path: path,
+          method: method,
+          status: resp.status,
+          duration_ms: +duration,
+          retry_count: retryCount,
+        });
+        if (includeResponseMeta) {
+          return { status: resp.status, headers: resp.headers, body: null };
+        }
+        return null;
+      }
+
       if (!resp.ok) {
         const errBody = await _jsonErrorBody(resp);
         const err = new Error(errBody.message || errBody.detail || resp.statusText);
@@ -197,10 +215,11 @@
         duration_ms: +duration,
         retry_count: retryCount,
       });
-      if (resp.status === 204 || resp.status === 304) {
-        return null;
+      const data = await resp.json();
+      if (includeResponseMeta) {
+        return { status: resp.status, headers: resp.headers, body: data };
       }
-      return await resp.json();
+      return data;
     } catch (err) {
       if (err && !err.error_code) {
         err.error_code = err.name === "AbortError" ? "timeout" : "network_error";
@@ -285,6 +304,69 @@
       // ditto.
       EwashLog.warn("localstorage.error", { op: "set", key: "phone" });
     }
+  }
+
+  function _bootstrapCacheStorageKey(params) {
+    const category = params && params.category ? String(params.category).trim().toUpperCase() : "";
+    const promo = params && params.promo ? String(params.promo).trim().toUpperCase() : "";
+    return "category=" + category + "&promo=" + promo;
+  }
+
+  function _readBootstrapCacheEntries() {
+    try {
+      const raw = localStorage.getItem(BOOTSTRAP_CACHE_KEY);
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      if (!parsed || parsed.version !== BOOTSTRAP_CACHE_VERSION || typeof parsed.entries !== "object") {
+        return {};
+      }
+      return parsed.entries || {};
+    } catch (_) {
+      EwashLog.warn("localstorage.error", { op: "get", key: "bootstrap_cache" });
+      return {};
+    }
+  }
+
+  function _writeBootstrapCacheEntries(entries) {
+    try {
+      localStorage.setItem(
+        BOOTSTRAP_CACHE_KEY,
+        JSON.stringify({
+          version: BOOTSTRAP_CACHE_VERSION,
+          saved_at: Date.now(),
+          entries: entries || {},
+        })
+      );
+    } catch (_) {
+      EwashLog.warn("localstorage.error", { op: "set", key: "bootstrap_cache" });
+    }
+  }
+
+  function _getBootstrapCacheEntry(cacheKey) {
+    const entries = _readBootstrapCacheEntries();
+    const entry = entries[cacheKey];
+    const storedAt = entry ? Number(entry.stored_at) : 0;
+    if (!entry || !entry.etag || !entry.body || !Number.isFinite(storedAt)) {
+      return null;
+    }
+    if (Date.now() - storedAt > BOOTSTRAP_CACHE_TTL_MS) {
+      delete entries[cacheKey];
+      _writeBootstrapCacheEntries(entries);
+      EwashLog.info("bootstrap.cache_expired", { cache_key: cacheKey });
+      return null;
+    }
+    return entry;
+  }
+
+  function _saveBootstrapCacheEntry(cacheKey, etag, body) {
+    if (!etag || !body) return;
+    const entries = _readBootstrapCacheEntries();
+    entries[cacheKey] = {
+      etag: etag,
+      body: body,
+      stored_at: Date.now(),
+    };
+    _writeBootstrapCacheEntries(entries);
   }
 
   function _pad2(value) {
@@ -466,7 +548,27 @@
     if (params.promo) qs.set("promo", params.promo);
     const query = qs.toString();
     const path = "/api/v1/bootstrap" + (query ? "?" + query : "");
-    return await _fetchWithRetry(path);
+    const cacheKey = _bootstrapCacheStorageKey(params);
+    const cached = _getBootstrapCacheEntry(cacheKey);
+    const headers = cached ? { "If-None-Match": cached.etag } : {};
+    const response = await _fetchWithRetry(path, {
+      headers: headers,
+      include_response_meta: true,
+    });
+
+    if (response && response.status === 304 && cached) {
+      EwashLog.info("bootstrap.cache_hit", { cache_key: cacheKey, status: 304 });
+      return cached.body;
+    }
+
+    if (response && response.status === 200) {
+      const etag = response.headers && response.headers.get ? response.headers.get("ETag") : "";
+      _saveBootstrapCacheEntry(cacheKey, etag, response.body);
+      EwashLog.info("bootstrap.cache_store", { cache_key: cacheKey, has_etag: !!etag });
+      return response.body;
+    }
+
+    return response ? response.body : null;
   }
 
   async function validatePromo(params) {
@@ -575,6 +677,7 @@
     _fetch: _fetch,
     _TOKEN_KEY: BOOKINGS_STORAGE_KEY,
     _PHONE_KEY: PHONE_STORAGE_KEY,
+    _BOOTSTRAP_CACHE_KEY: BOOTSTRAP_CACHE_KEY,
     _getToken: _getToken,
     getBootstrap: getBootstrap,
     validatePromo: validatePromo,

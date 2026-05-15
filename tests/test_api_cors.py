@@ -126,6 +126,21 @@ def test_options_bootstrap_advertises_pwa_request_headers(monkeypatch):
     case.assertTrue({"content-type", "x-ewash-token", "if-none-match"}.issubset(advertised))
 
 
+def test_simple_get_exposes_etag_to_browser_js(monkeypatch):
+    origin = "https://ewash-pwa.vercel.app"
+    client = _client_with_cors(monkeypatch, allowed_origins=origin)
+
+    response = client.get("/api/v1/bootstrap", headers={"Origin": origin})
+
+    case.assertEqual(response.status_code, 200)
+    case.assertEqual(response.headers["access-control-allow-origin"], origin)
+    exposed = {
+        header.strip().lower()
+        for header in response.headers["access-control-expose-headers"].split(",")
+    }
+    case.assertIn("etag", exposed)
+
+
 def test_options_bootstrap_does_not_advertise_credentials(monkeypatch):
     # Auth uses the X-Ewash-Token request header, never cookies. Sending
     # ``Access-Control-Allow-Credentials: true`` would force us to ban
