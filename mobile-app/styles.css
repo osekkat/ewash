@@ -481,6 +481,15 @@ button.chip:active { transform: scale(0.95); }
 }
 .icon-btn:hover { background: var(--surface-2); }
 .icon-btn:active { transform: scale(0.92); }
+.icon-btn.help-btn {
+  width: 32px;
+  height: 32px;
+  color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 8%, transparent);
+}
+.icon-btn.help-btn:hover {
+  background: color-mix(in srgb, var(--primary) 14%, transparent);
+}
 
 /* ============ Bottom Nav ============ */
 .bottom-nav {

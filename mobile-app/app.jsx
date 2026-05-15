@@ -180,6 +180,7 @@ function App() {
         {!modal && tab === 'home' && (
           <HomeScreen t={t} lang={lang} variant={variant} theme={theme}
             profile={profile}
+            staffContact={staffContact}
             openBooking={() => setModal('booking')}
             gotoSupport={() => setModal('support')}
             gotoTariffs={() => setTabLogged('services')}/>
@@ -189,7 +190,8 @@ function App() {
             staffContact={staffContact}/>
         )}
         {!modal && tab === 'services' && (
-          <ServicesScreen t={t} lang={lang} openBooking={() => setModal('booking')} theme={theme}/>
+          <ServicesScreen t={t} lang={lang} openBooking={() => setModal('booking')} theme={theme}
+            staffContact={staffContact}/>
         )}
         {!modal && tab === 'profile' && (
           <ProfileScreen t={t} lang={lang}
@@ -199,17 +201,20 @@ function App() {
             variant={variant}
             setVariant={(v) => setTweak('variant', v)}
             profile={profile}
+            staffContact={staffContact}
             onToast={setToast}
             onLogout={() => { setPhaseLogged('lang'); setTabLogged('home'); }}/>
         )}
         {modal === 'booking' && (
           <BookingFlow t={t} lang={lang} theme={theme} variant={variant}
             profile={profile}
+            staffContact={staffContact}
             onClose={() => setModal(null)}
             onComplete={() => { setModal(null); setTabLogged('bookings'); setToast(t.bookingConfirmed); }}/>
         )}
         {modal === 'support' && (
-          <SupportScreen t={t} theme={theme} onBack={() => setModal(null)}/>
+          <SupportScreen t={t} theme={theme} staffContact={staffContact}
+            onBack={() => setModal(null)}/>
         )}
         {!modal && (
           <BottomNav t={t} screen={tab} setScreen={setTabLogged}/>

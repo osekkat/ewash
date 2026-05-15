@@ -7,6 +7,12 @@ window.I18N = {
     bookings: 'Mes RDV',
     services: 'Services',
     profile: 'Profil',
+    topBar: {
+      help: 'Aide',
+    },
+    help: {
+      deepLinkMessage: "Bonjour Ewash, j'ai besoin d'aide depuis l'application (écran: {screen}).",
+    },
     // splash & auth
     tagline: 'Lavage auto écologique sans eau',
     continue: 'Continuer',
@@ -237,6 +243,12 @@ window.I18N = {
     bookings: 'مواعيدي',
     services: 'الخدمات',
     profile: 'حسابي',
+    topBar: {
+      help: 'مساعدة',
+    },
+    help: {
+      deepLinkMessage: 'مرحباً Ewash، أحتاج إلى مساعدة من التطبيق (الشاشة: {screen}).',
+    },
     tagline: 'غسيل سيارات بيئي بدون ماء',
     continue: 'متابعة',
     next: 'التالي',

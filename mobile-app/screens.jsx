@@ -29,7 +29,7 @@ function useCountUp(target, duration = 1200) {
 // ─────────────────────────────────────────────────────────────
 // HOME
 // ─────────────────────────────────────────────────────────────
-function HomeScreen({ t, lang, openBooking, gotoSupport, gotoTariffs, theme, variant, profile }) {
+function HomeScreen({ t, lang, openBooking, gotoSupport, gotoTariffs, theme, variant, profile, staffContact }) {
   const litersSaved = 2147;
   const litersCount = useCountUp(litersSaved, 1400);
   const washCount = useCountUp(23, 900);
@@ -48,6 +48,7 @@ function HomeScreen({ t, lang, openBooking, gotoSupport, gotoTariffs, theme, var
           </div>
         </div>
         <div className="row gap-4">
+          <HelpButton t={t} staffContact={staffContact} currentScreen="home" />
           <button className="icon-btn" aria-label="notifications">
             <div style={{ position: 'relative' }}>
               <Icons.Bell size={22} />
@@ -320,7 +321,7 @@ function BookingsScreen({ t, lang, openBooking, theme, staffContact }) {
 
   return (
     <div className="app-scroll">
-      <TopBar title={t.bookings} right={null} />
+      <TopBar title={t.bookings} right={null} t={t} staffContact={staffContact} currentScreen="bookings" />
       <div className="px-16 col gap-16 anim-stagger" style={{ paddingBottom: 24 }}>
 
         {uiState === 'loading' && <BookingsLoadingSkeleton />}
@@ -674,12 +675,12 @@ const TARIFF_ESTHETIQUE = [
     desc: 'Phares retrouvent leur clarté' },
 ];
 
-function ServicesScreen({ t, lang, openBooking, theme }) {
+function ServicesScreen({ t, lang, openBooking, theme, staffContact }) {
   const [tab, setTab] = useS_h('lavage');
   const items = tab === 'lavage' ? TARIFF_LAVAGE : TARIFF_ESTHETIQUE;
   return (
     <div className="app-scroll">
-      <TopBar title={t.tariffs} />
+      <TopBar title={t.tariffs} t={t} staffContact={staffContact} currentScreen="services" />
       <div className="px-16 col gap-16 anim-stagger" style={{ paddingBottom: 24 }}>
         <div className="row" style={{ background: 'var(--surface-2)', borderRadius: 999, padding: 4 }}>
           {['lavage', 'esthetique'].map(k => (
@@ -787,7 +788,7 @@ function _clearLocalAuthState() {
   });
 }
 
-function ProfileScreen({ t, lang, setLang, theme, setTheme, variant, setVariant, profile, onToast, onLogout }) {
+function ProfileScreen({ t, lang, setLang, theme, setTheme, variant, setVariant, profile, staffContact, onToast, onLogout }) {
   const [confirmingAllOut, setConfirmingAllOut] = useS_h(false);
   const [confirmingDelete, setConfirmingDelete] = useS_h(false);
   const [logoutBusy, setLogoutBusy] = useS_h(null);
@@ -854,7 +855,7 @@ function ProfileScreen({ t, lang, setLang, theme, setTheme, variant, setVariant,
 
   return (
     <div className="app-scroll">
-      <TopBar title={t.myProfile} />
+      <TopBar title={t.myProfile} t={t} staffContact={staffContact} currentScreen="profile" />
       <div className="px-16 col gap-20 anim-stagger" style={{ paddingBottom: 24 }}>
         {/* User card */}
         <div className="card card-elev" style={{ padding: 16, display: 'flex', gap: 14, alignItems: 'center' }}>
@@ -1145,7 +1146,7 @@ function ProfileSwitch({ on, onChange }) {
 // ─────────────────────────────────────────────────────────────
 // SUPPORT (chat with team)
 // ─────────────────────────────────────────────────────────────
-function SupportScreen({ t, onBack, theme }) {
+function SupportScreen({ t, onBack, theme, staffContact }) {
   const [messages, setMessages] = useS_h([
     { from: 'bot', text: t.supportTitle === 'Parler à l\'équipe'
       ? 'Bonjour ! Comment puis-je vous aider aujourd\'hui ?'
@@ -1171,6 +1172,9 @@ function SupportScreen({ t, onBack, theme }) {
     <div className="col" style={{ flex: 1, background: 'var(--bg)' }}>
       <TopBar onBack={onBack}
         title={t.supportTitle}
+        t={t}
+        staffContact={staffContact}
+        currentScreen="support"
         subtitle={<span style={{
           display: 'inline-flex', alignItems: 'center', gap: 6,
           color: 'var(--accent-soft-text)',

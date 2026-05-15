@@ -404,7 +404,7 @@ function _markHandled(err) {
 // ─────────────────────────────────────────────────────────────
 // BOOKING ROOT — state machine
 // ─────────────────────────────────────────────────────────────
-function BookingFlow({ t, lang, theme, variant, onClose, onComplete, profile }) {
+function BookingFlow({ t, lang, theme, variant, onClose, onComplete, profile, staffContact: appStaffContact }) {
   const [draftAtOpen] = useS_b(() => _loadDraft());
   const [showDraftBanner, setShowDraftBanner] = useS_b(() => !!draftAtOpen);
   const [data, setData] = useS_b(() => draftAtOpen
@@ -444,7 +444,7 @@ function BookingFlow({ t, lang, theme, variant, onClose, onComplete, profile }) 
     [bootstrap]
   );
   const slotsList = bootstrap?.time_slots || [];
-  const staffContact = bootstrap?.staff_contact || DEFAULT_STAFF_CONTACT;
+  const staffContact = bootstrap?.staff_contact || appStaffContact || DEFAULT_STAFF_CONTACT;
   const rateLimitRemaining = Math.max(0, Math.ceil((submitDisabledUntil - clockTick) / 1000));
   const draftAgeMinutes = _draftAgeMinutes(draftAtOpen);
 
@@ -769,6 +769,8 @@ function BookingFlow({ t, lang, theme, variant, onClose, onComplete, profile }) 
     <div className="col" style={{ flex: 1, background: 'var(--bg)' }}>
       <BookingHeader
         t={t} step={step} onBack={back} onClose={onClose}
+        staffContact={staffContact}
+        currentScreen={'booking:' + step}
         stepperIdx={stepperIdx} stepperTotal={stepperSteps.length}
         showStepper={!['confirmed', 'addons', 'recap'].includes(step)}
       />
@@ -905,7 +907,7 @@ function BookingFlow({ t, lang, theme, variant, onClose, onComplete, profile }) 
 // ─────────────────────────────────────────────────────────────
 // Header with stepper
 // ─────────────────────────────────────────────────────────────
-function BookingHeader({ t, step, onBack, onClose, stepperIdx, stepperTotal, showStepper }) {
+function BookingHeader({ t, step, onBack, onClose, staffContact, currentScreen, stepperIdx, stepperTotal, showStepper }) {
   const titleMap = {
     category: t.chooseCategory,
     vehicle: t.vehicleDetails,
@@ -930,7 +932,10 @@ function BookingHeader({ t, step, onBack, onClose, stepperIdx, stepperTotal, sho
             <>{t.step} {stepperIdx + 1} {t.stepOf} {stepperTotal}</>
           )}
         </div>
-        <button className="icon-btn" onClick={onClose}><Icons.Close size={20}/></button>
+        <div className="row gap-4">
+          <HelpButton t={t} staffContact={staffContact} currentScreen={currentScreen} />
+          <button className="icon-btn" onClick={onClose}><Icons.Close size={20}/></button>
+        </div>
       </div>
       {showStepper && stepperIdx >= 0 && (
         <Stepper current={stepperIdx} total={stepperTotal} />

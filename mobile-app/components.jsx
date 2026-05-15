@@ -31,7 +31,46 @@ function LogoStack({ variant }) {
 // ─────────────────────────────────────────────────────────────
 // Top app bar
 // ─────────────────────────────────────────────────────────────
-function TopBar({ title, onBack, right, subtitle, large = false }) {
+function _helpLabel(t) {
+  return (t && t.topBar && t.topBar.help) || (t && t.helpCenter) || 'Aide';
+}
+
+function _helpMessage(t, currentScreen) {
+  const template = (t && t.help && t.help.deepLinkMessage) ||
+    "Bonjour Ewash, j'ai besoin d'aide depuis l'application (écran: {screen}).";
+  return template.replace('{screen}', currentScreen || 'app');
+}
+
+function _canOpenHelp(staffContact) {
+  const digits = String((staffContact && staffContact.whatsapp_phone) || '').replace(/[^0-9]/g, '');
+  return !!(staffContact && staffContact.available && digits);
+}
+
+function _openHelp(staffContact, currentScreen, t) {
+  if (!_canOpenHelp(staffContact)) return;
+  if (window.EwashLog) window.EwashLog.info('help.opened', { from_screen: currentScreen || 'app' });
+  const phone = String(staffContact.whatsapp_phone || '').replace(/[^0-9]/g, '');
+  const url = 'https://wa.me/' + phone + '?text=' + encodeURIComponent(_helpMessage(t, currentScreen));
+  window.open(url, '_blank', 'noopener,noreferrer');
+}
+
+function HelpButton({ t, staffContact, currentScreen }) {
+  if (!_canOpenHelp(staffContact)) return null;
+  const label = _helpLabel(t);
+  return (
+    <button
+      className="icon-btn help-btn"
+      onClick={() => _openHelp(staffContact, currentScreen, t)}
+      aria-label={label}
+      title={label}
+      type="button"
+    >
+      <Icons.Message size={18} />
+    </button>
+  );
+}
+
+function TopBar({ title, onBack, right, subtitle, large = false, t, staffContact, currentScreen }) {
   return (
     <div className="appbar">
       <div className="row gap-8" style={{ minWidth: 40 }}>
@@ -45,7 +84,8 @@ function TopBar({ title, onBack, right, subtitle, large = false }) {
         {title && <div className="appbar-title" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{title}</div>}
         {subtitle && <div className="t-tiny" style={{ marginTop: 2 }}>{subtitle}</div>}
       </div>
-      <div className="row" style={{ minWidth: 40, justifyContent: 'flex-end' }}>
+      <div className="row gap-4" style={{ minWidth: 40, justifyContent: 'flex-end' }}>
+        <HelpButton t={t} staffContact={staffContact} currentScreen={currentScreen} />
         {right}
       </div>
     </div>
@@ -304,4 +344,5 @@ function EwashFrame({ children, theme }) {
 Object.assign(window, {
   Wordmark, LogoStack, TopBar, BottomNav, Stepper, Btn,
   CtaDock, Field, SelectCard, Sheet, Toast, EwashFrame,
+  HelpButton,
 });
