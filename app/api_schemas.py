@@ -213,6 +213,7 @@ class TokenRevokeRequest(StrictBase):
 
 class TokenRevokeResponse(BaseModel):
     revoked_count: int
+    new_token: Optional[str] = None
 
 
 # ── Data erasure (Loi 09-08 / GDPR right-to-erasure) ──────────────────────

@@ -1006,7 +1006,11 @@ async def list_bookings(
 # ── Token revoke (PWA logout) ────────────────────────────────────────────
 
 
-@router.post("/tokens/revoke", response_model=TokenRevokeResponse)
+@router.post(
+    "/tokens/revoke",
+    response_model=TokenRevokeResponse,
+    response_model_exclude_none=True,
+)
 @limiter.limit("10/hour", key_func=_token_key_func)
 async def revoke_token(
     request: Request,
@@ -1040,8 +1044,10 @@ async def revoke_token(
         return _json_error(401, "invalid_token", "Token not recognized")
 
     request.state.phone_normalized = phone
+    new_token = None
     if body.scope == "all":
         count = persistence.revoke_all_tokens_for_phone(phone)
+        new_token = persistence.mint_customer_token(phone)
     else:
         count = persistence.revoke_token_by_hash(hash_token(token))
 
@@ -1053,7 +1059,7 @@ async def revoke_token(
         count,
         duration_ms,
     )
-    return TokenRevokeResponse(revoked_count=count)
+    return TokenRevokeResponse(revoked_count=count, new_token=new_token)
 
 
 # ── Data erasure (Loi 09-08 / GDPR right-to-erasure) ─────────────────────

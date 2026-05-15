@@ -72,9 +72,22 @@ def test_revoke_current_removes_only_the_calling_token(api_db):
     case.assertEqual(response.status_code, 200)
     case.assertEqual(response.json(), {"revoked_count": 1})
 
-    # The other token still verifies; the revoked one no longer does.
+    # The other token still verifies through both the persistence helper and
+    # the customer-facing read endpoint; the revoked one is immediately dead.
     case.assertIsNone(persistence.verify_customer_token(token_a, engine=api_db))
     case.assertEqual(persistence.verify_customer_token(token_b, engine=api_db), phone)
+    with _client() as client:
+        revoked_read = client.get(
+            "/api/v1/bookings",
+            headers={"X-Ewash-Token": token_a},
+        )
+        surviving_read = client.get(
+            "/api/v1/bookings",
+            headers={"X-Ewash-Token": token_b},
+        )
+    case.assertEqual(revoked_read.status_code, 401)
+    case.assertEqual(revoked_read.json()["error_code"], "invalid_token")
+    case.assertEqual(surviving_read.status_code, 200)
 
 
 def test_revoke_defaults_to_current_scope_when_body_omits_it(api_db):
@@ -111,13 +124,31 @@ def test_revoke_all_removes_every_token_for_the_phone(api_db):
 
     case.assertEqual(response.status_code, 200)
     case.assertEqual(response.json()["revoked_count"], 3)
+    new_token = response.json()["new_token"]
+    case.assertTrue(new_token)
+    case.assertNotIn(new_token, tokens)
 
-    # No customer_tokens rows survive for this phone.
+    # Old customer_tokens rows are gone; the scope=all caller gets one fresh token
+    # back so the requesting device can continue with a valid session.
     with session_scope(api_db) as session:
         remaining = session.scalars(
             select(CustomerTokenRow).where(CustomerTokenRow.customer_phone == phone)
         ).all()
-    case.assertEqual(remaining, [])
+    case.assertEqual(len(remaining), 1)
+    case.assertEqual(remaining[0].token_hash, hash_token(new_token))
+    with _client() as client:
+        for token in tokens:
+            read_response = client.get(
+                "/api/v1/bookings",
+                headers={"X-Ewash-Token": token},
+            )
+            case.assertEqual(read_response.status_code, 401)
+            case.assertEqual(read_response.json()["error_code"], "invalid_token")
+        fresh_read = client.get(
+            "/api/v1/bookings",
+            headers={"X-Ewash-Token": new_token},
+        )
+        case.assertEqual(fresh_read.status_code, 200)
 
 
 def test_revoke_all_leaves_other_phones_tokens_intact(api_db):
@@ -137,6 +168,31 @@ def test_revoke_all_leaves_other_phones_tokens_intact(api_db):
 
     case.assertEqual(response.status_code, 200)
     case.assertEqual(persistence.verify_customer_token(token_b, engine=api_db), phone_b)
+
+
+def test_revoke_all_mints_fresh_token_in_response(api_db):
+    phone = "212600000411"
+    _seed_customer(api_db, phone)
+    token = persistence.mint_customer_token(phone, engine=api_db)
+
+    with _client() as client:
+        response = client.post(
+            "/api/v1/tokens/revoke",
+            json={"scope": "all"},
+            headers={"X-Ewash-Token": token},
+        )
+        new_token = response.json().get("new_token")
+        read_response = client.get(
+            "/api/v1/bookings",
+            headers={"X-Ewash-Token": new_token or ""},
+        )
+
+    case.assertEqual(response.status_code, 200)
+    case.assertTrue(new_token)
+    case.assertNotEqual(new_token, token)
+    case.assertEqual(read_response.status_code, 200)
+    case.assertIsNone(persistence.verify_customer_token(token, engine=api_db))
+    case.assertEqual(persistence.verify_customer_token(new_token, engine=api_db), phone)
 
 
 def test_revoke_returns_401_without_token(api_db):
@@ -237,6 +293,29 @@ def test_revoke_emits_audit_log(api_db, caplog):
     case.assertNotIn(phone, line)
     case.assertIn("scope=current", line)
     case.assertIn("count=1", line)
+
+
+def test_revoke_all_audit_log_includes_hash_scope_and_no_raw_phone(api_db, caplog):
+    caplog.set_level(logging.INFO, logger="ewash.api")
+    phone = "212600000410"
+    _seed_customer(api_db, phone)
+    token = persistence.mint_customer_token(phone, engine=api_db)
+    persistence.mint_customer_token(phone, engine=api_db)
+
+    with _client() as client:
+        response = client.post(
+            "/api/v1/tokens/revoke",
+            json={"scope": "all"},
+            headers={"X-Ewash-Token": token},
+        )
+
+    case.assertEqual(response.status_code, 200)
+    messages = " ".join(record.getMessage() for record in caplog.records)
+    case.assertIn("tokens.revoked", messages)
+    case.assertIn("scope=all", messages)
+    case.assertIn("count=2", messages)
+    case.assertIn("phone_hash=", messages)
+    case.assertNotIn(phone, messages)
 
 
 def test_revoke_is_rate_limited(api_db):
