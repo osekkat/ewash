@@ -178,11 +178,52 @@ def _max_ref_counter(refs: Iterable[str], *, year: int) -> int:
     return max_counter
 
 
+def _booking_ref_counter_insert_stmt(dialect_name: str, *, year: int, existing_floor: int):
+    table = BookingRefCounterRow.__table__
+    values = {"year": year, "last_counter": existing_floor}
+    if dialect_name == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+        return pg_insert(table).values(**values).on_conflict_do_nothing(
+            index_elements=["year"],
+        )
+    if dialect_name == "sqlite":
+        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+        return sqlite_insert(table).values(**values).on_conflict_do_nothing(
+            index_elements=["year"],
+        )
+    return None
+
+
+def _ensure_booking_ref_counter_row(session, *, year: int, existing_floor: int) -> None:
+    """Create the yearly ref-counter row without racing another first writer."""
+    dialect_name = session.get_bind().dialect.name
+    stmt = _booking_ref_counter_insert_stmt(
+        dialect_name,
+        year=year,
+        existing_floor=existing_floor,
+    )
+    if stmt is not None:
+        session.execute(stmt)
+        session.flush()
+        return
+
+    if session.get(BookingRefCounterRow, year, with_for_update=True) is None:
+        session.add(BookingRefCounterRow(year=year, last_counter=existing_floor))
+        session.flush()
+
+
 def _next_booking_ref_counter(session, *, year: int) -> int:
     refs = session.scalars(
         select(BookingRow.ref).where(BookingRow.ref.like(f"EW-{year}-%"))
     ).all()
     existing_floor = _max_ref_counter(refs, year=year)
+    _ensure_booking_ref_counter_row(
+        session,
+        year=year,
+        existing_floor=existing_floor,
+    )
 
     dialect_name = session.get_bind().dialect.name
     floor_expression = (

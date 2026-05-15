@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.dialects import postgresql, sqlite
 
 from app import handlers, meta, state
 from app.booking import Booking
@@ -36,6 +37,8 @@ from app.persistence import (
     persist_customer_bot_stage,
     persist_whatsapp_inbound_message,
     _configured_engine,
+    _booking_ref_counter_insert_stmt,
+    _ensure_booking_ref_counter_row,
 )
 
 
@@ -240,6 +243,52 @@ def test_assign_booking_ref_advances_past_existing_db_refs_when_memory_counter_r
         counter = session.get(BookingRefCounterRow, int(year))
         assert counter is not None
         assert counter.last_counter == 8
+
+
+def test_ref_counter_first_row_insert_is_conflict_safe_for_supported_dialects():
+    pg_sql = str(
+        _booking_ref_counter_insert_stmt(
+            "postgresql",
+            year=2026,
+            existing_floor=0,
+        ).compile(dialect=postgresql.dialect())
+    )
+    sqlite_sql = str(
+        _booking_ref_counter_insert_stmt(
+            "sqlite",
+            year=2026,
+            existing_floor=0,
+        ).compile(dialect=sqlite.dialect())
+    )
+
+    assert "ON CONFLICT (year) DO NOTHING" in pg_sql
+    assert "ON CONFLICT (year) DO NOTHING" in sqlite_sql
+
+
+def test_ref_counter_first_row_creation_is_idempotent_before_increment(monkeypatch):
+    import app.booking as booking_store
+
+    monkeypatch.setattr(booking_store, "_counter", 0)
+    booking_store._bookings.clear()
+    engine = make_engine("sqlite+pysqlite:///:memory:")
+    init_db(engine)
+    year = datetime.now(timezone.utc).year
+
+    with session_scope(engine) as session:
+        _ensure_booking_ref_counter_row(session, year=year, existing_floor=0)
+        _ensure_booking_ref_counter_row(session, year=year, existing_floor=0)
+        counter = session.get(BookingRefCounterRow, year)
+        assert counter is not None
+        assert counter.last_counter == 0
+
+    booking = Booking(phone="212600000030")
+    ref = assign_booking_ref(booking, engine=engine)
+
+    assert ref == f"EW-{year}-0001"
+    with session_scope(engine) as session:
+        counter = session.get(BookingRefCounterRow, year)
+        assert counter is not None
+        assert counter.last_counter == 1
 
 
 def test_persist_booking_addon_updates_confirmed_booking_row():
