@@ -422,6 +422,8 @@ def test_mark_abandoned_conversations_marks_stale_open_sessions_and_admin_counts
     with session_scope(engine) as session:
         conversation = session.scalars(select(ConversationSessionRow)).one()
         conversation.last_event_at = now - timedelta(hours=3)
+        stage_seen_event = session.scalars(select(ConversationEventRow)).one()
+        stage_seen_event.created_at = now - timedelta(hours=3)
 
     count = mark_abandoned_conversations(now=now, engine=engine)
 
