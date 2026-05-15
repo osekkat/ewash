@@ -2,13 +2,21 @@
 from __future__ import annotations
 
 import logging
+import re
+from datetime import datetime, timedelta
 from typing import Literal
 
 from fastapi import APIRouter, FastAPI, Query, Request
 from fastapi.responses import JSONResponse
 
 from app import api_validation, catalog
-from app.api_schemas import CategoryOut, CenterOut, ErrorResponse, ServiceOut
+from app.api_schemas import (
+    CategoryOut,
+    CenterOut,
+    ErrorResponse,
+    ServiceOut,
+    TimeSlotOut,
+)
 from app.notifications import InvalidPhone
 
 logger = logging.getLogger("ewash.api")
@@ -196,6 +204,82 @@ async def list_catalog_centers() -> list[CenterOut]:
     return centers
 
 
+_SLOT_HOUR_RE = re.compile(r"^slot_(\d+)_\d+$")
+
+
+def _slots_with_lead_filter(
+    *,
+    date_iso: str | None,
+    now: datetime | None = None,
+) -> tuple[list[TimeSlotOut], datetime | None, int]:
+    """Return (payload, cutoff, total_count).
+
+    When `date_iso` is None: return every active slot, no filtering.
+    When supplied: filter to slots whose start time is >= now + 2h in
+    Africa/Casablanca. `now` is injectable for tests.
+    """
+    all_slots = catalog.active_time_slots()
+    if date_iso is None:
+        return (
+            [TimeSlotOut(id=slot_id, label=label, period=period) for slot_id, label, period in all_slots],
+            None,
+            len(all_slots),
+        )
+
+    try:
+        appointment_date = datetime.strptime(date_iso, "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise api_validation.InvalidDate(f"date={date_iso} not parseable") from exc
+
+    if now is None:
+        now_tz = datetime.now(tz=api_validation.CASABLANCA_TZ)
+    else:
+        now_tz = now.astimezone(api_validation.CASABLANCA_TZ)
+    cutoff = now_tz + timedelta(hours=api_validation.MIN_LEAD_HOURS)
+
+    available: list[TimeSlotOut] = []
+    for slot_id, label, period in all_slots:
+        match = _SLOT_HOUR_RE.match(slot_id)
+        if match is None:
+            # Skip malformed slot ids defensively — `validate_slot_and_date`
+            # is the authoritative gate for booking submissions.
+            continue
+        start_hour = int(match.group(1))
+        candidate = datetime(
+            appointment_date.year,
+            appointment_date.month,
+            appointment_date.day,
+            start_hour,
+            0,
+            tzinfo=api_validation.CASABLANCA_TZ,
+        )
+        if candidate >= cutoff:
+            available.append(TimeSlotOut(id=slot_id, label=label, period=period))
+    return available, cutoff, len(all_slots)
+
+
+@router.get("/catalog/time-slots", response_model=list[TimeSlotOut])
+async def list_catalog_time_slots(
+    date: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+) -> list[TimeSlotOut]:
+    """Slot rows for the booking flow. Optional `date=YYYY-MM-DD` filters out
+    slots starting <2h after server-side `now` in Africa/Casablanca.
+
+    The PWA's client-side 2-hour filter is decorative — a user with a
+    tampered clock or wrong timezone could otherwise submit a slot in the
+    past. This endpoint is the authoritative source.
+    """
+    available, cutoff, total = _slots_with_lead_filter(date_iso=date)
+    logger.info(
+        "catalog.time_slots listed date=%s total=%d returned=%d cutoff=%s",
+        date or "-",
+        total,
+        len(available),
+        cutoff.isoformat() if cutoff else "-",
+    )
+    return available
+
+
 @router.get("/catalog/closed-dates", response_model=list[str])
 async def list_catalog_closed_dates() -> list[str]:
     """ISO-date strings the shop is closed (Eids, etc.), sorted ascending.
@@ -216,6 +300,7 @@ async def list_catalog_closed_dates() -> list[str]:
 
 __all__ = [
     "_DOMAIN_EXC_MAP",
+    "_slots_with_lead_filter",
     "api_exception_handler",
     "domain_error_response",
     "get_services",
@@ -223,5 +308,6 @@ __all__ = [
     "list_catalog_categories",
     "list_catalog_centers",
     "list_catalog_closed_dates",
+    "list_catalog_time_slots",
     "router",
 ]
