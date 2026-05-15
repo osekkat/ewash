@@ -8,7 +8,7 @@ from fastapi import APIRouter, FastAPI, Query, Request
 from fastapi.responses import JSONResponse
 
 from app import api_validation, catalog
-from app.api_schemas import CategoryOut, ErrorResponse, ServiceOut
+from app.api_schemas import CategoryOut, CenterOut, ErrorResponse, ServiceOut
 from app.notifications import InvalidPhone
 
 logger = logging.getLogger("ewash.api")
@@ -185,11 +185,43 @@ async def list_catalog_categories() -> list[CategoryOut]:
     return categories
 
 
+@router.get("/catalog/centers", response_model=list[CenterOut])
+async def list_catalog_centers() -> list[CenterOut]:
+    """Active stand/center options for the location-picker step."""
+    centers = [
+        CenterOut(id=center_id, name=name, details=details or "")
+        for center_id, name, details in catalog.active_centers()
+    ]
+    logger.info("catalog.centers listed count=%d", len(centers))
+    return centers
+
+
+@router.get("/catalog/closed-dates", response_model=list[str])
+async def list_catalog_closed_dates() -> list[str]:
+    """ISO-date strings the shop is closed (Eids, etc.), sorted ascending.
+
+    The PWA calendar uses this to grey out the corresponding days. Static
+    catalog entries and DB-persisted closures are merged by
+    :func:`catalog.active_closed_dates`.
+    """
+    closed = sorted(catalog.active_closed_dates())
+    logger.info(
+        "catalog.closed_dates listed count=%d first=%s last=%s",
+        len(closed),
+        closed[0] if closed else "-",
+        closed[-1] if closed else "-",
+    )
+    return closed
+
+
 __all__ = [
     "_DOMAIN_EXC_MAP",
     "api_exception_handler",
     "domain_error_response",
+    "get_services",
     "install_exception_handlers",
     "list_catalog_categories",
+    "list_catalog_centers",
+    "list_catalog_closed_dates",
     "router",
 ]

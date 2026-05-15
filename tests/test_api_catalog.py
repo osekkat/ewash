@@ -171,3 +171,103 @@ def test_categories_endpoint_kind_aligns_with_moto_price_category():
     car_rows = [row for row in payload if row["id"] != "MOTO"]
     assert moto_row["kind"] == "moto"
     assert all(row["kind"] == "car" for row in car_rows)
+
+
+# ── /catalog/centers ───────────────────────────────────────────────────────
+
+
+def test_centers_endpoint_returns_active_static_center():
+    with _client() as client:
+        response = client.get("/api/v1/catalog/centers")
+    assert response.status_code == 200
+    payload = response.json()
+    assert isinstance(payload, list)
+    assert len(payload) >= 1
+    # Static catalog seeds ctr_casa (Stand physique). DB additions append.
+    casa = next((row for row in payload if row["id"] == "ctr_casa"), None)
+    assert casa is not None
+    assert casa["name"] == "Stand physique"
+    assert "Bouskoura" in casa["details"]
+
+
+def test_centers_endpoint_payload_shape_matches_pydantic_model():
+    with _client() as client:
+        payload = client.get("/api/v1/catalog/centers").json()
+    for row in payload:
+        assert set(row.keys()) == {"id", "name", "details"}
+        assert isinstance(row["id"], str)
+        assert isinstance(row["name"], str)
+        assert isinstance(row["details"], str)
+
+
+def test_centers_endpoint_logs_count(caplog):
+    caplog.set_level(logging.INFO, logger="ewash.api")
+    with _client() as client:
+        client.get("/api/v1/catalog/centers")
+    assert any("catalog.centers listed count=" in rec.message for rec in caplog.records)
+
+
+# ── /catalog/closed-dates ──────────────────────────────────────────────────
+
+
+def test_closed_dates_endpoint_returns_static_eid_closures():
+    with _client() as client:
+        response = client.get("/api/v1/catalog/closed-dates")
+    assert response.status_code == 200
+    payload = response.json()
+    assert isinstance(payload, list)
+    # Static catalog at the time of this test seeds the 2026 Eid al-Adha days.
+    assert "2026-05-27" in payload
+    assert "2026-05-28" in payload
+
+
+def test_closed_dates_endpoint_sorted_ascending():
+    with _client() as client:
+        payload = client.get("/api/v1/catalog/closed-dates").json()
+    assert payload == sorted(payload), f"closed dates returned unsorted: {payload}"
+
+
+def test_closed_dates_endpoint_returns_only_iso_strings():
+    import re
+
+    iso_re = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+    with _client() as client:
+        payload = client.get("/api/v1/catalog/closed-dates").json()
+    for item in payload:
+        assert isinstance(item, str)
+        assert iso_re.fullmatch(item), f"{item!r} is not a YYYY-MM-DD ISO date"
+
+
+def test_closed_dates_endpoint_picks_up_db_added_closures(monkeypatch, tmp_path):
+    """Admin-added closures from `closed_dates` table must appear in the
+    response alongside the static catalog entries."""
+    from app import catalog as catalog_module
+    from app.config import settings
+    from app.db import init_db, make_engine
+
+    db_url = f"sqlite+pysqlite:///{tmp_path / 'api-closed-dates.db'}"
+    engine = make_engine(db_url)
+    init_db(engine)
+    catalog_module.upsert_closed_date(
+        date_iso="2026-12-25", label="Noël (test)", active=True, engine=engine
+    )
+    monkeypatch.setattr(settings, "database_url", db_url)
+    catalog_module.catalog_cache_clear()
+    try:
+        with _client() as client:
+            payload = client.get("/api/v1/catalog/closed-dates").json()
+        assert "2026-12-25" in payload
+    finally:
+        catalog_module.catalog_cache_clear()
+
+
+def test_closed_dates_endpoint_logs_first_and_last(caplog):
+    caplog.set_level(logging.INFO, logger="ewash.api")
+    with _client() as client:
+        client.get("/api/v1/catalog/closed-dates")
+    assert any(
+        "catalog.closed_dates listed count=" in rec.message
+        and "first=" in rec.message
+        and "last=" in rec.message
+        for rec in caplog.records
+    )
