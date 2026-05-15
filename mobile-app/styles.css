@@ -1136,10 +1136,23 @@ button.chip:active { transform: scale(0.95); }
 [data-pwa-standalone] .bottom-nav {
   padding-bottom: calc(10px + env(safe-area-inset-bottom));
 }
-/* In iOS standalone, position:sticky inside .app-scroll can fail to "stick"
- * to the bottom when the scrollable content is taller than the viewport
- * (observed on long booking-step lists). Pin the CtaDock to the viewport
- * with position:fixed so it stays visible regardless of scroll context. */
+/* CtaDock — always-visible bottom CTA used by every booking step.
+ * Inline styles were moved here so the standalone override can win on
+ * specificity. The base rule uses position:sticky which works in regular
+ * Safari and the desktop preview. */
+.cta-dock {
+  padding: 14px 16px calc(20px + env(safe-area-inset-bottom));
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+  box-shadow: 0 -10px 20px -8px rgba(14, 42, 42, 0.06);
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+}
+/* In iOS standalone, position:sticky inside .app-scroll fails to keep the
+ * dock visible when the list is taller than the viewport — observed on
+ * step-4 (services). Pin the dock to the viewport with position:fixed so
+ * it stays visible regardless of scroll context. */
 [data-pwa-standalone] .cta-dock {
   position: fixed;
   bottom: 0;
@@ -1147,7 +1160,7 @@ button.chip:active { transform: scale(0.95); }
   right: 0;
 }
 /* The fixed CtaDock overlays the bottom ~110px of content; reserve that
- * space inside .app-scroll so the last item isn't covered. */
+ * space inside .app-scroll so the last list item isn't covered. */
 [data-pwa-standalone] .app-scroll {
   padding-bottom: calc(110px + env(safe-area-inset-bottom));
 }
