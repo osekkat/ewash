@@ -150,6 +150,51 @@ def test_admin_bookings_page_renders_persisted_reservations(monkeypatch, tmp_pat
     assert "Dimanche 26/04/2026" in response.text
     assert "09h – 11h" in response.text
     assert "Cette page arrive dans le prochain lot" not in response.text
+    # Source badge: legacy bookings persisted before migration 0006 default
+    # to "whatsapp" via the BookingRow.source column DEFAULT.
+    assert "badge src-wa" in response.text
+    assert "WhatsApp" in response.text
+    _configured_engine.cache_clear()
+
+
+def test_admin_bookings_page_shows_pwa_badge_for_api_sourced_bookings(monkeypatch, tmp_path):
+    """A booking persisted with source="api" renders the PWA badge — needed so
+    staff can tell at a glance which channel a booking arrived through."""
+    from sqlalchemy import update
+    from app.models import BookingRow
+
+    db_url = f"sqlite+pysqlite:///{tmp_path / 'admin-bookings-pwa.db'}"
+    engine = make_engine(db_url)
+    init_db(engine)
+    booking = _sample_booking()
+    persist_confirmed_booking(booking, engine=engine)
+    # Mutate the persisted row to simulate the upcoming POST /api/v1/bookings
+    # path that will pass source="api". Done with raw UPDATE because the
+    # persist_confirmed_booking source kwarg lands in a sibling bead.
+    with session_scope(engine) as session:
+        session.execute(
+            update(BookingRow).where(BookingRow.ref == booking.ref).values(source="api")
+        )
+
+    monkeypatch.setattr(settings, "database_url", db_url)
+    _configured_engine.cache_clear()
+    monkeypatch.setattr(settings, "admin_password", "secret-pass")
+    client = TestClient(app)
+    client.post(
+        "/admin",
+        content="password=secret-pass",
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+
+    response = client.get("/admin/bookings")
+
+    assert response.status_code == 200
+    assert booking.ref in response.text
+    assert "badge src-pwa" in response.text
+    assert "PWA" in response.text
+    # WhatsApp badge must not leak onto a PWA row.
+    pwa_section = response.text[response.text.index(booking.ref):response.text.index(booking.ref) + 300]
+    assert "src-wa" not in pwa_section
     _configured_engine.cache_clear()
 
 

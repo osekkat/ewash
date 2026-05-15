@@ -715,7 +715,7 @@ def _bookings_page(*, locale: str, message: str = "", error: str = "") -> HTMLRe
     if bookings:
         rows = "".join(
             "<div class=\"table-row booking-row\">"
-            f"<span>{escape(item.ref)}</span>"
+            f'<span>{escape(item.ref)}<br>{_source_badge(item.source, locale=locale)}</span>'
             f"<span>{escape(item.customer_name)}<br><small>{escape(item.customer_phone)}</small></span>"
             f"<span>{escape(item.vehicle_label)}</span>"
             f"<span>{_booking_service_cell(item)}</span>"
