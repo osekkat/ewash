@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 
 from app.booking import Booking
@@ -9,6 +11,7 @@ from app.notifications import (
     get_booking_notification_settings,
     notification_cache_clear,
     notify_booking_confirmation,
+    notify_booking_confirmation_safe,
     upsert_booking_notification_settings,
 )
 
@@ -116,3 +119,78 @@ async def test_notify_booking_confirmation_sends_configured_template(monkeypatch
         )
     ]
     notification_cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_notify_booking_confirmation_forces_staff_language_fr(monkeypatch, tmp_path):
+    db_url = f"sqlite+pysqlite:///{tmp_path / 'booking-notifications-language.db'}"
+    engine = make_engine(db_url)
+    init_db(engine)
+    monkeypatch.setattr(settings, "database_url", db_url)
+    notification_cache_clear()
+    upsert_booking_notification_settings(
+        enabled=True,
+        phone_number="+212 665 883 062",
+        template_name="new_booking_alert",
+        template_language="en",
+    )
+    sent = []
+
+    async def fake_send_template(to, template_name, *, language_code, body_parameters):
+        sent.append(language_code)
+        return {"messages": [{"id": "wamid.staff"}]}
+
+    monkeypatch.setattr(meta, "send_template", fake_send_template)
+
+    assert await notify_booking_confirmation(_sample_booking(), event_label="Nouvelle reservation") is True
+
+    assert sent == ["fr"]
+    notification_cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_notify_booking_confirmation_safe_logs_success(monkeypatch, caplog):
+    async def fake_notify(booking, *, event_label):
+        return True
+
+    monkeypatch.setattr("app.notifications.notify_booking_confirmation", fake_notify)
+    caplog.set_level(logging.INFO, logger="app.notifications")
+
+    await notify_booking_confirmation_safe(_sample_booking(), event_label="Nouvelle réservation PWA")
+
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert "notifications.staff_alert sent ref=EW-2026-0001" in messages
+    assert "event=Nouvelle réservation PWA" in messages
+    assert "result=True" in messages
+
+
+@pytest.mark.asyncio
+async def test_notify_booking_confirmation_safe_logs_false_result_as_error(monkeypatch, caplog):
+    async def failed_notify(booking, *, event_label):
+        return False
+
+    monkeypatch.setattr("app.notifications.notify_booking_confirmation", failed_notify)
+    caplog.set_level(logging.ERROR, logger="app.notifications")
+
+    await notify_booking_confirmation_safe(_sample_booking(), event_label="Nouvelle réservation PWA")
+
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert "notifications.staff_alert failed ref=EW-2026-0001" in messages
+    assert "event=Nouvelle réservation PWA" in messages
+    assert "result=False" in messages
+
+
+@pytest.mark.asyncio
+async def test_notify_booking_confirmation_safe_logs_and_swallows_failure(monkeypatch, caplog):
+    async def failing_notify(booking, *, event_label):
+        raise RuntimeError("meta unavailable")
+
+    monkeypatch.setattr("app.notifications.notify_booking_confirmation", failing_notify)
+    caplog.set_level(logging.ERROR, logger="app.notifications")
+
+    await notify_booking_confirmation_safe(_sample_booking(), event_label="Nouvelle réservation PWA")
+
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert "notifications.staff_alert failed ref=EW-2026-0001" in messages
+    assert "event=Nouvelle réservation PWA" in messages
+    assert "result=exception" in messages

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 import logging
 import re
+import time
 
 from sqlalchemy import Engine
 
@@ -227,10 +228,40 @@ async def notify_booking_confirmation(
         await meta.send_template(
             config.phone_number,
             config.template_name,
-            language_code=config.template_language,
+            language_code="fr",
             body_parameters=booking_notification_parameters(booking, event_label=event_label),
         )
     except Exception:
         log.exception("booking notification failed ref=%s to=%s", booking.ref, config.phone_number)
         return False
     return True
+
+
+async def notify_booking_confirmation_safe(
+    booking: Booking,
+    *,
+    event_label: str = "Nouvelle reservation",
+) -> None:
+    """BackgroundTask wrapper that logs failures without surfacing them to customers."""
+    started = time.perf_counter()
+    try:
+        result = await notify_booking_confirmation(booking, event_label=event_label)
+        duration_ms = (time.perf_counter() - started) * 1000
+        log_method = log.info if result else log.error
+        status = "sent" if result else "failed"
+        log_method(
+            "notifications.staff_alert %s ref=%s event=%s duration_ms=%.1f result=%s",
+            status,
+            booking.ref,
+            event_label,
+            duration_ms,
+            result,
+        )
+    except Exception:
+        duration_ms = (time.perf_counter() - started) * 1000
+        log.exception(
+            "notifications.staff_alert failed ref=%s event=%s duration_ms=%.1f result=exception",
+            booking.ref,
+            event_label,
+            duration_ms,
+        )

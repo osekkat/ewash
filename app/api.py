@@ -8,7 +8,7 @@ from datetime import date as date_cls
 from datetime import datetime, timedelta
 from typing import Literal
 
-from fastapi import APIRouter, Body, FastAPI, Query, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Body, FastAPI, Query, Request, Response
 from fastapi.responses import JSONResponse
 from slowapi.util import get_remote_address
 
@@ -256,6 +256,7 @@ def _clean_booking_text_fields(booking: booking_module.Booking) -> None:
 async def create_booking(
     request: Request,
     response: Response,
+    background_tasks: BackgroundTasks,
     body: BookingCreateRequest = Body(...),
 ) -> BookingCreateResponse | JSONResponse:
     """Create a PWA booking in the same pending staff-confirmation state as WhatsApp."""
@@ -329,6 +330,12 @@ async def create_booking(
         booking.client_request_id = body.client_request_id
         persistence.persist_confirmed_booking(booking, source="api", session=session)
         persistence.persist_customer_name(phone, booking.name, session=session)
+
+    background_tasks.add_task(
+        notifications.notify_booking_confirmation_safe,
+        booking,
+        event_label="Nouvelle réservation PWA",
+    )
 
     duration_ms = (time.perf_counter() - started) * 1000
     logger.info(

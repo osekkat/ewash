@@ -182,3 +182,48 @@ def test_create_booking_returns_503_when_database_absent(monkeypatch):
     assert response.status_code == 503
     assert response.headers["X-Ewash-Error-Code"] == "db_unavailable"
     assert response.json()["error_code"] == "db_unavailable"
+
+
+def test_create_booking_schedules_staff_alert_after_commit(api_db, monkeypatch):
+    calls = []
+
+    async def fake_staff_alert(booking, *, event_label):
+        with session_scope(api_db) as session:
+            row = session.scalars(select(BookingRow).where(BookingRow.ref == booking.ref)).one()
+            calls.append((booking.ref, event_label, row.status, row.source))
+
+    monkeypatch.setattr(notifications, "notify_booking_confirmation_safe", fake_staff_alert)
+
+    with _client() as client:
+        response = client.post("/api/v1/bookings", json=_payload())
+
+    assert response.status_code == 200
+    assert calls == [
+        (
+            response.json()["ref"],
+            "Nouvelle réservation PWA",
+            "pending_ewash_confirmation",
+            "api",
+        )
+    ]
+
+
+def test_create_booking_staff_alert_failure_does_not_fail_response(api_db, monkeypatch, caplog):
+    async def failing_staff_alert(booking, *, event_label):
+        raise RuntimeError("meta down")
+
+    monkeypatch.setattr(notifications, "notify_booking_confirmation", failing_staff_alert)
+    caplog.set_level(logging.ERROR, logger="app.notifications")
+
+    with _client() as client:
+        response = client.post("/api/v1/bookings", json=_payload())
+
+    assert response.status_code == 200
+    with session_scope(api_db) as session:
+        row = session.scalars(select(BookingRow)).one()
+        assert row.ref == response.json()["ref"]
+        assert row.status == "pending_ewash_confirmation"
+
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert "notifications.staff_alert failed ref=" in messages
+    assert "event=Nouvelle réservation PWA" in messages
