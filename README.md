@@ -110,7 +110,7 @@ After any `mobile-app/*.jsx` change, reload in a browser and walk the relevant f
 2. Railway dashboard → **New Project** → **Deploy from GitHub repo**.
 3. Railway auto-detects Nixpacks (Python 3.12 per `runtime.txt`).
 4. **Variables** tab: add every key from `.env.example`. Railway sets `PORT`.
-5. Deploy. Watch logs for `Application startup complete`. Then **Settings** → **Networking** → **Generate Domain** (e.g. `https://ewash-agent-production.up.railway.app`).
+5. Deploy. Watch logs for `Application startup complete`. Then **Settings** → **Networking** → **Generate Domain**. The current production domain is `https://web-production-1a800.up.railway.app` (kept in sync with `mobile-app/config.js`).
 6. Register the webhook in Meta:
    - developers.facebook.com → your app → WhatsApp → **Configuration**.
    - Callback URL: `https://<railway-domain>/webhook`.

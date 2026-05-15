@@ -6,8 +6,8 @@
 
 ## Summary
 
-- **VERIFIED**: 42
-- **FAILED**: 4
+- **VERIFIED**: 43
+- **FAILED**: 3
 - **NEEDS-HUMAN**: 21
 - **BLOCKED-BY-DEP**: 5
 
@@ -19,12 +19,11 @@ Most blocking findings:
    — bead 8.13's documentation checklist requires it.
 3. `[FAILED] [MEDIUM]` No `CHANGELOG.md` at the repo root and the README has no
    CHANGELOG section. Bead 8.13 explicitly asks for a CHANGELOG entry.
-4. `[FAILED] [LOW]` `mobile-app/config.js:12` hardcodes
-   `https://web-production-1a800.up.railway.app` — that is the Railway
-   *internal generated* domain, not the public custom domain referenced in the
-   bot/webhook docs (`https://ewash-agent-production.up.railway.app`). Human
-   must confirm the prod URL is correct (it may be the right value — Railway
-   accounts can have multiple generated domains).
+4. `[RESOLVED]` ~~URL mismatch~~ — operator confirmed
+   `https://web-production-1a800.up.railway.app/health` returns the live v0.3.0-alpha17
+   payload. `mobile-app/config.js:12` is correct. README.md fixed in the same commit
+   that resolves this checklist item (`ewash-agent-production.up.railway.app` was a stale
+   example, replaced with the actual prod URL).
 5. The five E2E smoke scripts cannot run from this audit session (`[BLOCKED-BY-DEP]`
    on 8.5/8.6/8.8). Each script exists *except* `test_data_erasure.py` (see #1).
 
@@ -343,20 +342,13 @@ that need a human at a real terminal or browser.
     `RATE_LIMIT_BOOKINGS_LIST_PER_TOKEN`, `EWASH_API_ENABLED=true`.
   - Auditor lacks Railway CLI auth.
 
-- [ ] FAILED [LOW] — `mobile-app/config.js` `prodDefault` matches Railway URL exactly.
+- [x] VERIFIED — `mobile-app/config.js` `prodDefault` matches Railway URL exactly.
   - `mobile-app/config.js:12` declares
     `const prodDefault = "https://web-production-1a800.up.railway.app";`
-  - The README documents the public-facing Railway domain example
-    (`https://ewash-agent-production.up.railway.app`) for webhook
-    registration. These two URLs differ. Either:
-    (a) `web-production-1a800.up.railway.app` is the actual current production
-        domain (likely — Railway auto-generates these and `8.4`'s closure note
-        does not name the URL), in which case **README needs updating**, or
-    (b) The PWA is pointing at the wrong domain.
-  - Human-confirm action: open Railway dashboard → service `web` → Settings
-    → Networking; cross-check against `EWASH_API_BASE` actually hit by the
-    Vercel PWA. If (a), reword the README example; if (b), update
-    `mobile-app/config.js:12` AND `vercel deploy --prod`.
+  - Operator confirmed `GET https://web-production-1a800.up.railway.app/health`
+    returns `{"status":"ok","version":"v0.3.0-alpha17"}` (2026-05-15).
+  - README updated in the same commit to use the live URL instead of the stale
+    `ewash-agent-production.up.railway.app` example.
 
 - [x] VERIFIED — Migration 0006 applied to production Postgres.
   - Evidence: bead `ewash-6pa.8.4` is CLOSED with the note "production
