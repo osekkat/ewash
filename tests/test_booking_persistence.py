@@ -269,6 +269,106 @@ def test_persist_booking_addon_updates_confirmed_booking_row():
         ]
 
 
+def test_persist_booking_addon_multi_addon_appends_line_items_without_overwriting_legacy():
+    """PWA multi-addon path: first call denormalizes, subsequent appends do not.
+
+    The legacy ``bookings.addon_*`` columns hold the FIRST addon. The line-item
+    table is the authoritative multi-addon record. Total accumulates.
+    """
+    engine = make_engine("sqlite+pysqlite:///:memory:")
+    init_db(engine)
+    booking = _sample_booking()
+    persist_confirmed_booking(booking, engine=engine)
+
+    # First addon — legacy path: denormalize.
+    persist_booking_addon(
+        booking.ref,
+        addon_service="svc_pol",
+        addon_service_label="Le Polissage — 770 DH (-10%)",
+        addon_price_dh=770,
+        denormalize_to_legacy=True,
+        engine=engine,
+    )
+    # Second addon — multi-addon path: append only.
+    persist_booking_addon(
+        booking.ref,
+        addon_service="svc_cer6m",
+        addon_service_label="Céramique 6m — 720 DH (-10%)",
+        addon_price_dh=720,
+        denormalize_to_legacy=False,
+        engine=engine,
+    )
+    # Third addon to be sure accumulation continues.
+    persist_booking_addon(
+        booking.ref,
+        addon_service="svc_cuir",
+        addon_service_label="Rénov. Cuir — 225 DH (-10%)",
+        addon_price_dh=225,
+        denormalize_to_legacy=False,
+        engine=engine,
+    )
+
+    with session_scope(engine) as session:
+        saved = session.scalars(select(BookingRow)).one()
+        # Legacy columns show only the FIRST addon.
+        assert saved.addon_service == "svc_pol"
+        assert saved.addon_service_label == "Le Polissage — 770 DH (-10%)"
+        assert saved.addon_price_dh == 770
+        # Total = base (110) + 770 + 720 + 225.
+        assert saved.total_price_dh == 110 + 770 + 720 + 225
+        line_items = session.scalars(
+            select(BookingLineItemRow).order_by(BookingLineItemRow.sort_order)
+        ).all()
+        assert [(item.kind, item.service_id, item.total_price_dh) for item in line_items] == [
+            ("main", "svc_cpl", 110),
+            ("addon", "svc_pol", 770),
+            ("addon", "svc_cer6m", 720),
+            ("addon", "svc_cuir", 225),
+        ]
+
+
+def test_persist_booking_addon_default_denormalize_preserves_legacy_behavior():
+    """A bare ``persist_booking_addon(...)`` call (no flag) must behave exactly
+    like the old WhatsApp upsert path — guards against accidental signature
+    changes that flip the default."""
+    engine = make_engine("sqlite+pysqlite:///:memory:")
+    init_db(engine)
+    booking = _sample_booking()
+    persist_confirmed_booking(booking, engine=engine)
+
+    # Pick svc_pol first.
+    persist_booking_addon(
+        booking.ref,
+        addon_service="svc_pol",
+        addon_service_label="Le Polissage — 770 DH (-10%)",
+        addon_price_dh=770,
+        engine=engine,
+    )
+    # Then change mind to svc_cer6m — the legacy upsert behavior swaps the
+    # single addon line item in place.
+    persist_booking_addon(
+        booking.ref,
+        addon_service="svc_cer6m",
+        addon_service_label="Céramique 6m — 720 DH (-10%)",
+        addon_price_dh=720,
+        engine=engine,
+    )
+
+    with session_scope(engine) as session:
+        saved = session.scalars(select(BookingRow)).one()
+        assert saved.addon_service == "svc_cer6m"
+        assert saved.addon_service_label == "Céramique 6m — 720 DH (-10%)"
+        assert saved.addon_price_dh == 720
+        assert saved.total_price_dh == 110 + 720
+        addon_items = session.scalars(
+            select(BookingLineItemRow).where(BookingLineItemRow.kind == "addon")
+        ).all()
+        # Exactly one addon line item in legacy mode, even after re-pick.
+        assert len(addon_items) == 1
+        assert addon_items[0].service_id == "svc_cer6m"
+        assert addon_items[0].total_price_dh == 720
+
+
 def test_admin_dashboard_summary_counts_db_rows_and_recent_bookings():
     engine = make_engine("sqlite+pysqlite:///:memory:")
     init_db(engine)

@@ -813,8 +813,26 @@ def persist_booking_addon(
     addon_service: str,
     addon_service_label: str,
     addon_price_dh: int,
+    denormalize_to_legacy: bool = True,
     engine: Engine | None = None,
 ) -> None:
+    """Attach a single addon to an existing booking row.
+
+    Two modes via ``denormalize_to_legacy``:
+
+    * ``True`` (default — WhatsApp single-addon flow): writes the addon to the
+      legacy ``bookings.addon_*`` columns AND upserts a single line item with
+      ``kind="addon"``. Re-picking an addon updates the existing row. Total is
+      ``price_dh + addon_price_dh``.
+
+    * ``False`` (PWA multi-addon flow, calls 2+): leaves the legacy columns
+      alone (they already hold the first addon) and APPENDS a new line item.
+      Total accumulates: ``total_price_dh += addon_price_dh``.
+
+    The legacy ``bookings.addon_*`` columns are kept only for the staff alert
+    template (which reads a single addon) and historical denormalization. The
+    line-item table is the authoritative multi-addon record.
+    """
     db_engine = _engine_or_configured(engine)
     if db_engine is None or not ref:
         return
@@ -823,38 +841,64 @@ def persist_booking_addon(
         if row is None:
             log.warning("persist_booking_addon: ref=%s not found", ref)
             return
-        row.addon_service = addon_service
-        row.addon_service_label = addon_service_label
-        row.addon_price_dh = addon_price_dh
-        row.total_price_dh = (row.price_dh or 0) + (row.addon_price_dh or 0)
-        line = session.scalars(
-            select(BookingLineItemRow).where(
-                BookingLineItemRow.booking_id == row.id,
-                BookingLineItemRow.kind == "addon",
-            )
-        ).first()
-        if line is None:
-            session.add(
-                BookingLineItemRow(
-                    booking_id=row.id,
-                    kind="addon",
-                    service_id=addon_service,
-                    service_bucket="detailing",
-                    label_snapshot=addon_service_label,
-                    quantity=1,
-                    unit_price_dh=addon_price_dh,
-                    regular_price_dh=addon_price_dh,
-                    total_price_dh=addon_price_dh,
-                    discount_label="-10%",
-                    sort_order=10,
+        if denormalize_to_legacy:
+            row.addon_service = addon_service
+            row.addon_service_label = addon_service_label
+            row.addon_price_dh = addon_price_dh
+            row.total_price_dh = (row.price_dh or 0) + (row.addon_price_dh or 0)
+            existing = session.scalars(
+                select(BookingLineItemRow).where(
+                    BookingLineItemRow.booking_id == row.id,
+                    BookingLineItemRow.kind == "addon",
                 )
+            ).first()
+            if existing is None:
+                session.add(
+                    BookingLineItemRow(
+                        booking_id=row.id,
+                        kind="addon",
+                        service_id=addon_service,
+                        service_bucket="detailing",
+                        label_snapshot=addon_service_label,
+                        quantity=1,
+                        unit_price_dh=addon_price_dh,
+                        regular_price_dh=addon_price_dh,
+                        total_price_dh=addon_price_dh,
+                        discount_label="-10%",
+                        sort_order=10,
+                    )
+                )
+            else:
+                existing.service_id = addon_service
+                existing.label_snapshot = addon_service_label
+                existing.unit_price_dh = addon_price_dh
+                existing.regular_price_dh = addon_price_dh
+                existing.total_price_dh = addon_price_dh
+            return
+        # Multi-addon append path: leave legacy columns + first line item
+        # untouched and accumulate total + a new line item per call.
+        current_max_sort = session.scalar(
+            select(func.max(BookingLineItemRow.sort_order)).where(
+                BookingLineItemRow.booking_id == row.id,
             )
-        else:
-            line.service_id = addon_service
-            line.label_snapshot = addon_service_label
-            line.unit_price_dh = addon_price_dh
-            line.regular_price_dh = addon_price_dh
-            line.total_price_dh = addon_price_dh
+        )
+        next_sort = (current_max_sort or 0) + 10
+        row.total_price_dh = (row.total_price_dh or row.price_dh or 0) + addon_price_dh
+        session.add(
+            BookingLineItemRow(
+                booking_id=row.id,
+                kind="addon",
+                service_id=addon_service,
+                service_bucket="detailing",
+                label_snapshot=addon_service_label,
+                quantity=1,
+                unit_price_dh=addon_price_dh,
+                regular_price_dh=addon_price_dh,
+                total_price_dh=addon_price_dh,
+                discount_label="-10%",
+                sort_order=next_sort,
+            )
+        )
 
 
 def _as_utc(value: datetime) -> datetime:
