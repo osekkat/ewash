@@ -16,16 +16,20 @@ import pytest
 from app.api_validation import (
     APIValidationError,
     CASABLANCA_TZ,
+    CenterIdNotAllowed,
     ClosedDate,
     DuplicateAddon,
     InvalidDate,
     InvalidServiceForCategory,
+    MissingCenterId,
     NotADetailingService,
     SlotTooSoon,
     UnknownAddon,
+    UnknownCenter,
     UnknownService,
     UnknownSlot,
     validate_addon_ids,
+    validate_center_id,
     validate_service_for_category,
     validate_slot_and_date,
 )
@@ -305,3 +309,52 @@ def test_validate_addon_ids_exceptions_are_api_validation_errors() -> None:
     assert UnknownAddon.error_code == "unknown_addon"
     assert DuplicateAddon.error_code == "duplicate_addon"
     assert NotADetailingService.error_code == "not_a_detailing_service"
+
+
+def test_validate_center_id_home_with_no_center_passes() -> None:
+    # Home delivery: center_id absent is the happy path.
+    validate_center_id(None, location_kind="home")
+
+
+def test_validate_center_id_home_with_center_rejected() -> None:
+    # Home delivery shouldn't carry a center_id; widening the contract here
+    # would let a tampered PWA confuse the staff alert.
+    with pytest.raises(CenterIdNotAllowed) as exc_info:
+        validate_center_id("ctr_casa", location_kind="home")
+    assert exc_info.value.error_code == "center_id_not_allowed"
+
+
+def test_validate_center_id_center_missing_rejected() -> None:
+    # location.kind=center must come with a center_id; empty/None is rejected.
+    with pytest.raises(MissingCenterId) as exc_info:
+        validate_center_id(None, location_kind="center")
+    assert exc_info.value.error_code == "missing_center_id"
+
+
+def test_validate_center_id_center_with_unknown_rejected() -> None:
+    # center_id must match one of catalog.active_centers().
+    with pytest.raises(UnknownCenter) as exc_info:
+        validate_center_id("ctr_nope", location_kind="center")
+    assert exc_info.value.error_code == "unknown_center"
+
+
+def test_validate_center_id_center_with_valid_static_id_passes() -> None:
+    # The static catalog ships a single active center, "ctr_casa".
+    validate_center_id("ctr_casa", location_kind="center")
+
+
+def test_validate_center_id_empty_string_with_center_kind_rejected() -> None:
+    # Empty string is not "missing" in Python's truthy sense — assert we treat
+    # it the same as None so the JSON contract is consistent.
+    with pytest.raises(MissingCenterId):
+        validate_center_id("", location_kind="center")
+
+
+def test_validate_center_id_exceptions_are_api_validation_errors() -> None:
+    # Stable error_code contract.
+    assert issubclass(CenterIdNotAllowed, APIValidationError)
+    assert issubclass(MissingCenterId, APIValidationError)
+    assert issubclass(UnknownCenter, APIValidationError)
+    assert CenterIdNotAllowed.error_code == "center_id_not_allowed"
+    assert MissingCenterId.error_code == "missing_center_id"
+    assert UnknownCenter.error_code == "unknown_center"

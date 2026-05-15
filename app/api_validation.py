@@ -24,6 +24,7 @@ from .catalog import (
     SERVICES_CAR,
     SERVICES_DETAILING,
     SERVICES_MOTO,
+    active_centers,
     active_closed_dates,
     active_time_slots,
 )
@@ -81,6 +82,18 @@ class DuplicateAddon(APIValidationError):
 
 class NotADetailingService(APIValidationError):
     error_code = "not_a_detailing_service"
+
+
+class CenterIdNotAllowed(APIValidationError):
+    error_code = "center_id_not_allowed"
+
+
+class MissingCenterId(APIValidationError):
+    error_code = "missing_center_id"
+
+
+class UnknownCenter(APIValidationError):
+    error_code = "unknown_center"
 
 
 _CAR_SERVICE_IDS: frozenset[str] = frozenset(sid for sid, *_ in SERVICES_CAR)
@@ -306,3 +319,50 @@ def validate_addon_ids(addon_ids: list[str]) -> list[str]:
         raise UnknownAddon(f"addon_id={addon_id} not found")
 
     return addon_ids
+
+
+def validate_center_id(center_id: str | None, *, location_kind: str) -> None:
+    """Cross-check ``center_id`` against ``location_kind`` and the active centers.
+
+    A booking with ``location.kind == "center"`` must carry a ``center_id`` that
+    matches one of the rows from :func:`catalog.active_centers`. A booking with
+    ``location.kind == "home"`` must NOT carry a ``center_id`` — including one
+    silently widens the contract and lets a tampered PWA backstop a home pin
+    with a center label, which would confuse the staff alert.
+
+    Parameters
+    ----------
+    center_id : str | None
+        Caller-supplied center id (may be empty / None for home bookings).
+    location_kind : str
+        ``"home"`` or ``"center"`` — already validated upstream by Pydantic.
+
+    Raises
+    ------
+    CenterIdNotAllowed : ``location_kind="home"`` but a ``center_id`` was sent.
+    MissingCenterId : ``location_kind="center"`` but no ``center_id`` was sent.
+    UnknownCenter : ``center_id`` is not in :func:`catalog.active_centers`.
+    """
+    if location_kind != "center":
+        if center_id is not None:
+            log.info(
+                "validation.rejection center_id=%s location_kind=%s reason=center_id_not_allowed",
+                center_id,
+                location_kind,
+            )
+            raise CenterIdNotAllowed(
+                f"center_id={center_id!r} sent but location.kind={location_kind!r}"
+            )
+        return
+    if not center_id:
+        log.info(
+            "validation.rejection center_id=None location_kind=center reason=missing_center_id"
+        )
+        raise MissingCenterId("location.kind=center requires a center_id")
+    active_ids = {cid for cid, *_ in active_centers()}
+    if center_id not in active_ids:
+        log.info(
+            "validation.rejection center_id=%s reason=unknown_center",
+            center_id,
+        )
+        raise UnknownCenter(f"center_id={center_id} not active")
