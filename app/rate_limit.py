@@ -6,8 +6,10 @@ import logging
 import time
 
 from fastapi import HTTPException, Request
+from fastapi.responses import JSONResponse
 from limits import parse
 from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from .security import hash_token
@@ -20,6 +22,27 @@ limiter = Limiter(
     storage_uri="memory://",
     headers_enabled=True,
 )
+
+
+def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
+    """Return the API's stable 429 envelope while preserving slowapi headers."""
+    logger.info(
+        "rate_limit.exceeded path=%s limit=%s",
+        request.url.path,
+        exc.detail,
+    )
+    response = JSONResponse(
+        status_code=429,
+        content={
+            "error_code": "rate_limit_exceeded",
+            "message": f"Rate limit exceeded: {exc.detail}",
+        },
+    )
+    response.headers["X-Ewash-Error-Code"] = "rate_limit_exceeded"
+    view_rate_limit = getattr(request.state, "view_rate_limit", None)
+    if view_rate_limit is not None:
+        response = request.app.state.limiter._inject_headers(response, view_rate_limit)
+    return response
 
 
 class PerPhoneRateLimitExceeded(HTTPException):

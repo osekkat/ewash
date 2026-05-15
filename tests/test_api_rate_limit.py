@@ -1,25 +1,28 @@
 """Tests for app.rate_limit slowapi integration."""
 from __future__ import annotations
 
+import uuid
+from contextlib import contextmanager
 from unittest import TestCase
 
 import pytest
 from fastapi import FastAPI, Request, Response
 from fastapi.testclient import TestClient
 from limits import parse
-from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from starlette.requests import Request as StarletteRequest
 
-from app import api as pwa_api
+from app import api as pwa_api, catalog, notifications, persistence
 from app.config import settings
+from app.db import init_db, make_engine
 from app.main import app as main_app
 from app.rate_limit import (
     PerPhoneRateLimitExceeded,
     _token_key_func,
     hit_phone_limit,
     limiter,
+    rate_limit_exceeded_handler,
 )
 from app.security import hash_token
 
@@ -30,13 +33,22 @@ case = TestCase()
 def _limited_client() -> TestClient:
     app = FastAPI()
     app.state.limiter = limiter
-    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+    app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
 
     @app.get("/limited")
     @limiter.limit("1/minute")
     async def limited(request: Request, response: Response):
         return {"ok": True}
 
+    return TestClient(app)
+
+
+def _api_client() -> TestClient:
+    app = FastAPI()
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
+    app.include_router(pwa_api.router)
+    pwa_api.install_exception_handlers(app)
     return TestClient(app)
 
 
@@ -50,6 +62,66 @@ def _request_with_headers(headers: dict[str, str]) -> StarletteRequest:
             "client": ("198.51.100.9", 12345),
         }
     )
+
+
+@contextmanager
+def _temporary_route_limit(endpoint_name: str, limit_str: str):
+    route_key = f"app.api.{endpoint_name}"
+    route_limits = limiter._route_limits[route_key]
+    original = route_limits[0].limit
+    route_limits[0].limit = parse(limit_str)
+    limiter.reset()
+    try:
+        yield
+    finally:
+        route_limits[0].limit = original
+        limiter.reset()
+
+
+@pytest.fixture
+def api_db(monkeypatch, tmp_path):
+    db_url = f"sqlite+pysqlite:///{tmp_path / 'api-rate-limit.db'}"
+    engine = make_engine(db_url)
+    init_db(engine)
+    monkeypatch.setattr(settings, "database_url", db_url)
+    persistence._configured_engine.cache_clear()
+    catalog.catalog_cache_clear()
+    notifications.notification_cache_clear()
+
+    async def noop_staff_alert(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(notifications, "notify_booking_confirmation_safe", noop_staff_alert)
+    try:
+        yield engine
+    finally:
+        persistence._configured_engine.cache_clear()
+        catalog.catalog_cache_clear()
+        notifications.notification_cache_clear()
+
+
+def _booking_payload(*, phone: str = "212611204502", client_request_id: str | None = None) -> dict:
+    return {
+        "phone": phone,
+        "name": "Rate Limit User",
+        "category": "A",
+        "vehicle": {"make": "Dacia Logan", "color": "Blanc"},
+        "location": {"kind": "home", "pin_address": "Rate limit test"},
+        "service_id": "svc_cpl",
+        "date": "2026-12-04",
+        "slot": "slot_11_13",
+        "addon_ids": [],
+        "client_request_id": client_request_id or str(uuid.uuid4()),
+    }
+
+
+def _assert_rate_limit_envelope(response):
+    assert response.status_code == 429
+    assert response.headers.get("Retry-After")
+    assert response.headers.get("X-Ewash-Error-Code") == "rate_limit_exceeded"
+    body = response.json()
+    assert body["error_code"] == "rate_limit_exceeded"
+    assert "Rate limit exceeded" in body["message"]
 
 
 def test_limiter_import_and_main_app_state():
@@ -104,7 +176,123 @@ def test_per_ip_decorator_blocks_second_request():
     second = client.get("/limited")
 
     case.assertEqual(first.status_code, 200)
-    case.assertEqual(second.status_code, 429)
+    _assert_rate_limit_envelope(second)
+
+
+def test_per_phone_cap_on_bookings(api_db, monkeypatch):
+    monkeypatch.setattr(settings, "rate_limit_bookings_per_phone", "5/hour")
+    client = _api_client()
+
+    responses = [
+        client.post(
+            "/api/v1/bookings",
+            json=_booking_payload(client_request_id=f"phone-cap-{index}"),
+        )
+        for index in range(6)
+    ]
+
+    assert [response.status_code for response in responses[:5]] == [200] * 5
+    limited = responses[5]
+    assert limited.status_code == 429
+    assert limited.headers.get("Retry-After")
+    body = limited.json()["detail"]
+    assert body["error_code"] == "rate_limit_exceeded"
+    assert body["scope"] == "per_phone"
+
+
+def test_per_ip_cap_on_bookings(api_db, monkeypatch):
+    monkeypatch.setattr(settings, "rate_limit_bookings_per_phone", "1000/hour")
+    client = _api_client()
+
+    with _temporary_route_limit("create_booking", "20/hour"):
+        responses = [
+            client.post(
+                "/api/v1/bookings",
+                json=_booking_payload(
+                    phone=f"21261120{index:04d}",
+                    client_request_id=f"ip-cap-{index}",
+                ),
+            )
+            for index in range(21)
+        ]
+
+    assert [response.status_code for response in responses[:20]] == [200] * 20
+    _assert_rate_limit_envelope(responses[20])
+
+
+def test_per_ip_cap_on_promo_validate():
+    client = _api_client()
+
+    with _temporary_route_limit("validate_promo", "60/hour"):
+        responses = [
+            client.post(
+                "/api/v1/promos/validate",
+                json={"code": "YS26", "category": "A"},
+            )
+            for _ in range(61)
+        ]
+
+    assert [response.status_code for response in responses[:60]] == [200] * 60
+    _assert_rate_limit_envelope(responses[60])
+
+
+def test_per_token_cap_on_bookings_list(api_db, monkeypatch):
+    monkeypatch.setattr(settings, "rate_limit_bookings_per_phone", "1000/hour")
+    client = _api_client()
+    created = client.post(
+        "/api/v1/bookings",
+        json=_booking_payload(client_request_id="list-token-cap"),
+    )
+    assert created.status_code == 200
+    token = created.json()["bookings_token"]
+
+    with _temporary_route_limit("list_bookings", "60/hour"):
+        responses = [
+            client.get("/api/v1/bookings", headers={"X-Ewash-Token": token})
+            for _ in range(61)
+        ]
+
+    assert [response.status_code for response in responses[:60]] == [200] * 60
+    _assert_rate_limit_envelope(responses[60])
+
+
+def test_caps_independent(api_db, monkeypatch):
+    monkeypatch.setattr(settings, "rate_limit_bookings_per_phone", "1000/hour")
+    client = _api_client()
+
+    with (
+        _temporary_route_limit("create_booking", "2/hour"),
+        _temporary_route_limit("validate_promo", "2/hour"),
+    ):
+        booking_1 = client.post(
+            "/api/v1/bookings",
+            json=_booking_payload(phone="212611300001", client_request_id="independent-1"),
+        )
+        booking_2 = client.post(
+            "/api/v1/bookings",
+            json=_booking_payload(phone="212611300002", client_request_id="independent-2"),
+        )
+        booking_limited = client.post(
+            "/api/v1/bookings",
+            json=_booking_payload(phone="212611300003", client_request_id="independent-3"),
+        )
+        promo_1 = client.post(
+            "/api/v1/promos/validate",
+            json={"code": "YS26", "category": "A"},
+        )
+        promo_2 = client.post(
+            "/api/v1/promos/validate",
+            json={"code": "YS26", "category": "A"},
+        )
+        promo_limited = client.post(
+            "/api/v1/promos/validate",
+            json={"code": "YS26", "category": "A"},
+        )
+
+    assert [booking_1.status_code, booking_2.status_code] == [200, 200]
+    _assert_rate_limit_envelope(booking_limited)
+    assert [promo_1.status_code, promo_2.status_code] == [200, 200]
+    _assert_rate_limit_envelope(promo_limited)
 
 
 def test_hit_phone_limit_raises_with_retry_after_and_error_body():

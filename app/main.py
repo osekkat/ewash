@@ -15,14 +15,13 @@ from fastapi import FastAPI, Header, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
-from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from . import admin, api as api_module, handlers, meta
 from .config import settings
 from .persistence import mark_abandoned_conversations
-from .rate_limit import limiter
+from .rate_limit import limiter, rate_limit_exceeded_handler as _rate_limit_exceeded_handler
 
 APP_VERSION = "v0.3.0-alpha17"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
