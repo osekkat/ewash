@@ -1,11 +1,19 @@
 """Booking record + reference generator."""
 from __future__ import annotations
 
+import hashlib
 import logging
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
+
+from . import catalog
+from .api_validation import clean_text
 
 log = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from .api_schemas import BookingCreateRequest
 
 # In-memory booking counter. For MVP only — resets on Railway redeploy.
 # TODO: move to persistent store (SQLite/Postgres) in v0.3.
@@ -51,6 +59,7 @@ class Booking:
     promo_code: str = ""            # UPPERCASE canonical code, e.g. "YS26"
     promo_label: str = ""           # Human-readable, e.g. "Yasmine Signature"
     price_regular_dh: int = 0       # Public price at time of booking (for savings math)
+    client_request_id: str | None = None  # PWA idempotency key, when supplied
 
     # Transient state for the paginated date picker (BOOK_WHEN). Not persisted
     # into `_bookings` in any meaningful way — just survives the round-trip
@@ -76,6 +85,92 @@ class Booking:
         log.info("booking confirmed ref=%s phone=%s payload=%s",
                  self.ref, self.phone, asdict(self))
         return self.ref
+
+
+def from_api_payload(
+    payload: "BookingCreateRequest",
+    *,
+    server_price_dh: int,
+    server_regular_price_dh: int,
+    service_label: str,
+    vehicle_label: str,
+    location_label: str,
+    date_label: str,
+    slot_label: str,
+    promo_label: str | None = None,
+) -> Booking:
+    """Pure conversion: validated API payload plus server labels/prices to Booking."""
+    from .notifications import normalize_phone
+
+    normalized_phone = normalize_phone(payload.phone)
+    promo_code = catalog.normalize_promo_code(payload.promo_code) if payload.promo_code else None
+    booking = Booking(
+        phone=normalized_phone,
+        name=clean_text(payload.name, max_len=120),
+        category=payload.category,
+        vehicle_type=vehicle_label,
+        car_model=clean_text(payload.vehicle.make, max_len=64) if payload.vehicle else None,
+        color=clean_text(payload.vehicle.color, max_len=64) if payload.vehicle else None,
+        location_mode=payload.location.kind,
+        center_id=payload.location.center_id,
+        center=location_label if payload.location.kind == "center" else None,
+        location_name=None,
+        location_address=payload.location.pin_address if payload.location.kind == "home" else None,
+        address=clean_text(payload.location.address_details, max_len=200),
+        latitude=None,
+        longitude=None,
+        geo=None,
+        promo_code=promo_code,
+        promo_label=promo_label,
+        service=payload.service_id,
+        service_bucket=_bucket_for(payload.service_id),
+        service_label=service_label,
+        price_dh=server_price_dh,
+        price_regular_dh=server_regular_price_dh,
+        date_iso=payload.date,
+        date_label=date_label,
+        slot_id=payload.slot,
+        slot=slot_label,
+        note=clean_text(payload.note, max_len=500),
+        addon_service=None,
+        addon_service_label=None,
+        addon_price_dh=None,
+        client_request_id=payload.client_request_id,
+        when_page=0,
+        when_dates=[],
+        ref=None,
+        created_at=None,
+    )
+    log.debug(
+        "ewash.booking.from_api phone_hash=%s category=%s service=%s price=%d "
+        "promo=%s has_vehicle=%s addons=%d",
+        _hash_for_log(normalized_phone),
+        booking.category,
+        booking.service,
+        booking.price_dh,
+        booking.promo_code or "-",
+        "true" if payload.vehicle else "false",
+        len(payload.addon_ids),
+    )
+    return booking
+
+
+def _bucket_for(service_id: str) -> str:
+    """Lookup the service's bucket (wash | detailing | moto)."""
+    for catalog_service_id, *_ in catalog.SERVICES_WASH:
+        if catalog_service_id == service_id:
+            return "wash"
+    for catalog_service_id, *_ in catalog.SERVICES_DETAILING:
+        if catalog_service_id == service_id:
+            return "detailing"
+    for catalog_service_id, *_ in catalog.SERVICES_MOTO:
+        if catalog_service_id == service_id:
+            return "moto"
+    raise ValueError(f"Unknown service_id={service_id}")
+
+
+def _hash_for_log(value: str, *, length: int = 6) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:length] if value else "-"
 
 
 def all_bookings() -> list[dict]:
