@@ -22,6 +22,7 @@ from app.rate_limit import (
     _token_key_func,
     hit_phone_limit,
     limiter,
+    per_phone_rate_limit_handler,
     rate_limit_exceeded_handler,
 )
 from app.security import hash_token
@@ -47,6 +48,7 @@ def _api_client() -> TestClient:
     app = FastAPI()
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
+    app.add_exception_handler(PerPhoneRateLimitExceeded, per_phone_rate_limit_handler)
     app.include_router(pwa_api.router)
     pwa_api.install_exception_handlers(app)
     return TestClient(app)
@@ -195,9 +197,18 @@ def test_per_phone_cap_on_bookings(api_db, monkeypatch):
     limited = responses[5]
     assert limited.status_code == 429
     assert limited.headers.get("Retry-After")
-    body = limited.json()["detail"]
+    # Per-phone caps used to surface as ``{"detail": {...}}`` (FastAPI's
+    # default HTTPException envelope) while IP-caps from slowapi used a
+    # flat ``{"error_code": "...", "message": "..."}`` body. The PWA reads
+    # ``errBody.error_code`` directly so the per-phone case rendered as
+    # ``http_429`` instead of the canonical ``rate_limit_exceeded``. The
+    # unified handler in app.rate_limit.per_phone_rate_limit_handler
+    # collapses both flows onto the same shape.
+    assert limited.headers.get("X-Ewash-Error-Code") == "rate_limit_exceeded"
+    body = limited.json()
     assert body["error_code"] == "rate_limit_exceeded"
     assert body["scope"] == "per_phone"
+    assert "Too many bookings from this phone" in body["message"]
 
 
 def test_per_ip_cap_on_bookings(api_db, monkeypatch):

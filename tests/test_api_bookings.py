@@ -744,7 +744,10 @@ def test_create_booking_rate_limited_per_phone(api_db, monkeypatch):
 
     assert limited.status_code == 429
     assert limited.headers.get("Retry-After") is not None
-    assert limited.json()["detail"]["error_code"] == "rate_limit_exceeded"
+    # Per-phone 429 envelope now matches the slowapi-keyed per-IP shape.
+    assert limited.headers.get("X-Ewash-Error-Code") == "rate_limit_exceeded"
+    assert limited.json()["error_code"] == "rate_limit_exceeded"
+    assert limited.json()["scope"] == "per_phone"
     assert _booking_count(api_db) == 3
 
 

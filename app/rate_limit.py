@@ -61,6 +61,47 @@ class PerPhoneRateLimitExceeded(HTTPException):
         )
 
 
+def per_phone_rate_limit_handler(
+    request: Request,
+    exc: PerPhoneRateLimitExceeded,
+) -> JSONResponse:
+    """Return the API's stable 429 envelope for per-phone caps.
+
+    Without this handler FastAPI's built-in HTTPException handler wraps the
+    detail in ``{"detail": {...}}``, producing a 429 body whose top-level
+    ``error_code`` is missing — the PWA's ``_fetch`` reads ``errBody.error_code``
+    directly, so the per-phone case used to surface as ``http_429`` instead of
+    the canonical ``rate_limit_exceeded``. The IP-keyed slowapi handler above
+    already returns the flattened shape; this handler aligns the per-phone
+    flow with the same contract (top-level ``error_code`` + ``X-Ewash-Error-Code``
+    header + the original ``Retry-After``).
+    """
+    detail = exc.detail if isinstance(exc.detail, dict) else {}
+    message = detail.get("message") or "Rate limit exceeded"
+    scope = detail.get("scope") or "per_phone"
+    retry_after = (exc.headers or {}).get("Retry-After") if exc.headers else None
+
+    logger.info(
+        "rate_limit.exceeded path=%s scope=%s retry_after=%s",
+        request.url.path,
+        scope,
+        retry_after or "-",
+    )
+
+    response = JSONResponse(
+        status_code=429,
+        content={
+            "error_code": "rate_limit_exceeded",
+            "message": message,
+            "scope": scope,
+        },
+    )
+    response.headers["X-Ewash-Error-Code"] = "rate_limit_exceeded"
+    if retry_after:
+        response.headers["Retry-After"] = str(retry_after)
+    return response
+
+
 def hit_phone_limit(phone: str, limit_str: str) -> None:
     """Consume one slot in the per-phone limiter for a normalized phone."""
     rule = parse(limit_str)

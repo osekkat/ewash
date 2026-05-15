@@ -21,7 +21,12 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from . import admin, api as api_module, handlers, meta
 from .config import settings
 from .persistence import mark_abandoned_conversations
-from .rate_limit import limiter, rate_limit_exceeded_handler as _rate_limit_exceeded_handler
+from .rate_limit import (
+    PerPhoneRateLimitExceeded,
+    limiter,
+    per_phone_rate_limit_handler as _per_phone_rate_limit_handler,
+    rate_limit_exceeded_handler as _rate_limit_exceeded_handler,
+)
 
 APP_VERSION = "v0.3.0-alpha17"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -112,6 +117,7 @@ def _configure_api(target_app: FastAPI) -> None:
 app = FastAPI(title="Ewash WhatsApp Agent", version=APP_VERSION.removeprefix("v"))
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_exception_handler(PerPhoneRateLimitExceeded, _per_phone_rate_limit_handler)
 _configure_cors(app)
 _configure_access_logging(app)
 _configure_api(app)

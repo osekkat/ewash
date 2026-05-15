@@ -36,7 +36,13 @@ from app.api_schemas import (
 )
 from app.config import settings
 from app.notifications import InvalidPhone
-from app.rate_limit import _token_key_func, hit_phone_limit, limiter
+from app.rate_limit import (
+    PerPhoneRateLimitExceeded,
+    _token_key_func,
+    hit_phone_limit,
+    limiter,
+    per_phone_rate_limit_handler,
+)
 from app.security import hash_token
 
 logger = logging.getLogger("ewash.api")
@@ -224,8 +230,18 @@ def install_exception_handlers(app: FastAPI) -> None:
 
     FastAPI's APIRouter has no exception-handler decorator, so app/main.py will
     call this after including the router in a later integration bead.
+
+    Also installs a dedicated handler for ``PerPhoneRateLimitExceeded`` so the
+    per-phone 429 envelope matches the slowapi-keyed per-IP shape — without
+    this override FastAPI's default HTTPException handler returns
+    ``{"detail": {...}}`` and the PWA's top-level ``error_code`` read misses
+    the canonical ``rate_limit_exceeded`` value.
     """
     app.add_exception_handler(Exception, api_exception_handler)
+    app.add_exception_handler(
+        PerPhoneRateLimitExceeded,
+        per_phone_rate_limit_handler,
+    )
 
 
 # ── Catalog endpoints ────────────────────────────────────────────────────
