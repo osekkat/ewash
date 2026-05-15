@@ -97,6 +97,42 @@
     }
   }
 
+  async function _fetchWithRetry(path, options, retryConfig) {
+    const cfg = retryConfig || {};
+    const retries = cfg.retries === undefined ? 2 : cfg.retries;
+    const backoffMs = cfg.backoffMs === undefined ? 500 : cfg.backoffMs;
+
+    let lastErr;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        return await _fetch(path, options);
+      } catch (err) {
+        lastErr = err;
+        // 4xx is deterministic — retrying changes nothing, so surface immediately.
+        if (err && typeof err.status === "number" && err.status >= 400 && err.status < 500) {
+          throw err;
+        }
+        // 5xx / network errors / aborts → backoff and retry while attempts remain.
+        if (attempt < retries) {
+          const delay = backoffMs * Math.pow(2, attempt);
+          console.info(
+            "[ewash.api]",
+            "retry",
+            path,
+            "in",
+            delay,
+            "ms after",
+            (err && err.error_code) || (err && err.name) || "error"
+          );
+          await new Promise(function (resolve) {
+            setTimeout(resolve, delay);
+          });
+        }
+      }
+    }
+    throw lastErr;
+  }
+
   function _getToken() {
     try {
       return localStorage.getItem(BOOKINGS_STORAGE_KEY) || "";
@@ -131,7 +167,7 @@
     if (params.promo) qs.set("promo", params.promo);
     const query = qs.toString();
     const path = "/api/v1/bootstrap" + (query ? "?" + query : "");
-    return await _fetch(path);
+    return await _fetchWithRetry(path);
   }
 
   async function validatePromo(params) {
@@ -183,7 +219,7 @@
       err.error_code = "no_local_token";
       throw err;
     }
-    return await _fetch("/api/v1/bookings", {
+    return await _fetchWithRetry("/api/v1/bookings", {
       headers: { "X-Ewash-Token": token },
     });
   }
