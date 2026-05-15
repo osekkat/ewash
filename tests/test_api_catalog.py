@@ -19,6 +19,21 @@ def _client() -> TestClient:
     return TestClient(app)
 
 
+def _client_with_access_logs() -> TestClient:
+    from app.main import ApiAccessLogMiddleware
+
+    app = FastAPI()
+    app.state.limiter = limiter
+    app.add_middleware(ApiAccessLogMiddleware)
+    app.include_router(api.router)
+    api.install_exception_handlers(app)
+    return TestClient(app)
+
+
+def _flatten_service_rows(body: dict[str, list[dict]]) -> dict[str, dict]:
+    return {row["id"]: row for group in body.values() for row in group}
+
+
 # ── /bootstrap ────────────────────────────────────────────────────────────
 
 
@@ -44,8 +59,15 @@ def test_bootstrap_with_category_populates_services_for_that_category():
     with _client() as client:
         response = client.get("/api/v1/bootstrap?category=A")
 
+    case = TestCase()
     assert response.status_code == 200
     body = response.json()
+    assert body["categories"]
+    assert body["centers"]
+    assert body["time_slots"]
+    assert "closed_dates" in body
+    assert "catalog_version" in body
+    case.assertIn("staff_contact", body)
     assert set(body["services"]) == {"wash", "detailing"}
     assert len(body["services"]["wash"]) == len(catalog.SERVICES_WASH)
     assert body["services"]["wash"][0]["price_dh"] == catalog.service_price("svc_ext", "A")
@@ -236,6 +258,41 @@ def test_services_all_categories_match_catalog_pricing() -> None:
                     }
 
 
+def test_services_exhaustive_pricing_parity_for_promos() -> None:
+    cases = 0
+    categories = ("A", "B", "C", "MOTO")
+    promos = (None, "YS26")
+
+    with _client() as client:
+        for category in categories:
+            services = catalog.SERVICES_MOTO if category == "MOTO" else catalog.SERVICES_CAR
+            for promo in promos:
+                params = {"category": category}
+                if promo is not None:
+                    params["promo"] = promo
+                response = client.get("/api/v1/catalog/services", params=params)
+                assert response.status_code == 200
+                rows = _flatten_service_rows(response.json())
+
+                for service in services:
+                    service_id = service[0]
+                    expected = catalog.service_price(service_id, category, promo_code=promo)
+                    public = catalog.service_price(service_id, category)
+                    assert rows[service_id]["price_dh"] == expected, (
+                        f"Parity broken: service={service_id} category={category} "
+                        f"promo={promo} api={rows[service_id]['price_dh']} catalog={expected}"
+                    )
+                    if promo is not None and expected != public:
+                        assert rows[service_id]["regular_price_dh"] == public
+                        if expected < public:
+                            assert rows[service_id]["price_dh"] < rows[service_id]["regular_price_dh"]
+                    else:
+                        assert rows[service_id]["regular_price_dh"] is None
+                    cases += 1
+
+    assert cases >= 60
+
+
 def test_services_valid_promo_populates_strike_through_price() -> None:
     with _client() as client:
         response = client.get("/api/v1/catalog/services?category=B&promo=ys26")
@@ -279,6 +336,23 @@ def test_services_logs_counts_for_car_and_moto(caplog) -> None:
     assert any(
         "catalog.services listed category=MOTO promo=- count_moto=2" in rec.message
         for rec in caplog.records
+    )
+
+
+def test_catalog_endpoint_access_log_emitted(caplog) -> None:
+    caplog.set_level(logging.INFO, logger="ewash.api")
+
+    with _client_with_access_logs() as client:
+        response = client.get("/api/v1/catalog/services?category=A")
+
+    case = TestCase()
+    case.assertEqual(response.status_code, 200)
+    case.assertTrue(
+        any(
+            "ewash.api endpoint=/api/v1/catalog/services method=GET status=200 duration_ms="
+            in rec.message
+            for rec in caplog.records
+        )
     )
 
 
