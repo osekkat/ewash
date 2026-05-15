@@ -98,6 +98,26 @@ function _addonPreviewPrice(addon) {
   return Math.round((addon.price_dh || 0) * 0.9);
 }
 
+function _uuid() {
+  const c = typeof crypto !== 'undefined' ? crypto : null;
+  if (c && typeof c.randomUUID === 'function') return c.randomUUID();
+  return _uuidFallback();
+}
+
+function _uuidFallback() {
+  const arr = new Uint8Array(16);
+  const c = typeof crypto !== 'undefined' ? crypto : null;
+  if (c && typeof c.getRandomValues === 'function') {
+    c.getRandomValues(arr);
+  } else {
+    for (let i = 0; i < arr.length; i += 1) arr[i] = Math.floor(Math.random() * 256);
+  }
+  arr[6] = (arr[6] & 0x0f) | 0x40;
+  arr[8] = (arr[8] & 0x3f) | 0x80;
+  const hex = Array.from(arr).map((b) => b.toString(16).padStart(2, '0')).join('');
+  return hex.slice(0, 8) + '-' + hex.slice(8, 12) + '-' + hex.slice(12, 16) + '-' + hex.slice(16, 20) + '-' + hex.slice(20);
+}
+
 function _bookingDataSize(data) {
   try {
     return JSON.stringify(data).length;
@@ -260,6 +280,7 @@ function BookingFlow({ t, lang, theme, variant, onClose, onComplete, profile }) 
     time: null,
     note: '',
     addons: [],
+    clientRequestId: null,
   });
 
   const [step, setStep] = useS_b('category');
@@ -374,6 +395,12 @@ function BookingFlow({ t, lang, theme, variant, onClose, onComplete, profile }) 
       patch({ service: refreshed });
     }
   }, [servicesList, data.service]);
+
+  useE_b(() => {
+    if (step !== 'recap' || data.clientRequestId) return;
+    const clientRequestId = _uuid();
+    setData((d) => d.clientRequestId ? d : Object.assign({}, d, { clientRequestId: clientRequestId }));
+  }, [step, data.clientRequestId]);
 
   // For step indicator
   const stepperKey = step === 'addressPin' ? 'location'
@@ -550,7 +577,11 @@ function BookingFlow({ t, lang, theme, variant, onClose, onComplete, profile }) 
   };
 
   const submitBooking = async () => {
-    const payload = _payloadFromBookingData(data);
+    const clientRequestId = data.clientRequestId || _uuid();
+    if (!data.clientRequestId) {
+      setData((d) => d.clientRequestId ? d : Object.assign({}, d, { clientRequestId: clientRequestId }));
+    }
+    const payload = _payloadFromBookingData(Object.assign({}, data, { clientRequestId: clientRequestId }));
     if (!_isBrowserOnline()) {
       const err = new Error('offline');
       err.error_code = 'offline';
