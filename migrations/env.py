@@ -11,7 +11,11 @@ from app.models import Base
 config = context.config
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # disable_existing_loggers=False so test runs that drive alembic in-process
+    # (e.g. test_migration_0006_sqlite_roundtrip) don't disable the "ewash"
+    # logger created at app/main.py import time, which would silently break
+    # any later caplog assertion against it (ewash-f4h).
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 
