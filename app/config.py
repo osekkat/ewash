@@ -50,11 +50,19 @@ class Settings(BaseSettings):
     rate_limit_bookings_list_per_token: str = "60/hour"
     # PWA logout is a single tap; 10/hour absorbs flaky-network double-taps
     # without enabling sustained token-enumeration attempts against the
-    # revoke endpoint. Per-token bucket — see ewash-byd for the per-IP gap.
+    # revoke endpoint. Per-token bucket — see rate_limit_token_endpoints_per_ip
+    # below for the per-IP umbrella that closes the garbage-token bypass.
     rate_limit_token_revoke_per_token: str = "10/hour"
     # GDPR self-serve erasure (DELETE /me) is once-in-a-customer-lifetime;
     # the very low cap keeps the audit-log table from being spammed.
     rate_limit_me_delete_per_token: str = "3/hour"
+    # Per-IP umbrella that token-keyed endpoints (GET /bookings, POST
+    # /tokens/revoke, DELETE /me) stack on top of their per-token bucket so
+    # an attacker can't rotate garbage X-Ewash-Token values to spawn a fresh
+    # bucket per request (ewash-byd). Generous enough that the per-token
+    # bucket still bites first for a real customer on a single device but
+    # tight enough to cap the aggregate request rate from one origin.
+    rate_limit_token_endpoints_per_ip: str = "600/hour"
 
     def allowed_origins_list(self) -> list[str]:
         """Parse ``allowed_origins`` into a clean list of non-empty origins."""

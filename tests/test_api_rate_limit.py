@@ -67,17 +67,34 @@ def _request_with_headers(headers: dict[str, str]) -> StarletteRequest:
 
 
 @contextmanager
-def _temporary_route_limit(endpoint_name: str, limit_str: str):
+def _temporary_route_limit(endpoint_name: str, limit_str: str, *, index: int = 0):
+    """Temporarily swap a route's slowapi limit. Token-keyed routes that
+    stack a per-IP umbrella have two entries — pass ``index=1`` to swap
+    the umbrella, leaving the per-token bucket alone (or vice versa)."""
     route_key = f"app.api.{endpoint_name}"
     route_limits = limiter._route_limits[route_key]
-    original = route_limits[0].limit
-    route_limits[0].limit = parse(limit_str)
+    original = route_limits[index].limit
+    route_limits[index].limit = parse(limit_str)
     limiter.reset()
     try:
         yield
     finally:
-        route_limits[0].limit = original
+        route_limits[index].limit = original
         limiter.reset()
+
+
+def _ip_umbrella_index(endpoint_name: str) -> int:
+    """Locate which ``_route_limits`` entry on a token-keyed endpoint is the
+    per-IP umbrella (key_func == get_remote_address), not the per-token
+    bucket. slowapi's storage order is decorator-registration order; the
+    umbrella sits at a different index per route depending on which
+    decorator was written innermost."""
+    route_key = f"app.api.{endpoint_name}"
+    route_limits = limiter._route_limits[route_key]
+    for index, limit in enumerate(route_limits):
+        if limit.key_func is get_remote_address:
+            return index
+    raise AssertionError(f"{route_key} has no per-IP umbrella decorator")
 
 
 @pytest.fixture
@@ -133,32 +150,59 @@ def test_limiter_import_and_main_app_state():
 
 
 def test_api_route_limits_match_documented_scope():
+    # Each entry: route_key -> list of (limit_str, key_func) tuples, one per
+    # ``@limiter.limit`` decorator on the handler. Token-keyed routes stack
+    # a per-IP umbrella on top of their per-token bucket so an attacker
+    # cycling garbage X-Ewash-Token values can't bypass the per-token cap
+    # by spawning a fresh slowapi bucket per request (ewash-byd).
     expected = {
-        "app.api.get_services": (settings.rate_limit_catalog_per_ip, get_remote_address),
-        "app.api.list_catalog_centers": (
-            settings.rate_limit_catalog_per_ip,
-            get_remote_address,
-        ),
-        "app.api.list_catalog_time_slots": (
-            settings.rate_limit_catalog_per_ip,
-            get_remote_address,
-        ),
-        "app.api.list_catalog_closed_dates": (
-            settings.rate_limit_catalog_per_ip,
-            get_remote_address,
-        ),
-        "app.api.get_bootstrap": (settings.rate_limit_catalog_per_ip, get_remote_address),
-        "app.api.validate_promo": (settings.rate_limit_promo_per_ip, get_remote_address),
-        "app.api.create_booking": (settings.rate_limit_bookings_per_ip, get_remote_address),
-        "app.api.list_bookings": (settings.rate_limit_bookings_list_per_token, _token_key_func),
+        "app.api.get_services": [
+            (settings.rate_limit_catalog_per_ip, get_remote_address),
+        ],
+        "app.api.list_catalog_centers": [
+            (settings.rate_limit_catalog_per_ip, get_remote_address),
+        ],
+        "app.api.list_catalog_time_slots": [
+            (settings.rate_limit_catalog_per_ip, get_remote_address),
+        ],
+        "app.api.list_catalog_closed_dates": [
+            (settings.rate_limit_catalog_per_ip, get_remote_address),
+        ],
+        "app.api.get_bootstrap": [
+            (settings.rate_limit_catalog_per_ip, get_remote_address),
+        ],
+        "app.api.validate_promo": [
+            (settings.rate_limit_promo_per_ip, get_remote_address),
+        ],
+        "app.api.create_booking": [
+            (settings.rate_limit_bookings_per_ip, get_remote_address),
+        ],
+        "app.api.list_bookings": [
+            (settings.rate_limit_bookings_list_per_token, _token_key_func),
+            (settings.rate_limit_token_endpoints_per_ip, get_remote_address),
+        ],
+        "app.api.revoke_token": [
+            (settings.rate_limit_token_revoke_per_token, _token_key_func),
+            (settings.rate_limit_token_endpoints_per_ip, get_remote_address),
+        ],
+        "app.api.delete_my_account": [
+            (settings.rate_limit_me_delete_per_token, _token_key_func),
+            (settings.rate_limit_token_endpoints_per_ip, get_remote_address),
+        ],
     }
 
-    for route_key, (limit_str, key_func) in expected.items():
+    for route_key, decorators in expected.items():
         route_limits = limiter._route_limits.get(route_key)
         assert route_limits, f"{route_key} has no slowapi limit"
-        assert len(route_limits) == 1
-        assert route_limits[0].limit == parse(limit_str)
-        assert route_limits[0].key_func is key_func
+        assert len(route_limits) == len(decorators), (
+            f"{route_key} has {len(route_limits)} limit decorators, "
+            f"expected {len(decorators)}"
+        )
+        # slowapi stores decorators in reverse order (innermost decorator
+        # runs first), so iterate the expected list in reverse too.
+        for actual, (limit_str, key_func) in zip(route_limits, list(reversed(decorators))):
+            assert actual.limit == parse(limit_str)
+            assert actual.key_func is key_func
 
 
 def test_catalog_categories_route_is_intentionally_unlimited():
@@ -229,6 +273,77 @@ def test_per_ip_cap_on_bookings(api_db, monkeypatch):
 
     assert [response.status_code for response in responses[:20]] == [200] * 20
     _assert_rate_limit_envelope(responses[20])
+
+
+def test_token_endpoints_per_ip_umbrella_blocks_garbage_token_spam(api_db):
+    """Regression for ewash-byd. ``_token_key_func`` keys each *distinct*
+    token string into its own slowapi bucket — without an IP umbrella an
+    attacker rotating garbage ``X-Ewash-Token`` values would never trip the
+    per-token cap on GET /bookings (or POST /tokens/revoke or DELETE /me)
+    because each fake token spawns a fresh bucket. The dual-decorator stack
+    adds a per-IP umbrella that caps the aggregate request rate from one
+    origin regardless of how many distinct tokens are presented."""
+    client = _api_client()
+
+    # Use a tight 5/hour umbrella so the test doesn't need 600+ requests.
+    # The per-token bucket is left alone — each garbage token would
+    # otherwise sit in its own ample bucket and never trip the per-token
+    # cap on its own.
+    ip_index = _ip_umbrella_index("list_bookings")
+    with _temporary_route_limit("list_bookings", "5/hour", index=ip_index):
+        responses = [
+            client.get(
+                "/api/v1/bookings",
+                headers={"X-Ewash-Token": f"garbage-{index:06d}"},
+            )
+            for index in range(7)
+        ]
+
+    # First 5 land on the underlying handler (each 401s with invalid_token
+    # because the token doesn't resolve), then the IP umbrella fires.
+    statuses = [r.status_code for r in responses]
+    assert statuses[:5] == [401] * 5, f"unexpected statuses: {statuses}"
+    assert statuses[5] == 429, f"6th request should be IP-capped: {statuses}"
+    assert statuses[6] == 429, f"7th request should also be IP-capped: {statuses}"
+
+    # The 429 carries the canonical envelope.
+    _assert_rate_limit_envelope(responses[5])
+
+
+def test_token_endpoints_per_ip_umbrella_also_caps_revoke_and_me_delete(api_db):
+    """Same protection applies to the other two token-keyed routes."""
+    client = _api_client()
+
+    revoke_ip_index = _ip_umbrella_index("revoke_token")
+    with _temporary_route_limit("revoke_token", "3/hour", index=revoke_ip_index):
+        responses = [
+            client.post(
+                "/api/v1/tokens/revoke",
+                json={"scope": "current"},
+                headers={"X-Ewash-Token": f"revoke-garbage-{index:06d}"},
+            )
+            for index in range(5)
+        ]
+    statuses = [r.status_code for r in responses]
+    assert statuses[:3] == [401] * 3, statuses
+    assert statuses[3] == 429, statuses
+    assert statuses[4] == 429, statuses
+
+    me_ip_index = _ip_umbrella_index("delete_my_account")
+    with _temporary_route_limit("delete_my_account", "3/hour", index=me_ip_index):
+        responses = [
+            client.request(
+                "DELETE",
+                "/api/v1/me",
+                json={"confirm": "I confirm I want to delete my data"},
+                headers={"X-Ewash-Token": f"me-garbage-{index:06d}"},
+            )
+            for index in range(5)
+        ]
+    statuses = [r.status_code for r in responses]
+    assert statuses[:3] == [401] * 3, statuses
+    assert statuses[3] == 429, statuses
+    assert statuses[4] == 429, statuses
 
 
 def test_per_ip_cap_on_promo_validate():

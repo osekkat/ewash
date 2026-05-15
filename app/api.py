@@ -1003,6 +1003,7 @@ async def get_bootstrap(
 
 @router.get("/bookings", response_model=BookingsListResponse)
 @limiter.limit(settings.rate_limit_bookings_list_per_token, key_func=_token_key_func)
+@limiter.limit(settings.rate_limit_token_endpoints_per_ip, key_func=get_remote_address)
 async def list_bookings(
     request: Request,
     response: Response,
@@ -1088,6 +1089,7 @@ async def list_bookings(
     response_model_exclude_none=True,
 )
 @limiter.limit(settings.rate_limit_token_revoke_per_token, key_func=_token_key_func)
+@limiter.limit(settings.rate_limit_token_endpoints_per_ip, key_func=get_remote_address)
 async def revoke_token(
     request: Request,
     response: Response,
@@ -1143,6 +1145,7 @@ async def revoke_token(
 
 @router.delete("/me", response_model=MeDeleteResponse)
 @limiter.limit(settings.rate_limit_me_delete_per_token, key_func=_token_key_func)
+@limiter.limit(settings.rate_limit_token_endpoints_per_ip, key_func=get_remote_address)
 async def delete_my_account(
     request: Request,
     response: Response,
