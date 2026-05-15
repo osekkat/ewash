@@ -808,6 +808,65 @@ button.chip:active { transform: scale(0.95); }
 }
 
 /* Toast */
+.draft-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+.draft-banner-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  background: var(--primary-soft);
+  color: var(--primary-soft-text);
+}
+.draft-banner-title {
+  font-size: 14px;
+  font-weight: 760;
+  line-height: 1.25;
+}
+.draft-banner-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+.draft-banner-link,
+.draft-banner-primary {
+  min-height: 34px;
+  border-radius: 8px;
+  padding: 0 10px;
+  font-size: 12.5px;
+  font-weight: 760;
+}
+.draft-banner-link {
+  color: var(--text-2);
+  background: transparent;
+}
+.draft-banner-primary {
+  color: var(--primary-soft-text);
+  background: var(--primary-soft);
+}
+@media (max-width: 420px) {
+  .draft-banner {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+  .draft-banner-actions {
+    width: 100%;
+    justify-content: flex-end;
+    padding-inline-start: 48px;
+  }
+}
 .step-error {
   display: flex;
   align-items: flex-start;

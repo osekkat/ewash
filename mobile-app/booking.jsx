@@ -9,6 +9,9 @@ const STEPS_MOTO = ['category', 'location', 'service', 'date', 'note'];
 const MOTO_CATEGORY = 'MOTO';
 const DEFAULT_STAFF_CONTACT = { available: false, whatsapp_phone: '' };
 const FALLBACK_STAFF_WHATSAPP = '+212611204502';
+const BOOKING_DRAFT_STORAGE_KEY = 'ewash.booking_draft';
+const BOOKING_DRAFT_MAX_AGE_MS = 60 * 60 * 1000;
+const BOOKING_DRAFT_SCHEMA_VERSION = 1;
 
 const CATEGORY_ICONS = {
   A: Icons.Car,
@@ -124,6 +127,144 @@ function _bookingDataSize(data) {
   } catch (_) {
     return 0;
   }
+}
+
+function _initialBookingData(profile) {
+  return {
+    name: (profile && profile.name) || '',
+    phone: '', // collected in the recap step (replaces the old OTP login flow)
+    category: null, // 'A' | 'B' | 'C' | 'MOTO'
+    make: '', color: '', plate: '',
+    locationKind: null, // 'home' | 'center'
+    pinAddress: '173 Bd Anfa, Casablanca',
+    addressDetails: '',
+    centerId: null,
+    promoCode: null,
+    promoApplied: false,
+    service: null,
+    date: null, // { d, m, y, label }
+    time: null,
+    note: '',
+    addons: [],
+    clientRequestId: null,
+  };
+}
+
+function _draftLog(level, event, payload) {
+  if (typeof window === 'undefined' || !window.EwashLog) return;
+  const fn = window.EwashLog[level] || window.EwashLog.info;
+  if (typeof fn === 'function') fn.call(window.EwashLog, event, payload || {});
+}
+
+function _draftHasProgress(data, step, history) {
+  if (step && step !== 'category') return true;
+  if (Array.isArray(history) && history.length > 0) return true;
+  if (!data) return false;
+  return !!(
+    data.category ||
+    data.make ||
+    data.color ||
+    data.plate ||
+    data.locationKind ||
+    data.addressDetails ||
+    data.centerId ||
+    data.promoCode ||
+    data.service ||
+    data.date ||
+    data.time ||
+    data.note ||
+    data.phone ||
+    data.clientRequestId ||
+    (Array.isArray(data.addons) && data.addons.length > 0)
+  );
+}
+
+function _sanitizeDraftService(service) {
+  if (!service) return null;
+  if (typeof service === 'string') return { id: service };
+  if (service.id) return { id: service.id };
+  return null;
+}
+
+function _sanitizeDraftData(data) {
+  const draftData = Object.assign({}, data || {});
+  draftData.service = _sanitizeDraftService(draftData.service);
+  draftData.addons = Array.isArray(draftData.addons) ? draftData.addons.slice() : [];
+  return draftData;
+}
+
+function _restoreDraftData(profile, draftData, clientRequestId) {
+  const restored = Object.assign(
+    {},
+    _initialBookingData(profile),
+    draftData || {}
+  );
+  restored.service = _sanitizeDraftService(restored.service);
+  restored.addons = Array.isArray(restored.addons) ? restored.addons : [];
+  if (clientRequestId && !restored.clientRequestId) restored.clientRequestId = clientRequestId;
+  return restored;
+}
+
+function _saveDraft(data, step, history, clientRequestId) {
+  if (typeof localStorage === 'undefined') return;
+  if (step === 'confirmed') return;
+  if (!_draftHasProgress(data, step, history)) return;
+  const draftData = _sanitizeDraftData(data);
+  const payload = {
+    data: draftData,
+    step: step,
+    history: Array.isArray(history) ? history.slice() : [],
+    clientRequestId: clientRequestId || draftData.clientRequestId || null,
+    saved_at: Date.now(),
+    schema_version: BOOKING_DRAFT_SCHEMA_VERSION,
+  };
+  try {
+    localStorage.setItem(BOOKING_DRAFT_STORAGE_KEY, JSON.stringify(payload));
+    _draftLog('info', 'booking.draft.saved', {
+      step: step,
+      data_size: _bookingDataSize(draftData),
+    });
+  } catch (err) {
+    _draftLog('warn', 'booking.draft.save_error', { error: String(err) });
+  }
+}
+
+function _clearDraft() {
+  try {
+    if (typeof localStorage !== 'undefined') localStorage.removeItem(BOOKING_DRAFT_STORAGE_KEY);
+  } catch (_) {}
+  _draftLog('info', 'booking.draft.cleared', {});
+}
+
+function _loadDraft() {
+  if (typeof localStorage === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem(BOOKING_DRAFT_STORAGE_KEY);
+    if (!raw) return null;
+    const draft = JSON.parse(raw);
+    const savedAt = Number(draft && draft.saved_at);
+    const ageMs = Date.now() - (savedAt || 0);
+    if (!savedAt || ageMs > BOOKING_DRAFT_MAX_AGE_MS) {
+      _draftLog('info', 'booking.draft.expired', { age_ms: ageMs });
+      _clearDraft();
+      return null;
+    }
+    if (draft.schema_version !== BOOKING_DRAFT_SCHEMA_VERSION || !draft.data || typeof draft.data !== 'object') {
+      _draftLog('warn', 'booking.draft.schema_mismatch', { found: draft.schema_version });
+      _clearDraft();
+      return null;
+    }
+    _draftLog('info', 'booking.draft.loaded', { step: draft.step, age_ms: ageMs });
+    return draft;
+  } catch (err) {
+    _draftLog('warn', 'booking.draft.load_error', { error: String(err) });
+    return null;
+  }
+}
+
+function _draftAgeMinutes(draft) {
+  if (!draft || !draft.saved_at) return 0;
+  return Math.max(0, Math.round((Date.now() - Number(draft.saved_at)) / 60000));
 }
 
 function _payloadFromBookingData(d) {
@@ -264,27 +405,16 @@ function _markHandled(err) {
 // BOOKING ROOT — state machine
 // ─────────────────────────────────────────────────────────────
 function BookingFlow({ t, lang, theme, variant, onClose, onComplete, profile }) {
-  const [data, setData] = useS_b({
-    name: profile.name,
-    phone: '', // collected in the recap step (replaces the old OTP login flow)
-    category: null, // 'A' | 'B' | 'C' | 'MOTO'
-    make: '', color: '', plate: '',
-    locationKind: null, // 'home' | 'center'
-    pinAddress: '173 Bd Anfa, Casablanca',
-    addressDetails: '',
-    centerId: null,
-    promoCode: null,
-    promoApplied: false,
-    service: null,
-    date: null, // { d, m, y, label }
-    time: null,
-    note: '',
-    addons: [],
-    clientRequestId: null,
-  });
+  const [draftAtOpen] = useS_b(() => _loadDraft());
+  const [showDraftBanner, setShowDraftBanner] = useS_b(() => !!draftAtOpen);
+  const [data, setData] = useS_b(() => draftAtOpen
+    ? _restoreDraftData(profile, draftAtOpen.data, draftAtOpen.clientRequestId)
+    : _initialBookingData(profile));
 
-  const [step, setStep] = useS_b('category');
-  const [history, setHistory] = useS_b([]);
+  const [step, setStep] = useS_b(() => draftAtOpen && draftAtOpen.step ? draftAtOpen.step : 'category');
+  const [history, setHistory] = useS_b(() => Array.isArray(draftAtOpen && draftAtOpen.history)
+    ? draftAtOpen.history
+    : []);
   const [toastMsg, setToastMsg] = useS_b(null);
   const [bootstrap, setBootstrap] = useS_b(null);
   const [bootstrapErr, setBootstrapErr] = useS_b(null);
@@ -316,6 +446,35 @@ function BookingFlow({ t, lang, theme, variant, onClose, onComplete, profile }) 
   const slotsList = bootstrap?.time_slots || [];
   const staffContact = bootstrap?.staff_contact || DEFAULT_STAFF_CONTACT;
   const rateLimitRemaining = Math.max(0, Math.ceil((submitDisabledUntil - clockTick) / 1000));
+  const draftAgeMinutes = _draftAgeMinutes(draftAtOpen);
+
+  const resetToInitialState = () => {
+    setData(_initialBookingData(profile));
+    setStep('category');
+    setHistory([]);
+    setFieldErrors({});
+    setStepError(null);
+    setConfirmedRef('');
+    setConfirmedTotal(null);
+    setConsecutiveInfraFailures(0);
+    setConsecutiveTimeouts(0);
+    setSubmitDisabledUntil(0);
+  };
+
+  const discardDraft = () => {
+    _clearDraft();
+    resetToInitialState();
+    setShowDraftBanner(false);
+  };
+
+  useE_b(() => {
+    if (step === 'confirmed') return;
+    _saveDraft(data, step, history, data.clientRequestId);
+  }, [data, step, history]);
+
+  useE_b(() => {
+    if (step === 'confirmed') _clearDraft();
+  }, [step]);
 
   useE_b(() => {
     const updateOnlineState = () => setIsOnline(_isBrowserOnline());
@@ -615,6 +774,16 @@ function BookingFlow({ t, lang, theme, variant, onClose, onComplete, profile }) 
       />
 
       <div className="app-scroll flex-1">
+        {showDraftBanner && step !== 'confirmed' && (
+          <div className="px-16 mb-12" style={{ paddingTop: 16 }}>
+            <DraftResumeBanner
+              t={t}
+              ageMinutes={draftAgeMinutes}
+              onResume={() => setShowDraftBanner(false)}
+              onDiscard={discardDraft}
+            />
+          </div>
+        )}
         {!isOnline && (
           <OfflineCard
             t={t}
@@ -786,6 +955,30 @@ function BookingFlowSkeleton({ t, title, subtitle }) {
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+function DraftResumeBanner({ t, ageMinutes, onResume, onDiscard }) {
+  return (
+    <div className="draft-banner">
+      <div className="draft-banner-icon">
+        <Icons.Clock size={18}/>
+      </div>
+      <div className="col gap-4 flex-1" style={{ minWidth: 0 }}>
+        <div className="draft-banner-title">{t.draftFound}</div>
+        <div className="t-muted" style={{ fontSize: 12.5 }}>
+          {_replaceToken(t.draftAgeMinutes, 'minutes', ageMinutes)}
+        </div>
+      </div>
+      <div className="draft-banner-actions">
+        <button className="draft-banner-link" onClick={onDiscard}>
+          {t.draftDiscard}
+        </button>
+        <button className="draft-banner-primary" onClick={onResume}>
+          {t.draftResume}
+        </button>
+      </div>
     </div>
   );
 }
