@@ -196,7 +196,9 @@ AGENTS.md                         Guidelines for AI coding agents — authoritat
 ## Documentation
 
 - `AGENTS.md` — contributor guidelines, toolchain rules, code-editing discipline, testing policy, and the full set of product invariants (read this first).
+- `CHANGELOG.md` — versioned release notes (Keep a Changelog format).
 - `plan.md` — PWA ↔ backend integration plan (in progress; see `br ready` for live status).
 - `docs/adr/` — architectural decision records (planned, see `br-ewash-6pa.8.10`).
 - `docs/runbooks/` — ops procedures for staging dry-runs, production migration apply, rollback, and common API failures (planned, see `br-ewash-6pa.8.11`).
+- `docs/compliance/` — Loi 09-08 / GDPR data-erasure policy and operator runbook.
 - `.beads/` — issue tracker state; use `br ready` / `bv --robot-triage` for actionable work.
