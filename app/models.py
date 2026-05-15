@@ -47,7 +47,7 @@ FINAL_BOOKING_STATUSES = (
 _ALLOWED_STATUS_TRANSITIONS: dict[str, set[str]] = {
     "draft": {"awaiting_confirmation", "expired", "customer_cancelled", "admin_cancelled"},
     "awaiting_confirmation": {"pending_ewash_confirmation", "expired", "customer_cancelled", "admin_cancelled"},
-    "pending_ewash_confirmation": {"confirmed", "rescheduled", "customer_cancelled", "admin_cancelled", "expired"},
+    "pending_ewash_confirmation": {"confirmed", "customer_cancelled", "admin_cancelled", "expired"},
     "confirmed": {
         "rescheduled",
         "customer_cancelled",

@@ -69,6 +69,16 @@ def test_invalid_booking_status_transition_is_rejected():
         transition_booking_status(booking, "in_progress", actor="admin")
 
 
+def test_pending_booking_cannot_skip_ewash_confirmation_to_rescheduled():
+    booking = BookingRecord(phone="212665883062", status="pending_ewash_confirmation")
+
+    with pytest.raises(ValueError, match="pending_ewash_confirmation -> rescheduled"):
+        transition_booking_status(booking, "rescheduled", actor="admin")
+
+    assert booking.status == "pending_ewash_confirmation"
+    assert booking.status_events == []
+
+
 def test_reminders_are_generated_from_active_rules_for_confirmed_bookings_only():
     appointment = datetime(2026, 5, 1, 10, 0, tzinfo=timezone.utc)
     booking = BookingRecord(
