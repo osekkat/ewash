@@ -19,7 +19,9 @@ from app.models import (
     ConversationSessionRow,
     Customer,
     CustomerName,
+    CustomerTokenRow,
     CustomerVehicle,
+    DataErasureAuditRow,
     PromoCodeRow,
     PromoDiscountRow,
     ReminderRuleRow,
@@ -433,3 +435,233 @@ def test_migration_0006_source_check_rejects_invalid():
                 "VALUES ('212600000001','draft','EW-2026-CHECK','Test','bogus')"
             ))
             conn.commit()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PWA integration models (br-ewash-6pa.1.3 / 1.4 / 1.5)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_create_all_emits_pwa_integration_tables_and_columns():
+    """Fresh SQLite via `create_all` must produce every PWA-integration entity.
+
+    Mirrors `test_migration_0006_sqlite_roundtrip` but exercises the model-
+    declaration path directly so a missing __tablename__ / mapped_column is
+    caught even on dialects where the migration's defensive create_all branch
+    isn't hit.
+    """
+    engine = make_engine("sqlite+pysqlite:///:memory:")
+    init_db(engine)
+    insp = inspect(engine)
+
+    tables = set(insp.get_table_names())
+    assert {"customer_tokens", "data_erasure_audit"}.issubset(tables)
+
+    bookings_columns = {c["name"] for c in insp.get_columns("bookings")}
+    assert {"client_request_id", "source"}.issubset(bookings_columns)
+
+    token_columns = {c["name"] for c in insp.get_columns("customer_tokens")}
+    assert {
+        "id",
+        "token_hash",
+        "customer_phone",
+        "created_at",
+        "last_used_at",
+    }.issubset(token_columns)
+
+    erasure_columns = {c["name"] for c in insp.get_columns("data_erasure_audit")}
+    assert {
+        "id",
+        "phone_hash",
+        "actor",
+        "deleted_count",
+        "anonymized_bookings",
+        "performed_at",
+        "notes",
+    }.issubset(erasure_columns)
+
+
+def test_customer_token_roundtrip_via_orm():
+    """Insert + read a CustomerTokenRow through SQLAlchemy ORM."""
+    engine = make_engine("sqlite+pysqlite:///:memory:")
+    init_db(engine)
+
+    with session_scope(engine) as session:
+        session.add(Customer(phone="212600000010", display_name="Alice"))
+        session.flush()
+        session.add(CustomerTokenRow(
+            customer_phone="212600000010",
+            token_hash="a" * 64,
+        ))
+
+    with session_scope(engine) as session:
+        token = session.scalars(select(CustomerTokenRow)).one()
+        assert token.customer_phone == "212600000010"
+        assert token.token_hash == "a" * 64
+        assert token.last_used_at is None
+        # Relationship roundtrip: Customer.tokens loads the row back.
+        customer = session.get(Customer, "212600000010")
+        assert len(customer.tokens) == 1
+        assert customer.tokens[0].token_hash == "a" * 64
+
+
+def test_customer_token_hash_unique_constraint():
+    """A second token with the same hash must fail the unique constraint."""
+    engine = make_engine("sqlite+pysqlite:///:memory:")
+    init_db(engine)
+
+    with session_scope(engine) as session:
+        session.add(Customer(phone="212600000020", display_name="Bob"))
+        session.flush()
+        session.add(CustomerTokenRow(customer_phone="212600000020", token_hash="b" * 64))
+
+    from sqlalchemy.exc import IntegrityError
+
+    with pytest.raises(IntegrityError):
+        with session_scope(engine) as session:
+            session.add(CustomerTokenRow(customer_phone="212600000020", token_hash="b" * 64))
+
+
+def test_customer_token_cascade_delete_when_customer_deleted():
+    """Customer.tokens cascade-delete-orphan removes child tokens with the parent."""
+    engine = make_engine("sqlite+pysqlite:///:memory:")
+    # Enable SQLite FK enforcement so ondelete=CASCADE behaves as on Postgres.
+    with engine.connect() as conn:
+        conn.execute(text("PRAGMA foreign_keys=ON"))
+        conn.commit()
+    init_db(engine)
+    with engine.connect() as conn:
+        conn.execute(text("PRAGMA foreign_keys=ON"))
+        conn.commit()
+
+    with session_scope(engine) as session:
+        session.add(Customer(phone="212600000030", display_name="Carol"))
+        session.flush()
+        session.add(CustomerTokenRow(customer_phone="212600000030", token_hash="c" * 64))
+
+    with session_scope(engine) as session:
+        customer = session.get(Customer, "212600000030")
+        session.delete(customer)
+
+    with session_scope(engine) as session:
+        # ORM-level cascade (relationship cascade="all, delete-orphan") removes children
+        # when the parent is deleted via session.delete().
+        assert session.scalars(select(CustomerTokenRow)).all() == []
+
+
+def test_data_erasure_audit_roundtrip_via_orm():
+    """Insert + read a DataErasureAuditRow through ORM. Privacy: no raw phone column."""
+    engine = make_engine("sqlite+pysqlite:///:memory:")
+    init_db(engine)
+
+    with session_scope(engine) as session:
+        session.add(DataErasureAuditRow(
+            phone_hash="d" * 64,
+            actor="admin:operator1",
+            deleted_count=2,
+            anonymized_bookings=5,
+            notes="Support ticket #12345",
+        ))
+
+    with session_scope(engine) as session:
+        audit = session.scalars(select(DataErasureAuditRow)).one()
+        assert audit.phone_hash == "d" * 64
+        assert audit.actor == "admin:operator1"
+        assert audit.deleted_count == 2
+        assert audit.anonymized_bookings == 5
+        assert audit.notes == "Support ticket #12345"
+        assert audit.performed_at is not None
+        # Server default supplies the timestamp without the caller setting it.
+        assert audit.id is not None
+
+
+def test_data_erasure_audit_has_no_pii_columns():
+    """Privacy invariant: no field stores raw phone or other direct PII."""
+    engine = make_engine("sqlite+pysqlite:///:memory:")
+    init_db(engine)
+    columns = {c["name"] for c in inspect(engine).get_columns("data_erasure_audit")}
+    # Only phone_hash is allowed; never `phone` or `customer_phone`.
+    assert "phone" not in columns
+    assert "customer_phone" not in columns
+    # phone_hash IS expected.
+    assert "phone_hash" in columns
+
+
+def test_bookings_source_default_is_whatsapp():
+    """A BookingRow constructed without `source` defaults to 'whatsapp'.
+
+    Belt-and-suspenders: both the Python-side `default="whatsapp"` and the
+    DB-side `server_default="whatsapp"` should produce the same result. The
+    persistence layer always sets it explicitly post-integration, but legacy
+    WhatsApp insert paths that omit the column must still land as 'whatsapp'.
+    """
+    engine = make_engine("sqlite+pysqlite:///:memory:")
+    init_db(engine)
+
+    with session_scope(engine) as session:
+        session.add(Customer(phone="212600000040", display_name="Dan"))
+        session.flush()
+        session.add(BookingRow(
+            customer_phone="212600000040", status="draft",
+            ref="EW-2026-SRC1", customer_name="Dan",
+        ))
+
+    with session_scope(engine) as session:
+        booking = session.scalars(select(BookingRow)).one()
+        assert booking.source == "whatsapp"
+
+
+def test_bookings_source_accepts_api_and_admin_via_orm():
+    """ORM `source='api'` and `source='admin'` roundtrip cleanly (Pydantic enforces
+    the allow-list at the API boundary; the model just stores the string)."""
+    engine = make_engine("sqlite+pysqlite:///:memory:")
+    init_db(engine)
+
+    with session_scope(engine) as session:
+        session.add(Customer(phone="212600000050", display_name="Eve"))
+        session.flush()
+        session.add(BookingRow(
+            customer_phone="212600000050", status="draft", ref="EW-2026-SRC2",
+            customer_name="Eve", source="api",
+        ))
+        session.add(BookingRow(
+            customer_phone="212600000050", status="draft", ref="EW-2026-SRC3",
+            customer_name="Eve", source="admin",
+        ))
+
+    with session_scope(engine) as session:
+        sources = {
+            row.source
+            for row in session.scalars(select(BookingRow).order_by(BookingRow.ref)).all()
+        }
+        assert sources == {"api", "admin"}
+
+
+def test_bookings_client_request_id_is_nullable_and_roundtrips():
+    """Two bookings without client_request_id co-exist; one with a value roundtrips."""
+    engine = make_engine("sqlite+pysqlite:///:memory:")
+    init_db(engine)
+
+    with session_scope(engine) as session:
+        session.add(Customer(phone="212600000060", display_name="Fay"))
+        session.flush()
+        session.add(BookingRow(
+            customer_phone="212600000060", status="draft", ref="EW-2026-CRI1",
+            customer_name="Fay",
+        ))
+        session.add(BookingRow(
+            customer_phone="212600000060", status="draft", ref="EW-2026-CRI2",
+            customer_name="Fay",
+        ))
+        session.add(BookingRow(
+            customer_phone="212600000060", status="draft", ref="EW-2026-CRI3",
+            customer_name="Fay", client_request_id="11111111-2222-3333-4444-555555555555",
+        ))
+
+    with session_scope(engine) as session:
+        rows = list(
+            session.scalars(select(BookingRow).order_by(BookingRow.ref)).all()
+        )
+        assert rows[0].client_request_id is None
+        assert rows[1].client_request_id is None
+        assert rows[2].client_request_id == "11111111-2222-3333-4444-555555555555"

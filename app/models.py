@@ -97,6 +97,7 @@ class Customer(Base):
     vehicles: Mapped[list["CustomerVehicle"]] = relationship(back_populates="customer", cascade="all, delete-orphan")
     bookings: Mapped[list["BookingRow"]] = relationship(back_populates="customer")
     conversation_sessions: Mapped[list["ConversationSessionRow"]] = relationship(back_populates="customer")
+    tokens: Mapped[list["CustomerTokenRow"]] = relationship(back_populates="customer", cascade="all, delete-orphan")
 
 
 class CustomerName(Base):
@@ -291,6 +292,11 @@ class BookingRow(Base):
         CheckConstraint("price_regular_dh >= 0", name="ck_bookings_regular_price_nonnegative"),
         CheckConstraint("addon_price_dh >= 0", name="ck_bookings_addon_price_nonnegative"),
     )
+    # Note: `ck_bookings_source` is added by migration 0006 on Postgres only.
+    # SQLite enforcement of `source IN (...)` is left to Pydantic + persistence
+    # validation per the same defensive pattern as `ck_bookings_status` — see
+    # migration 0003. Declaring it here would block the migration's downgrade
+    # path on SQLite (DROP COLUMN refuses if a CHECK references it).
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     ref: Mapped[str] = mapped_column(String(32), default="", index=True)
@@ -330,6 +336,16 @@ class BookingRow(Base):
     appointment_start_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     appointment_end_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     timezone_name: Mapped[str] = mapped_column(String(80), default="Africa/Casablanca")
+    # `unique=True` / `index=True` are deliberately omitted on `client_request_id`.
+    # Migration 0006 adds a Postgres partial unique index
+    # (`ix_bookings_client_request_id_partial WHERE client_request_id IS NOT NULL`)
+    # which is the production enforcement path. Adding an unnamed unique index
+    # in the model would survive `Base.metadata.create_all` on SQLite and then
+    # block migration 0006's downgrade (`ALTER TABLE DROP COLUMN` refuses if any
+    # index references the column). The persistence-level idempotency lookup
+    # (`find_booking_by_client_request_id`) handles dedup logic in code.
+    client_request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source: Mapped[str] = mapped_column(String(16), nullable=False, server_default="whatsapp", default="whatsapp", index=True)
     raw_booking_json: Mapped[str] = mapped_column(Text, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -663,3 +679,72 @@ def timedelta_minutes(minutes: int):
     from datetime import timedelta
 
     return timedelta(minutes=minutes)
+
+
+class CustomerTokenRow(Base):
+    """Opaque session tokens for the PWA Bookings tab.
+
+    Stored as SHA-256 hex; the plaintext is returned to the PWA exactly once
+    at booking creation. A DB dump never yields an active session token.
+
+    Multiple rows per customer_phone are allowed (one per device that received
+    a fresh-mint token). Old rows remain valid until an admin revocation pass
+    purges them — out of scope for v1.
+
+    Index names match Alembic migration 0006 so the SQLite test path
+    (`Base.metadata.create_all`) and the Postgres production path produce
+    indexes with identical names.
+    """
+
+    __tablename__ = "customer_tokens"
+    __table_args__ = (
+        UniqueConstraint("token_hash", name="uq_customer_tokens_token_hash"),
+        Index("ix_customer_tokens_phone", "customer_phone"),
+        Index("ix_customer_tokens_last_used", "last_used_at"),
+    )
+
+    # Integer (not BigInteger) — the existing convention across this models module.
+    # SQLite needs INTEGER PRIMARY KEY for autoincrement; the migration emits
+    # BIGSERIAL on Postgres which adapts cleanly at read time.
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    customer_phone: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("customers.phone", ondelete="CASCADE"),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    customer: Mapped["Customer"] = relationship(back_populates="tokens")
+
+
+class DataErasureAuditRow(Base):
+    """Append-only audit log of data erasure events (GDPR / Loi 09-08).
+
+    Stores `phone_hash` (SHA-256 hex), NOT raw phone — the audit log itself
+    is privacy-preserving and cannot re-introduce PII. `actor` distinguishes
+    customer self-serve deletions from admin-initiated ones; the counts let
+    compliance reports state "X customers anonymized in period Y".
+
+    Convention: this table is append-only. No UPDATE / DELETE statements
+    should touch existing rows.
+    """
+
+    __tablename__ = "data_erasure_audit"
+    __table_args__ = (
+        Index("ix_data_erasure_audit_performed_at", "performed_at"),
+    )
+
+    # See note on CustomerTokenRow.id for why Integer instead of BigInteger.
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    phone_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    actor: Mapped[str] = mapped_column(String(64), nullable=False)
+    deleted_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    anonymized_bookings: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    performed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
