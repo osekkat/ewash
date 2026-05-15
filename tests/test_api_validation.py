@@ -17,11 +17,15 @@ from app.api_validation import (
     APIValidationError,
     CASABLANCA_TZ,
     ClosedDate,
+    DuplicateAddon,
     InvalidDate,
     InvalidServiceForCategory,
+    NotADetailingService,
     SlotTooSoon,
+    UnknownAddon,
     UnknownService,
     UnknownSlot,
+    validate_addon_ids,
     validate_service_for_category,
     validate_slot_and_date,
 )
@@ -237,3 +241,67 @@ def test_service_validation_exceptions_are_api_validation_errors() -> None:
     assert issubclass(InvalidServiceForCategory, APIValidationError)
     assert UnknownService.error_code == "unknown_service"
     assert InvalidServiceForCategory.error_code == "service_category_mismatch"
+
+
+def test_validate_addon_ids_empty_list_returns_empty() -> None:
+    # Customer skipped the upsell. Empty input is the common case, must pass.
+    assert validate_addon_ids([]) == []
+
+
+def test_validate_addon_ids_returns_same_list_for_all_valid_detailing() -> None:
+    # Two real detailing services from SERVICES_DETAILING — should round-trip.
+    addons = ["svc_cuir", "svc_plastq"]
+    assert validate_addon_ids(addons) == addons
+
+
+def test_validate_addon_ids_rejects_unknown_id() -> None:
+    with pytest.raises(UnknownAddon) as exc_info:
+        validate_addon_ids(["svc_does_not_exist"])
+    assert exc_info.value.error_code == "unknown_addon"
+
+
+def test_validate_addon_ids_rejects_wash_service() -> None:
+    # svc_cpl is wash-bucket — has its own pricing per category, must not
+    # be used as a free-form addon.
+    with pytest.raises(NotADetailingService) as exc_info:
+        validate_addon_ids(["svc_cpl"])
+    assert exc_info.value.error_code == "not_a_detailing_service"
+    assert "bucket=wash" in str(exc_info.value)
+
+
+def test_validate_addon_ids_rejects_moto_service() -> None:
+    # svc_moto is in SERVICES_MOTO — also not a detailing service.
+    with pytest.raises(NotADetailingService) as exc_info:
+        validate_addon_ids(["svc_moto"])
+    assert exc_info.value.error_code == "not_a_detailing_service"
+    assert "bucket=moto" in str(exc_info.value)
+
+
+def test_validate_addon_ids_rejects_duplicates() -> None:
+    # Two BookingLineItemRow rows with the same service_id would be confusing
+    # admin-side and add no value to the customer's upsell list.
+    with pytest.raises(DuplicateAddon) as exc_info:
+        validate_addon_ids(["svc_cuir", "svc_cuir"])
+    assert exc_info.value.error_code == "duplicate_addon"
+
+
+def test_validate_addon_ids_logs_rejection(caplog) -> None:
+    import logging
+
+    caplog.set_level(logging.INFO, logger="app.api_validation")
+    with pytest.raises(UnknownAddon):
+        validate_addon_ids(["svc_unknown"])
+    assert any(
+        "validation.rejection" in rec.message and "addon_id=svc_unknown" in rec.message
+        for rec in caplog.records
+    )
+
+
+def test_validate_addon_ids_exceptions_are_api_validation_errors() -> None:
+    # Stable error_code contract for all three addon-validation exceptions.
+    assert issubclass(UnknownAddon, APIValidationError)
+    assert issubclass(DuplicateAddon, APIValidationError)
+    assert issubclass(NotADetailingService, APIValidationError)
+    assert UnknownAddon.error_code == "unknown_addon"
+    assert DuplicateAddon.error_code == "duplicate_addon"
+    assert NotADetailingService.error_code == "not_a_detailing_service"

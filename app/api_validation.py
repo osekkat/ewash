@@ -22,6 +22,7 @@ from sqlalchemy import Engine
 
 from .catalog import (
     SERVICES_CAR,
+    SERVICES_DETAILING,
     SERVICES_MOTO,
     active_closed_dates,
     active_time_slots,
@@ -70,8 +71,21 @@ class InvalidServiceForCategory(APIValidationError):
     error_code = "service_category_mismatch"
 
 
+class UnknownAddon(APIValidationError):
+    error_code = "unknown_addon"
+
+
+class DuplicateAddon(APIValidationError):
+    error_code = "duplicate_addon"
+
+
+class NotADetailingService(APIValidationError):
+    error_code = "not_a_detailing_service"
+
+
 _CAR_SERVICE_IDS: frozenset[str] = frozenset(sid for sid, *_ in SERVICES_CAR)
 _MOTO_SERVICE_IDS: frozenset[str] = frozenset(sid for sid, *_ in SERVICES_MOTO)
+_DETAILING_SERVICE_IDS: frozenset[str] = frozenset(sid for sid, *_ in SERVICES_DETAILING)
 
 
 def validate_service_for_category(service_id: str, category: str) -> None:
@@ -234,3 +248,61 @@ def clean_text(value: str | None, *, max_len: int) -> str | None:
     if not trimmed:
         return None
     return trimmed[:max_len]
+
+
+def validate_addon_ids(addon_ids: list[str]) -> list[str]:
+    """Return ``addon_ids`` if every id is a known detailing-bucket service.
+
+    Addons in the PWA booking flow are upsells from the ``ESTHÉTIQUE`` /
+    detailing bucket (Polishing, Ceramic, Renovation, Lustre …). Wash-bucket
+    or moto-bucket service ids are rejected — they belong in the main
+    ``service_id`` field, not as addons.
+
+    Parameters
+    ----------
+    addon_ids : list[str]
+        Service ids from the catalog (e.g., ``["svc_cuir", "svc_plastq"]``).
+        An empty list is valid (the customer didn't pick an upsell).
+
+    Returns
+    -------
+    list[str]
+        The same list, unchanged, when every id passes.
+
+    Raises
+    ------
+    DuplicateAddon : if the same id is listed twice (two `BookingLineItemRow`
+        rows with identical service_id would muddy the data; reject early).
+    UnknownAddon : if an id is not in any static service catalog.
+    NotADetailingService : if the id exists but lives in the wash or moto
+        bucket — it cannot be used as an addon.
+    """
+    seen: set[str] = set()
+    for addon_id in addon_ids:
+        if addon_id in seen:
+            log.info(
+                "validation.rejection addon_id=%s reason=duplicate_addon",
+                addon_id,
+            )
+            raise DuplicateAddon(f"addon_id={addon_id} listed twice")
+        seen.add(addon_id)
+
+        if addon_id in _DETAILING_SERVICE_IDS:
+            continue
+        if addon_id in _CAR_SERVICE_IDS or addon_id in _MOTO_SERVICE_IDS:
+            bucket = "moto" if addon_id in _MOTO_SERVICE_IDS else "wash"
+            log.info(
+                "validation.rejection addon_id=%s bucket=%s reason=not_a_detailing_service",
+                addon_id,
+                bucket,
+            )
+            raise NotADetailingService(
+                f"addon_id={addon_id} is in bucket={bucket}, addons must be detailing services"
+            )
+        log.info(
+            "validation.rejection addon_id=%s reason=unknown_addon",
+            addon_id,
+        )
+        raise UnknownAddon(f"addon_id={addon_id} not found")
+
+    return addon_ids
