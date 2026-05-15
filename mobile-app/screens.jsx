@@ -567,8 +567,17 @@ function BookingDetailContent({ booking, onClose, t, lang, staffContact, openBoo
   const addToCalendar = function () {
     if (window.EwashLog) window.EwashLog.info('bookings.detail.calendar', { ref: booking.ref });
     if (window.EwashCalendar && window.EwashCalendar.download) {
-      window.EwashCalendar.download(booking, lang);
-      return;
+      try {
+        window.EwashCalendar.download(booking, lang);
+        return;
+      } catch (err) {
+        if (window.EwashLog) {
+          window.EwashLog.warn('bookings.detail.calendar_error', {
+            ref: booking.ref,
+            error_code: (err && err.error_code) || 'calendar_export_failed',
+          });
+        }
+      }
     }
     // Fallback: Google Calendar template URL. Works on every mobile browser
     // and falls back to a friendly "Add event" UI on desktop.

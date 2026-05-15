@@ -287,6 +287,178 @@
     }
   }
 
+  function _pad2(value) {
+    return String(value).padStart(2, "0");
+  }
+
+  function _dateParts(dateIso) {
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateIso || "");
+    if (!match) return null;
+    return {
+      year: Number(match[1]),
+      month: Number(match[2]),
+      day: Number(match[3]),
+    };
+  }
+
+  function _dateStamp(dateIso, hour) {
+    const parts = _dateParts(dateIso);
+    if (!parts) return "";
+    const totalHours = Number(hour);
+    if (!Number.isFinite(totalHours) || totalHours < 0) return "";
+    const date = new Date(Date.UTC(parts.year, parts.month - 1, parts.day));
+    date.setUTCDate(date.getUTCDate() + Math.floor(totalHours / 24));
+    const localHour = totalHours % 24;
+    return [
+      date.getUTCFullYear(),
+      _pad2(date.getUTCMonth() + 1),
+      _pad2(date.getUTCDate()),
+    ].join("") + "T" + _pad2(localHour) + "0000";
+  }
+
+  function _hourOrNull(value) {
+    const hour = Number(value);
+    if (!Number.isFinite(hour) || hour < 0) return null;
+    return hour;
+  }
+
+  function _slotHours(booking) {
+    let start = _hourOrNull(booking && booking.slot_start_hour);
+    let end = _hourOrNull(booking && booking.slot_end_hour);
+    if (start !== null && end !== null && end > start) return { start: start, end: end };
+
+    const slotId = (booking && booking.slot_id) || "";
+    let match = /^slot_(\d{1,2})_(\d{1,2})$/.exec(slotId);
+    if (!match) {
+      match = /(\d{1,2})(?::\d{2})?\s*[–-]\s*(\d{1,2})(?::\d{2})?/.exec((booking && booking.slot_label) || "");
+    }
+    if (match) {
+      start = Number(match[1]);
+      end = Number(match[2]);
+      if (Number.isFinite(start) && Number.isFinite(end) && end > start) {
+        return { start: start, end: end };
+      }
+    }
+    if (start !== null) return { start: start, end: start + 2 };
+    return null;
+  }
+
+  function _nowIcs() {
+    return new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+  }
+
+  function _escapeIcs(value) {
+    return String(value || "")
+      .replace(/\\/g, "\\\\")
+      .replace(/\r\n|\n|\r/g, "\\n")
+      .replace(/;/g, "\\;")
+      .replace(/,/g, "\\,");
+  }
+
+  function _foldIcsLine(line) {
+    const folded = [];
+    let rest = String(line);
+    const firstLimit = 74;
+    const nextLimit = 73;
+    folded.push(rest.slice(0, firstLimit));
+    rest = rest.slice(firstLimit);
+    while (rest.length > 0) {
+      folded.push(" " + rest.slice(0, nextLimit));
+      rest = rest.slice(nextLimit);
+    }
+    return folded;
+  }
+
+  function _ics(lines) {
+    return lines.reduce(function (acc, line) {
+      return acc.concat(_foldIcsLine(line));
+    }, []).join("\r\n") + "\r\n";
+  }
+
+  function _calendarStatus(status) {
+    const confirmed = [
+      "confirmed",
+      "technician_en_route",
+      "arrived",
+      "in_progress",
+      "completed",
+      "completed_with_issue",
+    ];
+    return confirmed.includes(status) ? "CONFIRMED" : "TENTATIVE";
+  }
+
+  function _calendarDescription(booking) {
+    return [
+      "Ref: " + ((booking && booking.ref) || ""),
+      "Véhicule: " + ((booking && booking.vehicle_label) || ""),
+      "Total: " + ((booking && booking.total_price_dh) || 0) + " DH",
+    ].join("\n");
+  }
+
+  function _calendarFilename(ref) {
+    const safeRef = String(ref || "booking").replace(/[^A-Za-z0-9_-]/g, "-");
+    return "ewash-" + safeRef + ".ics";
+  }
+
+  function canExportCalendar(booking) {
+    return !!(booking && booking.date_iso && _slotHours(booking));
+  }
+
+  function generateIcs(booking) {
+    const hours = _slotHours(booking);
+    const dtStart = hours ? _dateStamp(booking.date_iso, hours.start) : "";
+    const dtEnd = hours ? _dateStamp(booking.date_iso, hours.end) : "";
+    if (!dtStart || !dtEnd) {
+      const err = new Error("Booking is missing calendar date fields");
+      err.error_code = "calendar_missing_date";
+      throw err;
+    }
+    const ref = (booking && booking.ref) || "EWASH";
+    const summary = "Ewash · " + ((booking && booking.service_label) || ref);
+    const lines = [
+      "BEGIN:VCALENDAR",
+      "VERSION:2.0",
+      "PRODID:-//Ewash//Booking//FR",
+      "CALSCALE:GREGORIAN",
+      "METHOD:PUBLISH",
+      "BEGIN:VEVENT",
+      "UID:" + _escapeIcs(ref + "@ewash"),
+      "DTSTAMP:" + _nowIcs(),
+      "DTSTART;TZID=Africa/Casablanca:" + dtStart,
+      "DTEND;TZID=Africa/Casablanca:" + dtEnd,
+      "SUMMARY:" + _escapeIcs(summary),
+      "LOCATION:" + _escapeIcs((booking && booking.location_label) || ""),
+      "DESCRIPTION:" + _escapeIcs(_calendarDescription(booking)),
+      "STATUS:" + _calendarStatus(booking && booking.status),
+      "BEGIN:VALARM",
+      "TRIGGER:-PT2H",
+      "ACTION:DISPLAY",
+      "DESCRIPTION:" + _escapeIcs("Préparez votre véhicule pour le lavage Ewash dans 2h"),
+      "END:VALARM",
+      "END:VEVENT",
+      "END:VCALENDAR",
+    ];
+    return _ics(lines);
+  }
+
+  function downloadIcs(booking, locale) {
+    const ics = generateIcs(booking);
+    const blob = new Blob([ics], { type: "text/calendar;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = _calendarFilename(booking && booking.ref);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setTimeout(function () { URL.revokeObjectURL(url); }, 0);
+    EwashLog.info("calendar.export", {
+      ref: booking && booking.ref,
+      status: booking && booking.status,
+      locale: locale || "",
+    });
+  }
+
   async function getBootstrap(options) {
     const params = options || {};
     const qs = new URLSearchParams();
@@ -378,6 +550,12 @@
     if (response && response.new_token) _saveToken(response.new_token);
     return response;
   }
+
+  window.EwashCalendar = {
+    canExport: canExportCalendar,
+    generateIcs: generateIcs,
+    download: downloadIcs,
+  };
 
   window.EwashAPI = {
     _fetch: _fetch,
