@@ -16,7 +16,7 @@ from functools import lru_cache
 from typing import Iterable
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import Engine, func, select, or_
+from sqlalchemy import Engine, delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -1370,6 +1370,55 @@ def verify_customer_token(
             return None
         row.last_used_at = datetime.now(timezone.utc)
         return row.customer_phone
+
+
+def revoke_token_by_hash(
+    token_hash: str,
+    *,
+    engine: Engine | None = None,
+) -> int:
+    """Delete one customer_tokens row matching the SHA-256 hash.
+
+    Returns the number of rows deleted (0 or 1). The caller is expected to have
+    already hashed the plaintext via `security.hash_token` — accepting the hash
+    directly keeps the plaintext out of this function's parameters so it does
+    not appear in tracebacks or string-formatted log lines.
+    """
+    if not token_hash:
+        return 0
+    db_engine = _engine_or_configured(engine)
+    if db_engine is None:
+        return 0
+    with session_scope(db_engine) as session:
+        result = session.execute(
+            delete(CustomerTokenRow).where(CustomerTokenRow.token_hash == token_hash)
+        )
+        return int(result.rowcount or 0)
+
+
+def revoke_all_tokens_for_phone(
+    customer_phone: str,
+    *,
+    engine: Engine | None = None,
+) -> int:
+    """Delete every customer_tokens row belonging to a phone. Returns the count.
+
+    Used by the "panic" logout scope when a customer reports a lost phone — all
+    tokens are revoked across every device. The customer's next booking mints
+    a fresh token from scratch.
+    """
+    if not customer_phone:
+        return 0
+    db_engine = _engine_or_configured(engine)
+    if db_engine is None:
+        return 0
+    with session_scope(db_engine) as session:
+        result = session.execute(
+            delete(CustomerTokenRow).where(
+                CustomerTokenRow.customer_phone == customer_phone
+            )
+        )
+        return int(result.rowcount or 0)
 
 
 _CUSTOMER_BOOKING_LIST_LIMIT_MAX = 100
