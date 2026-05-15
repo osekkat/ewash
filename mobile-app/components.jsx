@@ -158,8 +158,11 @@ function Btn({ variant = 'primary', block, lg, children, icon, ...rest }) {
 // ─────────────────────────────────────────────────────────────
 function CtaDock({ children, hint }) {
   return (
-    <div style={{
-      padding: '14px 16px 20px',
+    <div className="cta-dock" style={{
+      paddingTop: 14,
+      paddingLeft: 16,
+      paddingRight: 16,
+      paddingBottom: 'calc(20px + env(safe-area-inset-bottom))',
       background: 'var(--bg)',
       borderTop: '1px solid var(--border)',
       boxShadow: '0 -10px 20px -8px rgba(14,42,42,0.06)',
