@@ -227,7 +227,12 @@ def test_create_booking_customer_names_history_updates(api_db):
         assert customer.display_name == "Bar"
 
 
-def test_create_booking_pricing_matches_catalog_for_car_services(api_db):
+def test_create_booking_pricing_matches_catalog_for_car_services(api_db, monkeypatch):
+    # 18 POSTs share the default phone in _payload(), which would otherwise
+    # trip the 5/hour per-phone cap on the 6th iteration if conftest's
+    # generous env default ever drops. Pin a wide cap explicitly so this
+    # test stays robust independent of conftest changes (ewash-zfi).
+    monkeypatch.setattr(settings, "rate_limit_bookings_per_phone", "1000/hour")
     with _client() as client:
         for category in ("A", "B", "C"):
             for service_id in ("svc_ext", "svc_cpl", "svc_sal"):
