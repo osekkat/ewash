@@ -174,11 +174,16 @@ class BootstrapResponse(BaseModel):
 class BookingListItemOut(BaseModel):
     ref: str
     status: str
-    status_label: str  # localized via Accept-Language header in future; FR for now
+    status_label: str  # French label for back-compat; PWA should localize status.
     service_label: str
+    service_id: str
     vehicle_label: str
+    date_iso: str
     date_label: str
+    slot_id: str
     slot_label: str
+    slot_start_hour: int
+    slot_end_hour: int
     location_label: str
     total_price_dh: int
     created_at: str  # ISO 8601

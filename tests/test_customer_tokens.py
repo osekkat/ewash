@@ -11,14 +11,19 @@ configure.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import select
 
 from app.db import init_db, make_engine, session_scope
-from app.models import BookingRow, Customer, CustomerTokenRow
-from app.persistence import list_bookings_for_token, mint_customer_token, verify_customer_token
+from app.models import BOOKING_STATUSES, BookingRow, Customer, CustomerTokenRow
+from app.persistence import (
+    _to_customer_view,
+    list_bookings_for_token,
+    mint_customer_token,
+    verify_customer_token,
+)
 from app.security import hash_token
 
 
@@ -37,6 +42,8 @@ def _add_booking(
     ref: str,
     created_at: datetime,
     location_mode: str = "center",
+    appointment_date: date | None = date(2026, 5, 20),
+    slot_id: str = "slot_10_12",
 ) -> None:
     session.add(
         BookingRow(
@@ -57,7 +64,9 @@ def _add_booking(
             location_address="Rue privée 123, Bouskoura",
             latitude=33.4,
             longitude=-7.6,
+            appointment_date=appointment_date,
             date_label="Aujourd'hui",
+            slot_id=slot_id,
             slot="10:00-12:00",
             note="Sonnez au portail",
             total_price_dh=90,
@@ -243,18 +252,21 @@ def test_list_bookings_for_token_projects_safe_field_whitelist() -> None:
     assert set(item) == {
         "ref",
         "status",
-        "status_label_fr",
-        "status_label_en",
+        "status_label",
         "service_label",
+        "service_id",
         "vehicle_label",
+        "date_iso",
         "date_label",
+        "slot_id",
         "slot_label",
+        "slot_start_hour",
+        "slot_end_hour",
         "location_label",
         "total_price_dh",
         "created_at",
     }
-    assert item["status_label_fr"] == "À confirmer par eWash"
-    assert item["status_label_en"] == "Pending eWash confirmation"
+    assert item["status_label"] == "À confirmer par eWash"
     assert item["location_label"] == "À domicile"
     assert item["total_price_dh"] == 90
     for forbidden in (
@@ -267,3 +279,77 @@ def test_list_bookings_for_token_projects_safe_field_whitelist() -> None:
         "raw_booking_json",
     ):
         assert forbidden not in item
+
+
+def test_list_bookings_for_token_populates_structured_date_and_slot() -> None:
+    engine, phone = _engine_with_customer()
+    with session_scope(engine) as session:
+        _add_booking(
+            session,
+            phone=phone,
+            ref="EW-2026-0001",
+            created_at=datetime.now(timezone.utc),
+            appointment_date=date(2026, 5, 20),
+            slot_id="slot_10_12",
+        )
+    token = mint_customer_token(phone, engine=engine)
+
+    item = list_bookings_for_token(token, engine=engine)[0]
+
+    assert item["service_id"] == "svc_ext"
+    assert item["date_iso"] == "2026-05-20"
+    assert item["slot_id"] == "slot_10_12"
+    assert item["slot_start_hour"] == 10
+    assert item["slot_end_hour"] == 12
+
+
+def test_list_bookings_for_token_unparseable_slot_hours_fallback() -> None:
+    engine, phone = _engine_with_customer()
+    with session_scope(engine) as session:
+        _add_booking(
+            session,
+            phone=phone,
+            ref="EW-2026-0001",
+            created_at=datetime.now(timezone.utc),
+            slot_id="weird_id",
+        )
+    token = mint_customer_token(phone, engine=engine)
+
+    item = list_bookings_for_token(token, engine=engine)[0]
+
+    assert item["slot_start_hour"] == 0
+    assert item["slot_end_hour"] == 0
+
+
+def test_customer_booking_view_status_label_covers_all_booking_statuses() -> None:
+    for status in BOOKING_STATUSES:
+        row = BookingRow(
+            ref=f"EW-2026-{BOOKING_STATUSES.index(status) + 1:04d}",
+            customer_phone="212600000100",
+            status=status,
+            service_label="Lavage extérieur",
+            service_id="svc_ext",
+            vehicle_type="Citadine",
+            date_label="Aujourd'hui",
+            slot="10:00-12:00",
+            total_price_dh=90,
+            created_at=datetime.now(timezone.utc),
+        )
+
+        view = _to_customer_view(row)
+
+        assert view["status_label"]
+        assert view["status_label"] != f"status.{status}"
+
+
+def test_customer_booking_view_date_iso_empty_without_appointment_date() -> None:
+    row = BookingRow(
+        ref="EW-2026-0001",
+        customer_phone="212600000100",
+        status="confirmed",
+        appointment_date=None,
+    )
+
+    view = _to_customer_view(row)
+
+    assert view["date_iso"] == ""
