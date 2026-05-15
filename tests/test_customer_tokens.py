@@ -212,10 +212,10 @@ def test_token_hash_is_64_hex_chars() -> None:
 def test_list_bookings_for_token_returns_empty_for_unknown_or_missing_token() -> None:
     engine, _ = _engine_with_customer()
 
-    assert list_bookings_for_token(None, engine=engine) == []
-    assert list_bookings_for_token("", engine=engine) == []
-    assert list_bookings_for_token("not-a-real-token", engine=engine) == []
-    assert list_bookings_for_token("not-a-real-token", engine=None) == []
+    assert list_bookings_for_token(None, engine=engine) == ([], None)
+    assert list_bookings_for_token("", engine=engine) == ([], None)
+    assert list_bookings_for_token("not-a-real-token", engine=engine) == ([], None)
+    assert list_bookings_for_token("not-a-real-token", engine=None) == ([], None)
 
 
 def test_list_bookings_for_token_limits_and_sorts_recent_first() -> None:
@@ -230,9 +230,10 @@ def test_list_bookings_for_token_limits_and_sorts_recent_first() -> None:
         _add_booking(session, phone=other_phone, ref="EW-2026-9999", created_at=now + timedelta(days=1))
     token = mint_customer_token(phone, engine=engine)
 
-    items = list_bookings_for_token(token, limit=2, engine=engine)
+    items, next_cursor = list_bookings_for_token(token, limit=2, engine=engine)
 
     assert [item["ref"] for item in items] == ["EW-2026-0002", "EW-2026-0003"]
+    assert next_cursor is not None
 
 
 def test_list_bookings_for_token_projects_safe_field_whitelist() -> None:
@@ -247,7 +248,8 @@ def test_list_bookings_for_token_projects_safe_field_whitelist() -> None:
         )
     token = mint_customer_token(phone, engine=engine)
 
-    item = list_bookings_for_token(token, engine=engine)[0]
+    items, _next_cursor = list_bookings_for_token(token, engine=engine)
+    item = items[0]
 
     assert set(item) == {
         "ref",
@@ -294,7 +296,8 @@ def test_list_bookings_for_token_populates_structured_date_and_slot() -> None:
         )
     token = mint_customer_token(phone, engine=engine)
 
-    item = list_bookings_for_token(token, engine=engine)[0]
+    items, _next_cursor = list_bookings_for_token(token, engine=engine)
+    item = items[0]
 
     assert item["service_id"] == "svc_ext"
     assert item["date_iso"] == "2026-05-20"
@@ -315,7 +318,8 @@ def test_list_bookings_for_token_unparseable_slot_hours_fallback() -> None:
         )
     token = mint_customer_token(phone, engine=engine)
 
-    item = list_bookings_for_token(token, engine=engine)[0]
+    items, _next_cursor = list_bookings_for_token(token, engine=engine)
+    item = items[0]
 
     assert item["slot_start_hour"] == 0
     assert item["slot_end_hour"] == 0

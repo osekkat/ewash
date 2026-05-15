@@ -945,6 +945,8 @@ async def get_bootstrap(
 async def list_bookings(
     request: Request,
     response: Response,
+    cursor: str | None = Query(None, max_length=512),
+    limit: int = Query(20, ge=1, le=100),
 ) -> BookingsListResponse | JSONResponse:
     """Return the customer's recent bookings scoped to the X-Ewash-Token bearer.
 
@@ -978,7 +980,19 @@ async def list_bookings(
         )
         return _json_error(401, "missing_token", "X-Ewash-Token required")
 
-    items = persistence.list_bookings_for_token(token, limit=20)
+    try:
+        items, next_cursor = persistence.list_bookings_for_token(
+            token,
+            limit=limit,
+            cursor=cursor,
+        )
+    except ValueError:
+        logger.warning(
+            "bookings.list error=invalid_cursor token_prefix=%s ip_hash=%s",
+            hash_token(token)[:8],
+            _hash_for_log(get_remote_address(request) or ""),
+        )
+        return _json_error(400, "invalid_cursor", "Invalid cursor", field="cursor")
     matched_phone = persistence.verify_customer_token(token)
     if matched_phone is None:
         logger.warning(
@@ -999,7 +1013,8 @@ async def list_bookings(
         duration_ms,
     )
     return BookingsListResponse(
-        bookings=[BookingListItemOut(**item) for item in items]
+        bookings=[BookingListItemOut(**item) for item in items],
+        next_cursor=next_cursor,
     )
 
 

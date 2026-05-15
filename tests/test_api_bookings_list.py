@@ -114,6 +114,122 @@ def test_valid_token_returns_bookings_sorted_recent_first(engine, client):
     assert refs == ["EW-2026-0003", "EW-2026-0002", "EW-2026-0001"]
 
 
+def test_cursor_pagination_returns_every_page_without_dropping_rows(engine, client):
+    phone = "212611204502"
+    token = mint_customer_token(phone, engine=engine)
+    base = datetime(2026, 5, 1, 9, 0, tzinfo=timezone.utc)
+    for index in range(5):
+        _seed_booking(
+            engine,
+            phone=phone,
+            ref=f"EW-2026-PG0{index + 1}",
+            created_at=base + timedelta(hours=index),
+        )
+
+    first = client.get(
+        "/api/v1/bookings",
+        headers={"X-Ewash-Token": token},
+        params={"limit": 2},
+    )
+    assert first.status_code == 200
+    first_body = first.json()
+    assert [item["ref"] for item in first_body["bookings"]] == [
+        "EW-2026-PG05",
+        "EW-2026-PG04",
+    ]
+    assert first_body["next_cursor"]
+
+    second = client.get(
+        "/api/v1/bookings",
+        headers={"X-Ewash-Token": token},
+        params={"limit": 2, "cursor": first_body["next_cursor"]},
+    )
+    assert second.status_code == 200
+    second_body = second.json()
+    assert [item["ref"] for item in second_body["bookings"]] == [
+        "EW-2026-PG03",
+        "EW-2026-PG02",
+    ]
+    assert second_body["next_cursor"]
+
+    third = client.get(
+        "/api/v1/bookings",
+        headers={"X-Ewash-Token": token},
+        params={"limit": 2, "cursor": second_body["next_cursor"]},
+    )
+    assert third.status_code == 200
+    third_body = third.json()
+    assert [item["ref"] for item in third_body["bookings"]] == ["EW-2026-PG01"]
+    assert third_body["next_cursor"] is None
+
+
+def test_cursor_pagination_is_stable_under_newer_inserts(engine, client):
+    phone = "212611204502"
+    token = mint_customer_token(phone, engine=engine)
+    base = datetime(2026, 5, 1, 9, 0, tzinfo=timezone.utc)
+    _seed_booking(engine, phone=phone, ref="EW-2026-ST01", created_at=base)
+    _seed_booking(engine, phone=phone, ref="EW-2026-ST02", created_at=base + timedelta(hours=1))
+    _seed_booking(engine, phone=phone, ref="EW-2026-ST03", created_at=base + timedelta(hours=2))
+
+    first = client.get(
+        "/api/v1/bookings",
+        headers={"X-Ewash-Token": token},
+        params={"limit": 2},
+    )
+    first_body = first.json()
+    assert [item["ref"] for item in first_body["bookings"]] == [
+        "EW-2026-ST03",
+        "EW-2026-ST02",
+    ]
+
+    _seed_booking(engine, phone=phone, ref="EW-2026-ST04", created_at=base + timedelta(hours=3))
+
+    second = client.get(
+        "/api/v1/bookings",
+        headers={"X-Ewash-Token": token},
+        params={"limit": 2, "cursor": first_body["next_cursor"]},
+    )
+    second_body = second.json()
+    assert [item["ref"] for item in second_body["bookings"]] == ["EW-2026-ST01"]
+    assert second_body["next_cursor"] is None
+
+    fresh_first = client.get(
+        "/api/v1/bookings",
+        headers={"X-Ewash-Token": token},
+        params={"limit": 2},
+    )
+    assert [item["ref"] for item in fresh_first.json()["bookings"]] == [
+        "EW-2026-ST04",
+        "EW-2026-ST03",
+    ]
+
+
+def test_limit_param_is_capped_at_100(engine, client):
+    token = mint_customer_token("212611204502", engine=engine)
+
+    response = client.get(
+        "/api/v1/bookings",
+        headers={"X-Ewash-Token": token},
+        params={"limit": 101},
+    )
+
+    assert response.status_code == 422
+
+
+def test_invalid_cursor_returns_400(engine, client):
+    token = mint_customer_token("212611204502", engine=engine)
+
+    response = client.get(
+        "/api/v1/bookings",
+        headers={"X-Ewash-Token": token},
+        params={"cursor": "not-a-valid-cursor"},
+    )
+
+    assert response.status_code == 400
+    assert response.headers["X-Ewash-Error-Code"] == "invalid_cursor"
+    assert response.json()["error_code"] == "invalid_cursor"
+
+
 def test_missing_header_returns_401_missing_token(engine, client):
     response = client.get("/api/v1/bookings")
 

@@ -6,6 +6,7 @@ so the admin dashboard can show real operational data.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import logging
@@ -17,7 +18,7 @@ from functools import lru_cache
 from typing import Iterable
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import Engine, delete, func, or_, select, update
+from sqlalchemy import Engine, and_, delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -1455,27 +1456,70 @@ def list_bookings_for_token(
     token_plaintext: str | None,
     *,
     limit: int = 20,
+    cursor: str | None = None,
     engine: Engine | None = None,
-) -> list[dict]:
+) -> tuple[list[dict], str | None]:
     """Return the customer-safe recent-booking view for a PWA token bearer."""
     if not token_plaintext:
-        return []
+        return [], None
     db_engine = _engine_or_configured(engine)
     if db_engine is None:
-        return []
+        return [], None
     phone = verify_customer_token(token_plaintext, engine=db_engine)
     if phone is None:
-        return []
+        return [], None
 
     bounded_limit = max(0, min(int(limit), _CUSTOMER_BOOKING_LIST_LIMIT_MAX))
+    if bounded_limit == 0:
+        return [], None
+    cursor_anchor = _decode_customer_bookings_cursor(cursor)
     with session_scope(db_engine) as session:
+        stmt = select(BookingRow).where(BookingRow.customer_phone == phone)
+        if cursor_anchor is not None:
+            cursor_created_at, cursor_id = cursor_anchor
+            stmt = stmt.where(
+                or_(
+                    BookingRow.created_at < cursor_created_at,
+                    and_(
+                        BookingRow.created_at == cursor_created_at,
+                        BookingRow.id < cursor_id,
+                    ),
+                )
+            )
         rows = session.scalars(
-            select(BookingRow)
-            .where(BookingRow.customer_phone == phone)
+            stmt
             .order_by(BookingRow.created_at.desc(), BookingRow.id.desc())
-            .limit(bounded_limit)
+            .limit(bounded_limit + 1)
         ).all()
-        return [_to_customer_view(row) for row in rows]
+        page_rows = rows[:bounded_limit]
+        next_cursor = (
+            _encode_customer_bookings_cursor(page_rows[-1])
+            if len(rows) > bounded_limit and page_rows
+            else None
+        )
+        return [_to_customer_view(row) for row in page_rows], next_cursor
+
+
+def _encode_customer_bookings_cursor(row: BookingRow) -> str:
+    created_at = row.created_at.isoformat() if row.created_at else ""
+    payload = f"{created_at}|{row.id}"
+    return base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii").rstrip("=")
+
+
+def _decode_customer_bookings_cursor(cursor: str | None) -> tuple[datetime, int] | None:
+    if not cursor:
+        return None
+    try:
+        padded = cursor + ("=" * (-len(cursor) % 4))
+        decoded = base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
+        created_at_raw, row_id_raw = decoded.rsplit("|", 1)
+        created_at = datetime.fromisoformat(created_at_raw)
+        row_id = int(row_id_raw)
+    except Exception as exc:
+        raise ValueError("invalid customer bookings cursor") from exc
+    if row_id < 1:
+        raise ValueError("invalid customer bookings cursor")
+    return created_at, row_id
 
 
 def _to_customer_view(row: BookingRow) -> dict:
