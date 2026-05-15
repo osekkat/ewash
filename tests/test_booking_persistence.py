@@ -628,3 +628,76 @@ def test_handle_message_captures_customer_and_menu_stage_on_first_salam_before_s
         assert customer.booking_count == 0
     state.reset(phone)
     _configured_engine.cache_clear()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# `source` kwarg on persist_confirmed_booking (br-ewash-6pa.3.4)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_persist_confirmed_booking_defaults_source_to_whatsapp():
+    """Every existing caller omits the kwarg → row gets `source='whatsapp'`."""
+    engine = make_engine("sqlite+pysqlite:///:memory:")
+    init_db(engine)
+    booking = _sample_booking()
+
+    row = persist_confirmed_booking(booking, engine=engine)
+
+    assert row is not None
+    assert row.source == "whatsapp"
+
+
+def test_persist_confirmed_booking_accepts_api_source():
+    """The /api/v1/bookings handler passes source='api' explicitly."""
+    engine = make_engine("sqlite+pysqlite:///:memory:")
+    init_db(engine)
+    booking = _sample_booking()
+
+    row = persist_confirmed_booking(booking, source="api", engine=engine)
+
+    assert row is not None
+    assert row.source == "api"
+    with session_scope(engine) as session:
+        saved = session.scalars(select(BookingRow)).one()
+        assert saved.source == "api"
+
+
+def test_persist_confirmed_booking_accepts_admin_source():
+    """Future admin-created bookings pass source='admin'."""
+    engine = make_engine("sqlite+pysqlite:///:memory:")
+    init_db(engine)
+    booking = _sample_booking()
+
+    row = persist_confirmed_booking(booking, source="admin", engine=engine)
+
+    assert row.source == "admin"
+
+
+def test_persist_confirmed_booking_source_is_kw_only():
+    """Defense: source must be a kw-only arg so it can't be passed positionally
+    in a way that shifts semantics if the signature grows."""
+    engine = make_engine("sqlite+pysqlite:///:memory:")
+    init_db(engine)
+    booking = _sample_booking()
+
+    with pytest.raises(TypeError):
+        persist_confirmed_booking(booking, "api", engine=engine)  # type: ignore[misc]
+
+
+def test_persist_confirmed_booking_source_persists_across_idempotent_replay():
+    """Calling persist_confirmed_booking twice with the same booking ref is
+    idempotent. The source recorded on the FIRST call wins — a retry with a
+    different source kwarg does NOT overwrite the original."""
+    engine = make_engine("sqlite+pysqlite:///:memory:")
+    init_db(engine)
+    booking = _sample_booking()
+
+    first = persist_confirmed_booking(booking, source="api", engine=engine)
+    # Second call: same ref, but caller mistakenly passes source="whatsapp".
+    second = persist_confirmed_booking(booking, source="whatsapp", engine=engine)
+
+    assert first.id == second.id  # same row returned
+    with session_scope(engine) as session:
+        saved = session.scalars(select(BookingRow)).one()
+        # First-write wins — the existing source is not clobbered.
+        assert saved.source == "api"

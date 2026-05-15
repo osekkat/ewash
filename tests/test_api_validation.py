@@ -8,11 +8,15 @@ the catalog helpers fall back to the static data.
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
+from app import api as pwa_api
 from app.api_validation import (
     APIValidationError,
     CASABLANCA_TZ,
@@ -33,6 +37,7 @@ from app.api_validation import (
     validate_service_for_category,
     validate_slot_and_date,
 )
+from app.notifications import InvalidPhone
 
 
 def test_closed_date_raises_closed_date() -> None:
@@ -58,7 +63,7 @@ def test_unknown_slot_raises_unknown_slot() -> None:
 
 
 def test_slot_30_minutes_in_future_raises_too_soon() -> None:
-    # slot_9_11 starts at 09:00 Casablanca. With now=08:30 the lead is 30 min.
+    # slot_9_11 starts at 09:00 Casablanca. With now=08:30 the lead: 30 min.
     with pytest.raises(SlotTooSoon) as exc_info:
         validate_slot_and_date(
             "2026-06-15",
@@ -69,7 +74,7 @@ def test_slot_30_minutes_in_future_raises_too_soon() -> None:
 
 
 def test_slot_2h_1min_in_future_passes() -> None:
-    # slot_11_13 starts at 11:00 Casablanca. With now=08:59 the lead is 2h 1min.
+    # slot_11_13 starts at 11:00 Casablanca. With now=08:59 the lead: 2h 1min.
     # No exception should be raised.
     validate_slot_and_date(
         "2026-06-15",
@@ -79,7 +84,7 @@ def test_slot_2h_1min_in_future_passes() -> None:
 
 
 def test_slot_5h_in_future_passes() -> None:
-    # slot_14_16 starts at 14:00 Casablanca. With now=09:00 the lead is 5h.
+    # slot_14_16 starts at 14:00 Casablanca. With now=09:00 the lead: 5h.
     validate_slot_and_date(
         "2026-06-15",
         "slot_14_16",
@@ -98,7 +103,7 @@ def test_bad_date_format_raises_invalid_date() -> None:
 
 
 def test_utc_now_converted_to_casablanca_tz() -> None:
-    # 06:00 UTC is 07:00 Casablanca (UTC+1, no DST mid-summer). With slot_18_20
+    # 06:00 UTC means 07:00 Casablanca (UTC+1, no DST mid-summer). With slot_18_20
     # on 2026-07-15 that's an 11-hour lead — well above the 2h threshold. The
     # test asserts the function accepts a UTC `now` and converts it, instead of
     # crashing on a non-Casablanca tz input.
@@ -358,3 +363,71 @@ def test_validate_center_id_exceptions_are_api_validation_errors() -> None:
     assert CenterIdNotAllowed.error_code == "center_id_not_allowed"
     assert MissingCenterId.error_code == "missing_center_id"
     assert UnknownCenter.error_code == "unknown_center"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# app.api error envelope
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _api_response_for(exc: Exception):
+    app = FastAPI()
+    pwa_api.install_exception_handlers(app)
+
+    @app.get("/raise")
+    def raise_exception():
+        raise exc
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        return client.get("/raise")
+
+
+def test_api_router_exists_with_v1_prefix() -> None:
+    assert pwa_api.router.prefix == "/api/v1"
+    assert "pwa-api" in pwa_api.router.tags
+
+
+@pytest.mark.parametrize(
+    ("exc", "code"),
+    [
+        (ClosedDate("closed"), "closed_date"),
+        (UnknownSlot("unknown slot"), "unknown_slot"),
+        (SlotTooSoon("too soon"), "slot_too_soon"),
+        (InvalidDate("bad date"), "invalid_date"),
+        (UnknownService("unknown service"), "unknown_service"),
+        (InvalidServiceForCategory("bad lane"), "service_category_mismatch"),
+        (UnknownAddon("unknown addon"), "unknown_addon"),
+        (DuplicateAddon("duplicate addon"), "duplicate_addon"),
+        (NotADetailingService("wrong bucket"), "not_a_detailing_service"),
+        (UnknownCenter("unknown center"), "unknown_center"),
+        (MissingCenterId("missing center"), "missing_center_id"),
+        (CenterIdNotAllowed("not allowed"), "center_id_not_allowed"),
+        (InvalidPhone("invalid phone"), "invalid_phone"),
+    ],
+)
+def test_api_domain_errors_surface_stable_error_envelope(exc, code, caplog) -> None:
+    caplog.set_level(logging.INFO, logger="ewash.api")
+
+    response = _api_response_for(exc)
+
+    assert response.status_code == 400
+    assert response.headers["X-Ewash-Error-Code"] == code
+    assert response.json()["error_code"] == code
+    assert response.json()["message"] == str(exc)
+    assert any(
+        "ewash.api domain_error" in rec.message and f"error_code={code}" in rec.message
+        for rec in caplog.records
+    )
+
+
+def test_api_unhandled_exception_returns_generic_500() -> None:
+    response = _api_response_for(RuntimeError("database password leaked here"))
+
+    assert response.status_code == 500
+    assert response.headers["X-Ewash-Error-Code"] == "internal_error"
+    assert response.json() == {
+        "error_code": "internal_error",
+        "message": "",
+        "field": None,
+        "details": {},
+    }

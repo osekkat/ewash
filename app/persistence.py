@@ -68,6 +68,7 @@ class AdminBookingListItem:
     slot: str
     location_label: str
     price_dh: int
+    source: str = "whatsapp"
 
 
 @dataclass(frozen=True)
@@ -730,12 +731,24 @@ def _add_booking_line_items(session, row: BookingRow, booking: Booking) -> None:
         )
 
 
-def persist_confirmed_booking(booking: Booking, *, engine: Engine | None = None) -> BookingRow | None:
-    """Mirror a confirmed WhatsApp booking into the CRM database.
+def persist_confirmed_booking(
+    booking: Booking,
+    *,
+    source: str = "whatsapp",
+    engine: Engine | None = None,
+) -> BookingRow | None:
+    """Mirror a confirmed booking into the CRM database.
 
     Returns the persisted BookingRow when a DB is configured. If the app is run
     without DATABASE_URL (local demos/tests that do not pass an engine), this is
     a safe no-op so the WhatsApp flow keeps working.
+
+    `source` records the origin channel for split-counter admin queries and the
+    source-badge admin UI. The default `"whatsapp"` keeps every existing caller
+    working without code changes; the `/api/v1/bookings` handler passes
+    `source="api"`, and admin-created bookings pass `source="admin"`. The
+    Postgres CHECK constraint (migration 0006) rejects unknown values; Pydantic
+    validation in the API layer should reject them earlier.
     """
     db_engine = _engine_or_configured(engine)
     if db_engine is None:
@@ -790,6 +803,7 @@ def persist_confirmed_booking(booking: Booking, *, engine: Engine | None = None)
             total_price_dh=(booking.price_dh or 0) + (booking.addon_price_dh or 0),
             appointment_start_at=appointment_start_at,
             appointment_end_at=appointment_end_at,
+            source=source,
             raw_booking_json=json.dumps(asdict(booking), ensure_ascii=False, default=str),
         )
         session.add(row)
@@ -1030,6 +1044,7 @@ def _booking_dict_to_admin_item(row: dict) -> AdminBookingListItem:
         slot=str(row.get("slot") or ""),
         location_label=location_label,
         price_dh=total_price_dh,
+        source=str(row.get("source") or "whatsapp"),
     )
 
 
@@ -1096,6 +1111,7 @@ def admin_booking_list(*, engine: Engine | None = None, limit: int = 100) -> tup
                         slot=row.slot,
                         location_label=location_label,
                         price_dh=total_price_dh,
+                        source=getattr(row, "source", None) or "whatsapp",
                     )
                 )
             db_refs = {item.ref for item in items if item.ref}
