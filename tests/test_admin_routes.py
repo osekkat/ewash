@@ -157,6 +157,53 @@ def test_admin_bookings_page_renders_persisted_reservations(monkeypatch, tmp_pat
     _configured_engine.cache_clear()
 
 
+def test_admin_dashboard_renders_pwa_and_whatsapp_split_counters(monkeypatch, tmp_path):
+    """Seed bookings of each source and verify the dashboard's two new
+    counter cards show the correct per-channel totals over the trailing 7d."""
+    from sqlalchemy import update
+    from app.models import BookingRow
+
+    db_url = f"sqlite+pysqlite:///{tmp_path / 'admin-split.db'}"
+    engine = make_engine(db_url)
+    init_db(engine)
+
+    # Two WhatsApp bookings (default source) and one PWA booking.
+    for ref_suffix in ("0301", "0302", "0303"):
+        booking = _sample_booking()
+        booking.ref = f"EW-2026-{ref_suffix}"
+        persist_confirmed_booking(booking, engine=engine)
+
+    with session_scope(engine) as session:
+        # Promote the third booking to source="api".
+        session.execute(
+            update(BookingRow).where(BookingRow.ref == "EW-2026-0303").values(source="api")
+        )
+
+    monkeypatch.setattr(settings, "database_url", db_url)
+    _configured_engine.cache_clear()
+    monkeypatch.setattr(settings, "admin_password", "secret-pass")
+    client = TestClient(app)
+    client.post(
+        "/admin",
+        content="password=secret-pass",
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+
+    response = client.get("/admin")
+
+    assert response.status_code == 200
+    # Both new card labels appear.
+    assert "Réservations PWA (7j)" in response.text
+    assert "Réservations WhatsApp (7j)" in response.text
+    # The PWA card carries the src-pwa badge in its label.
+    pwa_section = response.text[response.text.index("Réservations PWA (7j)"):]
+    pwa_card = pwa_section[: pwa_section.index("metric-card", 1) if "metric-card" in pwa_section[1:] else len(pwa_section)]
+    # The whatsapp card label appears later in the same metric-grid.
+    assert "src-pwa" in response.text
+    assert "src-wa" in response.text
+    _configured_engine.cache_clear()
+
+
 def test_admin_dashboard_recent_bookings_card_shows_source_badge(monkeypatch, tmp_path):
     """The dashboard's recent-bookings card must include the source badge so
     staff see at a glance which channel each recent booking arrived through."""

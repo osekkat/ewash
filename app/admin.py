@@ -321,6 +321,16 @@ def _dashboard(*, locale: str) -> HTMLResponse:
     <div class="metric-value">{summary.pending_reminders}</div>
     <div class="metric-note">{escape(t('admin.metric.from_db', locale))}</div>
   </article>
+  <article class="metric-card">
+    <div class="metric-label"><span class="badge src-pwa">PWA</span> {escape(t('admin.dashboard.bookings_pwa_7d', locale))}</div>
+    <div class="metric-value">{summary.bookings_pwa_last_7d}</div>
+    <div class="metric-note">{escape(t('admin.metric.from_db', locale))}</div>
+  </article>
+  <article class="metric-card">
+    <div class="metric-label"><span class="badge src-wa">WhatsApp</span> {escape(t('admin.dashboard.bookings_whatsapp_7d', locale))}</div>
+    <div class="metric-value">{summary.bookings_whatsapp_last_7d}</div>
+    <div class="metric-note">{escape(t('admin.metric.from_db', locale))}</div>
+  </article>
 </section>
 
 <section class="dashboard-grid">

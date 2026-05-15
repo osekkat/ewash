@@ -105,6 +105,11 @@ class DashboardSummary:
     pending_reminders: int = 0
     recent_bookings: tuple[RecentBooking, ...] = ()
     db_available: bool = False
+    # Per-channel booking counts over the trailing 7 days (Africa/Casablanca).
+    # Defaults to zero so the dashboard renders cleanly before any data exists.
+    bookings_pwa_last_7d: int = 0
+    bookings_whatsapp_last_7d: int = 0
+    bookings_admin_last_7d: int = 0
 
 
 @lru_cache(maxsize=1)
@@ -1208,6 +1213,23 @@ def admin_dashboard_summary(*, engine: Engine | None = None, recent_limit: int =
                 )
                 for row in rows
             )
+            # Per-channel counts over the trailing 7 days. Africa/Casablanca
+            # boundary so the counter doesn't tick over at midnight UTC.
+            seven_days_ago = datetime.now(tz=ZoneInfo("Africa/Casablanca")) - timedelta(days=7)
+            try:
+                source_rows = session.execute(
+                    select(BookingRow.source, func.count(BookingRow.id))
+                    .where(BookingRow.created_at >= seven_days_ago)
+                    .group_by(BookingRow.source)
+                ).all()
+                source_counts = {row[0] or "whatsapp": int(row[1] or 0) for row in source_rows}
+            except Exception:
+                # Migration 0006 adds the column on Postgres; SQLite test
+                # tables also carry it via Base.metadata.create_all. If
+                # somehow the column is missing (mid-deploy), fall back to
+                # zeros instead of breaking the whole dashboard.
+                log.exception("admin_dashboard_summary failed to aggregate sources")
+                source_counts = {}
             return DashboardSummary(
                 total_bookings=total,
                 confirmed_bookings=confirmed,
@@ -1218,6 +1240,9 @@ def admin_dashboard_summary(*, engine: Engine | None = None, recent_limit: int =
                 pending_reminders=reminders,
                 recent_bookings=recent,
                 db_available=True,
+                bookings_pwa_last_7d=source_counts.get("api", 0),
+                bookings_whatsapp_last_7d=source_counts.get("whatsapp", 0),
+                bookings_admin_last_7d=source_counts.get("admin", 0),
             )
     except Exception:
         log.exception("admin_dashboard_summary failed")

@@ -135,6 +135,8 @@ _TRANSLATIONS: dict[str, dict[str, str]] = {
         "admin.source.whatsapp": "WhatsApp",
         "admin.source.api": "PWA",
         "admin.source.admin": "Admin",
+        "admin.dashboard.bookings_pwa_7d": "Réservations PWA (7j)",
+        "admin.dashboard.bookings_whatsapp_7d": "Réservations WhatsApp (7j)",
     },
     "en": {
         "nav.dashboard": "Dashboard",
@@ -261,6 +263,8 @@ _TRANSLATIONS: dict[str, dict[str, str]] = {
         "admin.source.whatsapp": "WhatsApp",
         "admin.source.api": "PWA",
         "admin.source.admin": "Admin",
+        "admin.dashboard.bookings_pwa_7d": "PWA bookings (7d)",
+        "admin.dashboard.bookings_whatsapp_7d": "WhatsApp bookings (7d)",
     },
 }
 
