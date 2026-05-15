@@ -18,8 +18,11 @@ from app.api_validation import (
     CASABLANCA_TZ,
     ClosedDate,
     InvalidDate,
+    InvalidServiceForCategory,
     SlotTooSoon,
+    UnknownService,
     UnknownSlot,
+    validate_service_for_category,
     validate_slot_and_date,
 )
 
@@ -175,3 +178,62 @@ def test_passing_now_in_arbitrary_tz_works() -> None:
         "slot_14_16",
         now=datetime(2026, 7, 15, 17, 0, tzinfo=tokyo),
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# validate_service_for_category
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_validate_service_for_category_car_service_with_car_category() -> None:
+    # svc_cpl is a car wash service; category B is a car category.
+    validate_service_for_category("svc_cpl", "B")
+
+
+def test_validate_service_for_category_moto_service_with_moto_category() -> None:
+    validate_service_for_category("svc_moto", "MOTO")
+    validate_service_for_category("svc_scooter", "MOTO")
+
+
+def test_validate_service_for_category_moto_service_with_car_rejected() -> None:
+    with pytest.raises(InvalidServiceForCategory) as exc_info:
+        validate_service_for_category("svc_moto", "A")
+    assert exc_info.value.error_code == "service_category_mismatch"
+
+
+def test_validate_service_for_category_car_service_with_moto_rejected() -> None:
+    # svc_cpl is car-only; pairing with MOTO must raise.
+    with pytest.raises(InvalidServiceForCategory) as exc_info:
+        validate_service_for_category("svc_cpl", "MOTO")
+    assert exc_info.value.error_code == "service_category_mismatch"
+
+
+def test_validate_service_for_category_unknown_service_raises() -> None:
+    with pytest.raises(UnknownService) as exc_info:
+        validate_service_for_category("svc_does_not_exist", "A")
+    assert exc_info.value.error_code == "unknown_service"
+
+
+def test_validate_service_for_category_all_car_categories_accepted() -> None:
+    # Every car category (A/B/C) should pair cleanly with a car detailing service.
+    for category in ("A", "B", "C"):
+        validate_service_for_category("svc_pol", category)
+
+
+def test_validate_service_for_category_logs_rejection(caplog) -> None:
+    # Staff might want to grep "validation.rejection" to spot stale PWA clients
+    # hammering invalid combos. Confirm the INFO line is emitted.
+    import logging
+
+    caplog.set_level(logging.INFO, logger="app.api_validation")
+    with pytest.raises(InvalidServiceForCategory):
+        validate_service_for_category("svc_cpl", "MOTO")
+    assert any("validation.rejection" in rec.message for rec in caplog.records)
+
+
+def test_service_validation_exceptions_are_api_validation_errors() -> None:
+    # Same hierarchy contract as the slot/date validators.
+    assert issubclass(UnknownService, APIValidationError)
+    assert issubclass(InvalidServiceForCategory, APIValidationError)
+    assert UnknownService.error_code == "unknown_service"
+    assert InvalidServiceForCategory.error_code == "service_category_mismatch"

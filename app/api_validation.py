@@ -18,7 +18,12 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy import Engine
 
-from .catalog import active_closed_dates, active_time_slots
+from .catalog import (
+    SERVICES_CAR,
+    SERVICES_MOTO,
+    active_closed_dates,
+    active_time_slots,
+)
 
 log = logging.getLogger(__name__)
 
@@ -52,6 +57,63 @@ class SlotTooSoon(APIValidationError):
 
 class InvalidDate(APIValidationError):
     error_code = "invalid_date"
+
+
+class UnknownService(APIValidationError):
+    error_code = "unknown_service"
+
+
+class InvalidServiceForCategory(APIValidationError):
+    error_code = "service_category_mismatch"
+
+
+_CAR_SERVICE_IDS: frozenset[str] = frozenset(sid for sid, *_ in SERVICES_CAR)
+_MOTO_SERVICE_IDS: frozenset[str] = frozenset(sid for sid, *_ in SERVICES_MOTO)
+
+
+def validate_service_for_category(service_id: str, category: str) -> None:
+    """Raise if `service_id` belongs to the wrong vehicle lane for `category`.
+
+    A moto service paired with a car category (or vice versa) is rejected
+    before any DB write. The static catalog lists (`SERVICES_CAR`,
+    `SERVICES_MOTO`) are the source of truth for lane membership; admin
+    pricing overrides don't change which list a service lives in.
+
+    Parameters
+    ----------
+    service_id : str
+        Service id from the catalog (e.g., "svc_cpl", "svc_moto").
+    category : str
+        Vehicle category — "A" / "B" / "C" for cars, "MOTO" for two-wheels.
+
+    Raises
+    ------
+    UnknownService : if `service_id` is not in either static list.
+    InvalidServiceForCategory : if the lanes don't match.
+    """
+    if service_id in _CAR_SERVICE_IDS:
+        service_lane = "car"
+    elif service_id in _MOTO_SERVICE_IDS:
+        service_lane = "moto"
+    else:
+        log.info(
+            "validation.rejection service=%s category=%s reason=unknown_service",
+            service_id,
+            category,
+        )
+        raise UnknownService(f"service_id={service_id} not found")
+
+    expected_lane = "moto" if category == "MOTO" else "car"
+    if service_lane != expected_lane:
+        log.info(
+            "validation.rejection service=%s category=%s reason=service_category_mismatch",
+            service_id,
+            category,
+        )
+        raise InvalidServiceForCategory(
+            f"service={service_id} requires lane={service_lane}, "
+            f"but category={category} is lane={expected_lane}"
+        )
 
 
 def validate_slot_and_date(
