@@ -5,8 +5,10 @@ Endpoints:
   GET  /webhook   → Meta webhook verification challenge
   POST /webhook   → Inbound customer messages (signature-verified)
 """
+import hashlib
 import logging
 import secrets
+import time
 from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException, Request, Response
@@ -15,6 +17,7 @@ from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from . import admin, api as api_module, handlers, meta
 from .config import settings
@@ -29,6 +32,49 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 log = logging.getLogger("ewash")
+api_log = logging.getLogger("ewash.api")
+
+
+def _hash_log_value(value: str, *, length: int = 12) -> str:
+    """Return a stable SHA-256 prefix for non-PII log correlation."""
+    if not value:
+        return "-"
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:length]
+
+
+class ApiAccessLogMiddleware(BaseHTTPMiddleware):
+    """Emit one structured log line for each PWA API request."""
+
+    async def dispatch(self, request: Request, call_next):
+        if not request.url.path.startswith("/api/"):
+            return await call_next(request)
+
+        started = time.perf_counter()
+        response = await call_next(request)
+        duration_ms = (time.perf_counter() - started) * 1000
+        source_ip = request.client.host if request.client else ""
+        phone = getattr(request.state, "phone_normalized", "")
+        booking_ref = getattr(request.state, "booking_ref", "")
+        error_code = response.headers.get("X-Ewash-Error-Code", "")
+
+        api_log.info(
+            "ewash.api endpoint=%s method=%s status=%d duration_ms=%.1f "
+            "phone_hash=%s source_ip_hash=%s ref=%s error_code=%s",
+            request.url.path,
+            request.method,
+            response.status_code,
+            duration_ms,
+            _hash_log_value(phone),
+            _hash_log_value(source_ip),
+            booking_ref or "-",
+            error_code or "-",
+        )
+        return response
+
+
+def _configure_access_logging(target_app: FastAPI) -> None:
+    """Install structured access logging for /api/* requests."""
+    target_app.add_middleware(ApiAccessLogMiddleware)
 
 
 def _configure_cors(target_app: FastAPI) -> None:
@@ -68,6 +114,7 @@ app = FastAPI(title="Ewash WhatsApp Agent", version=APP_VERSION.removeprefix("v"
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 _configure_cors(app)
+_configure_access_logging(app)
 _configure_api(app)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.include_router(admin.router)
