@@ -8,3 +8,7 @@ __pycache__/
 .idea/
 .vscode/
 .hermes/
+.vercel
+
+# bv (beads viewer) local config and caches
+.bv/
