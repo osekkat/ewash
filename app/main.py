@@ -2,7 +2,6 @@
 
 Endpoints:
   GET  /health    → liveness probe for Railway
-  GET  /bookings  → debug: in-memory bookings as JSON
   GET  /webhook   → Meta webhook verification challenge
   POST /webhook   → Inbound customer messages (signature-verified)
 """
@@ -13,7 +12,7 @@ from fastapi import FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import admin, booking, handlers, meta
+from . import admin, handlers, meta
 from .config import settings
 from .persistence import mark_abandoned_conversations
 
@@ -34,12 +33,6 @@ app.include_router(admin.router)
 @app.get("/health")
 async def health():
     return {"status": "ok", "version": APP_VERSION}
-
-
-@app.get("/bookings")
-async def bookings():
-    """Debug endpoint — returns in-memory bookings. Drop before real launch."""
-    return {"count": len(booking.all_bookings()), "bookings": booking.all_bookings()}
 
 
 @app.post("/internal/conversations/abandon")
