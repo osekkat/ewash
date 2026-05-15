@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import logging
 import re
+import unicodedata
 from datetime import datetime, timedelta
+from typing import overload
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import Engine
@@ -30,6 +32,7 @@ log = logging.getLogger(__name__)
 CASABLANCA_TZ = ZoneInfo("Africa/Casablanca")
 MIN_LEAD_HOURS = 2
 _SLOT_ID_PATTERN = re.compile(r"^slot_(\d+)_(\d+)$")
+_HORIZONTAL_WHITESPACE_RUN = re.compile(r"[ \t]+")
 
 
 class APIValidationError(ValueError):
@@ -189,3 +192,45 @@ def validate_slot_and_date(
             f"slot={slot_id} on date={date_iso} starts {candidate.isoformat()}, "
             f"less than {MIN_LEAD_HOURS}h after now={now_local.isoformat()}"
         )
+
+
+@overload
+def clean_text(value: None, *, max_len: int) -> None: ...
+@overload
+def clean_text(value: str, *, max_len: int) -> str | None: ...
+
+
+def clean_text(value: str | None, *, max_len: int) -> str | None:
+    """Sanitize a free-text user input field defensively.
+
+    Applies four passes, in order:
+
+    1. Strip ASCII/Unicode control characters (Unicode category ``Cc``), with
+       ``\\n`` deliberately preserved so multi-line customer notes survive
+       ("Sonner deux fois\\nÉtage 3, porte gauche").
+    2. Collapse runs of horizontal whitespace (spaces and tabs) into a single
+       space. Newlines pass through untouched.
+    3. Trim leading and trailing whitespace.
+    4. Truncate the result to ``max_len`` characters.
+
+    Returns ``None`` for ``None`` input, and also ``None`` if the cleaned
+    string is empty (e.g., input was just whitespace or control characters).
+    This contract lets callers distinguish "user explicitly typed something"
+    from "user left the field blank" without juggling empty strings.
+
+    The Pydantic schemas in :mod:`app.api_schemas` already enforce
+    ``max_length`` at the request boundary; calling :func:`clean_text`
+    afterwards is a belt-and-suspenders defense for downstream code paths
+    (logging, persistence, staff alert text) where surprising control chars
+    would otherwise leak through.
+    """
+    if value is None:
+        return None
+    no_controls = "".join(
+        ch for ch in value if ch == "\n" or unicodedata.category(ch) != "Cc"
+    )
+    collapsed = _HORIZONTAL_WHITESPACE_RUN.sub(" ", no_controls)
+    trimmed = collapsed.strip()
+    if not trimmed:
+        return None
+    return trimmed[:max_len]
