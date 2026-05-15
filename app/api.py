@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from typing import Literal
 
 from fastapi import APIRouter, BackgroundTasks, Body, FastAPI, Query, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from slowapi.util import get_remote_address
 from sqlalchemy.exc import IntegrityError
 
@@ -216,8 +216,24 @@ def domain_error_response(exc: Exception) -> JSONResponse:
     return _json_error(status_code, code, str(exc), field=field)
 
 
-async def api_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    """FastAPI exception handler shared by all /api/v1 routes."""
+_API_PATH_PREFIX = "/api/v1"
+
+
+async def api_exception_handler(request: Request, exc: Exception) -> Response:
+    """FastAPI exception handler — scoped to /api/v1/* paths only.
+
+    Registered against ``Exception`` on the global FastAPI app, so Starlette
+    routes every unhandled exception through here regardless of route. Without
+    the prefix guard the PWA error envelope (``{error_code, message, field,
+    details}``) leaked into ``/admin/*`` and webhook 500 responses, where it
+    confuses the admin operator and preempts each route's own redirect-with-
+    flash handling. Non-API paths now fall through to Starlette's default
+    plain 500 — Starlette re-raises after our handler returns, so uvicorn
+    still logs the traceback.
+    """
+    if not request.url.path.startswith(_API_PATH_PREFIX):
+        return PlainTextResponse("Internal Server Error", status_code=500)
+
     if type(exc) in _DOMAIN_EXC_MAP:
         return domain_error_response(exc)
 
@@ -228,14 +244,16 @@ async def api_exception_handler(request: Request, exc: Exception) -> JSONRespons
 def install_exception_handlers(app: FastAPI) -> None:
     """Register API exception handling on the FastAPI application.
 
-    FastAPI's APIRouter has no exception-handler decorator, so app/main.py will
-    call this after including the router in a later integration bead.
+    FastAPI's APIRouter has no exception-handler decorator, so app/main.py
+    calls this after including the router. The ``Exception`` handler is
+    path-guarded to ``/api/v1/*`` — see :func:`api_exception_handler`.
 
     Also installs a dedicated handler for ``PerPhoneRateLimitExceeded`` so the
     per-phone 429 envelope matches the slowapi-keyed per-IP shape — without
     this override FastAPI's default HTTPException handler returns
     ``{"detail": {...}}`` and the PWA's top-level ``error_code`` read misses
-    the canonical ``rate_limit_exceeded`` value.
+    the canonical ``rate_limit_exceeded`` value. The exception is only raised
+    from ``/api/v1`` code paths, so no prefix check is needed here.
     """
     app.add_exception_handler(Exception, api_exception_handler)
     app.add_exception_handler(

@@ -836,3 +836,43 @@ def test_create_booking_staff_alert_failure_does_not_fail_response(api_db, monke
     messages = "\n".join(record.getMessage() for record in caplog.records)
     assert "notifications.staff_alert failed ref=" in messages
     assert "event=Nouvelle réservation PWA" in messages
+
+
+def test_non_api_path_exception_does_not_leak_pwa_json_envelope():
+    """Regression for ewash-72z: the API ``Exception`` handler must not
+    intercept ``/admin/*`` or other non-API routes. Before the fix, any
+    unhandled exception on a non-API route was caught by
+    ``api_exception_handler`` and returned the PWA envelope
+    ``{"error_code": "internal_error", ...}`` with content-type
+    ``application/json`` — confusing the admin operator and preempting
+    each route's own redirect-with-flash behaviour.
+    """
+    app = FastAPI()
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+    app.include_router(api.router)
+    api.install_exception_handlers(app)
+
+    @app.post("/admin/bookings/confirm")
+    async def _explode_admin():  # pragma: no cover - body never returns
+        raise RuntimeError("boom from admin path")
+
+    @app.post("/api/v1/__diag_boom")
+    async def _explode_api():  # pragma: no cover - body never returns
+        raise RuntimeError("boom from api path")
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        admin_response = client.post("/admin/bookings/confirm")
+        api_response = client.post("/api/v1/__diag_boom")
+
+    assert admin_response.status_code == 500
+    assert admin_response.text == "Internal Server Error"
+    admin_content_type = admin_response.headers.get("content-type", "")
+    assert "application/json" not in admin_content_type
+    assert "X-Ewash-Error-Code" not in admin_response.headers
+
+    assert api_response.status_code == 500
+    assert api_response.headers.get("content-type", "").startswith("application/json")
+    api_body = api_response.json()
+    assert api_body["error_code"] == "internal_error"
+    assert api_response.headers.get("X-Ewash-Error-Code") == "internal_error"

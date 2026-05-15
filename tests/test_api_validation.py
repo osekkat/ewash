@@ -377,12 +377,15 @@ def _api_response_for(exc: Exception):
     app = FastAPI()
     pwa_api.install_exception_handlers(app)
 
-    @app.get("/raise")
+    # Route must live under /api/v1 — the Exception handler is path-scoped
+    # to the PWA surface (ewash-72z) so non-/api/v1 routes fall through to
+    # Starlette's plain 500.
+    @app.get("/api/v1/__diag_raise")
     def raise_exception():
         raise exc
 
     with TestClient(app, raise_server_exceptions=False) as client:
-        return client.get("/raise")
+        return client.get("/api/v1/__diag_raise")
 
 
 def test_api_router_exists_with_v1_prefix() -> None:
