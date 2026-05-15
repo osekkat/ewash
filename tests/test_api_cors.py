@@ -90,3 +90,68 @@ def test_empty_cors_configuration_logs_warning(monkeypatch, caplog):
             for record in caplog.records
         )
     )
+
+
+def test_options_bootstrap_advertises_get_post_options_methods(monkeypatch):
+    # The PWA only ever sends GET + POST, but the spec ships all three so a
+    # future addition (e.g. DELETE /api/v1/me for data erasure) doesn't have
+    # to be re-allowed here. OPTIONS is required for preflight itself.
+    origin = "https://ewash-pwa.vercel.app"
+    client = _client_with_cors(monkeypatch, allowed_origins=origin)
+
+    response = _preflight(client, origin)
+
+    case.assertEqual(response.status_code, 200)
+    advertised = {
+        method.strip().upper()
+        for method in response.headers["access-control-allow-methods"].split(",")
+    }
+    case.assertTrue({"GET", "POST", "OPTIONS"}.issubset(advertised))
+
+
+def test_options_bootstrap_advertises_pwa_request_headers(monkeypatch):
+    # The PWA sends Content-Type for JSON bodies, X-Ewash-Token for the
+    # token-scoped read paths, and If-None-Match for the bootstrap ETag.
+    # All three must be on the allow-list or the browser blocks the request.
+    origin = "https://ewash-pwa.vercel.app"
+    client = _client_with_cors(monkeypatch, allowed_origins=origin)
+
+    response = _preflight(client, origin)
+
+    case.assertEqual(response.status_code, 200)
+    advertised = {
+        header.strip().lower()
+        for header in response.headers["access-control-allow-headers"].split(",")
+    }
+    case.assertTrue({"content-type", "x-ewash-token", "if-none-match"}.issubset(advertised))
+
+
+def test_options_bootstrap_does_not_advertise_credentials(monkeypatch):
+    # Auth uses the X-Ewash-Token request header, never cookies. Sending
+    # ``Access-Control-Allow-Credentials: true`` would force us to ban
+    # wildcard origins and complicate the regex; it must not appear.
+    origin = "https://ewash-pwa.vercel.app"
+    client = _client_with_cors(monkeypatch, allowed_origins=origin)
+
+    response = _preflight(client, origin)
+
+    lowered_headers = {name.lower() for name in response.headers}
+    case.assertNotIn("access-control-allow-credentials", lowered_headers)
+
+
+def test_api_disabled_skips_cors_middleware(monkeypatch):
+    # When EWASH_API_ENABLED is false the wiring short-circuits and no CORS
+    # middleware is added. A bare GET-only FastAPI app returns 405 for OPTIONS
+    # and emits no Access-Control headers — confirming the feature flag fully
+    # disables the surface.
+    client = _client_with_cors(
+        monkeypatch,
+        allowed_origins="https://ewash-pwa.vercel.app",
+        api_enabled=False,
+    )
+
+    response = _preflight(client, "https://ewash-pwa.vercel.app")
+
+    case.assertEqual(response.status_code, 405)
+    lowered_headers = {name.lower() for name in response.headers}
+    case.assertNotIn("access-control-allow-origin", lowered_headers)
