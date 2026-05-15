@@ -9,8 +9,7 @@
 (function () {
   const params = new URLSearchParams(location.search);
   const override = params.get("api");
-  // TODO(omar): confirm prod URL once Railway domain is finalized.
-  const prodDefault = "https://ewash-agent-production.up.railway.app";
+  const prodDefault = "https://web-production-1a800.up.railway.app";
   window.EWASH_API_BASE = override || prodDefault;
   if (override) {
     console.info("[ewash] API base overridden via ?api=", override);
