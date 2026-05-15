@@ -1043,14 +1043,21 @@ async def admin_customer_erase_submit(request: Request, phone: str, lang: str | 
         return response
     form = await _admin_form(request)
     confirm = (form.get("confirm", [""])[0] or "").strip()
-    notes = form.get("notes", [""])[0]
+    notes = (form.get("notes", [""])[0] or "")[:500]
     if confirm != "ERASE":
         return RedirectResponse(
             url=f"/admin/customers?lang={locale}&error=confirm_required",
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
-    actor = "admin:unknown"
+    # Audit actor needs to distinguish admin sessions for compliance. The
+    # session cookie's timestamp prefix is unique per login (admins sharing
+    # one password still get a fresh ts on each /admin POST), and the client
+    # IP narrows it further. Truncated to the 64-char audit column cap.
+    session_token = request.cookies.get(_SESSION_COOKIE) or ""
+    session_ts = session_token.split(":", 1)[0] if ":" in session_token else "anon"
+    client_host = (request.client.host if request.client else "") or "unknown"
+    actor = f"admin:{session_ts}:{client_host}"[:64]
     result = anonymize_customer(phone, actor=actor, notes=notes)
     phone_hash = sha256(phone.encode("utf-8")).hexdigest()[:12]
     log.info(

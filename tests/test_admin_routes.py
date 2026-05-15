@@ -485,7 +485,13 @@ def test_admin_erase_customer_happy_path(monkeypatch, tmp_path):
         assert booking.customer_phone.startswith("DEL-")
         assert booking.car_model == ""
         assert booking.raw_booking_json == "{}"
-        assert audit.actor == "admin:unknown"
+        # Actor identifies the admin session + client IP so concurrent
+        # admins sharing one password are still distinguishable in the audit.
+        assert audit.actor.startswith("admin:")
+        assert len(audit.actor) <= 64
+        actor_parts = audit.actor.split(":", 2)
+        assert len(actor_parts) == 3
+        assert actor_parts[1].isdigit()  # session timestamp
         assert audit.notes == "Ticket 123"
         assert audit.anonymized_bookings == 1
 
@@ -622,6 +628,28 @@ def test_admin_erase_recorded_count_matches_actual(monkeypatch, tmp_path):
         audit = session.scalars(select(DataErasureAuditRow)).one()
     assert audit.deleted_count == expected_deleted
     assert audit.anonymized_bookings == expected_bookings
+    _configured_engine.cache_clear()
+
+
+def test_admin_erase_notes_capped_at_500_chars(monkeypatch, tmp_path):
+    phone = "212600000555"
+    db_url = f"sqlite+pysqlite:///{tmp_path / 'admin-erase-notes-cap.db'}"
+    engine = make_engine(db_url)
+    init_db(engine)
+    _seed_customer_for_erasure(engine, phone)
+    client = _logged_in_admin_client(monkeypatch, db_url)
+
+    long_notes = "A" * 2000
+    client.post(
+        f"/admin/customers/{phone}/erase",
+        content=f"confirm=ERASE&notes={long_notes}",
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+
+    with session_scope(engine) as session:
+        audit = session.scalars(select(DataErasureAuditRow)).one()
+    assert audit.notes is not None
+    assert len(audit.notes) == 500
     _configured_engine.cache_clear()
 
 
