@@ -205,14 +205,25 @@ class BookingsListResponse(BaseModel):
 
 class TokenRevokeRequest(StrictBase):
     # ``current`` is the default and revokes only the calling token. ``all``
-    # is the panic case (e.g. lost phone) and wipes every token bound to the
-    # phone owning the calling token. The PWA's Profile logout button uses
-    # ``current``; ``all`` is exposed for a future "Déconnecter partout" CTA.
+    # is the rotation case: revoke every customer_tokens row bound to the
+    # caller's phone (including the calling token), then mint one fresh token
+    # bound to the same phone and return it via ``TokenRevokeResponse.new_token``
+    # so the calling device can keep reading. The PWA's Profile logout button
+    # uses ``current``; ``all`` is exposed for a "Déconnecter partout" CTA.
+    #
+    # ``all`` is NOT a stolen-phone panic logout — the rotation hands a fresh
+    # credential back to the caller. A genuine "my phone was stolen" workflow
+    # would need a side-channel (admin-initiated revoke or DELETE /me from a
+    # different device) to lock the thief out without re-arming them.
     scope: Literal["current", "all"] = "current"
 
 
 class TokenRevokeResponse(BaseModel):
     revoked_count: int
+    # Populated only on ``scope="all"``: a fresh plaintext token that the
+    # caller can use as a replacement for the revoked one. ``None`` for
+    # ``scope="current"`` (caller is now unauthenticated and must complete a
+    # new booking flow to mint another token).
     new_token: Optional[str] = None
 
 
