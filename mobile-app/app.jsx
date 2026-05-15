@@ -199,6 +199,7 @@ function App() {
             variant={variant}
             setVariant={(v) => setTweak('variant', v)}
             profile={profile}
+            onToast={setToast}
             onLogout={() => { setPhaseLogged('lang'); setTabLogged('home'); }}/>
         )}
         {modal === 'booking' && (

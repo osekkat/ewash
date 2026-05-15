@@ -551,6 +551,20 @@
     return response;
   }
 
+  async function deleteMe(params) {
+    const token = _getToken();
+    if (!token) {
+      const err = new Error("No bookings_token in localStorage");
+      err.error_code = "no_local_token";
+      throw err;
+    }
+    return await _fetch("/api/v1/me", {
+      method: "DELETE",
+      headers: { "X-Ewash-Token": token },
+      body: { confirm: params && params.confirm ? params.confirm : "" },
+    });
+  }
+
   window.EwashCalendar = {
     canExport: canExportCalendar,
     generateIcs: generateIcs,
@@ -567,5 +581,6 @@
     submitBooking: submitBooking,
     getMyBookings: getMyBookings,
     revokeToken: revokeToken,
+    deleteMe: deleteMe,
   };
 })();

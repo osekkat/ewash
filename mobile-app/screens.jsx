@@ -787,9 +787,12 @@ function _clearLocalAuthState() {
   });
 }
 
-function ProfileScreen({ t, lang, setLang, theme, setTheme, variant, setVariant, profile, onLogout }) {
+function ProfileScreen({ t, lang, setLang, theme, setTheme, variant, setVariant, profile, onToast, onLogout }) {
   const [confirmingAllOut, setConfirmingAllOut] = useS_h(false);
+  const [confirmingDelete, setConfirmingDelete] = useS_h(false);
   const [logoutBusy, setLogoutBusy] = useS_h(null);
+  const [deleteBusy, setDeleteBusy] = useS_h(false);
+  const [deleteError, setDeleteError] = useS_h('');
 
   const doLogout = async (scope) => {
     if (logoutBusy) return;
@@ -814,6 +817,38 @@ function ProfileScreen({ t, lang, setLang, theme, setTheme, variant, setVariant,
       _clearLocalAuthState();
       setLogoutBusy(null);
       onLogout();
+    }
+  };
+
+  const doDeleteAccount = async () => {
+    if (deleteBusy) return;
+    setDeleteBusy(true);
+    setDeleteError('');
+    if (window.EwashLog) window.EwashLog.info('me.delete.attempt', {});
+    try {
+      if (!window.EwashAPI || !window.EwashAPI.deleteMe) {
+        const err = new Error('deleteMe unavailable');
+        err.error_code = 'api_unavailable';
+        throw err;
+      }
+      await window.EwashAPI.deleteMe({ confirm: 'I confirm I want to delete my data' });
+      if (window.EwashLog) window.EwashLog.info('me.delete.success', {});
+      _clearLocalAuthState();
+      setConfirmingDelete(false);
+      setDeleteBusy(false);
+      if (onToast) onToast(t.deleteAccountSuccess);
+      onLogout();
+      return;
+    } catch (err) {
+      if (window.EwashLog) {
+        window.EwashLog.warn('me.delete.error', {
+          error_code: (err && err.error_code) || 'delete_failed',
+          status: err && err.status,
+        });
+      }
+      setDeleteError(t.deleteAccountError);
+      if (onToast) onToast(t.deleteAccountError);
+      setDeleteBusy(false);
     }
   };
 
@@ -929,6 +964,19 @@ function ProfileScreen({ t, lang, setLang, theme, setTheme, variant, setVariant,
           />
         </ProfileSection>
 
+        <ProfileSection title={t.dangerZoneTitle}>
+          <ProfileRow
+            icon={<Icons.Close size={18}/>}
+            label={t.deleteAccount}
+            onClick={() => {
+              setDeleteError('');
+              setConfirmingDelete(true);
+            }}
+            danger
+            disabled={!!logoutBusy || deleteBusy}
+          />
+        </ProfileSection>
+
         <div className="text-center t-tiny" style={{ paddingBlock: 8 }}>
           ewash · {t.appVersion} 1.0.0 (Casablanca)
         </div>
@@ -942,6 +990,17 @@ function ProfileScreen({ t, lang, setLang, theme, setTheme, variant, setVariant,
           setConfirmingAllOut(false);
           doLogout('all');
         }}
+      />
+      <DeleteAccountConfirmSheet
+        open={confirmingDelete}
+        t={t}
+        busy={deleteBusy}
+        error={deleteError}
+        onCancel={() => {
+          if (deleteBusy) return;
+          setConfirmingDelete(false);
+        }}
+        onConfirm={doDeleteAccount}
       />
     </div>
   );
@@ -1001,6 +1060,58 @@ function LogoutEverywhereSheet({ open, t, busy, onConfirm, onCancel }) {
           </Btn>
           <Btn variant="danger" style={{ flex: 1 }} onClick={onConfirm} disabled={busy}>
             {busy ? t.logoutInProgress : t.logoutEverywhereConfirm}
+          </Btn>
+        </div>
+      </div>
+    </Sheet>
+  );
+}
+
+function DeleteAccountConfirmSheet({ open, t, busy, error, onConfirm, onCancel }) {
+  const [typed, setTyped] = useS_h('');
+  const requiredPhrase = t.deleteConfirmPhrase || 'SUPPRIMER';
+  const normalizedRequired = String(requiredPhrase).trim().toUpperCase();
+  const matches = typed.trim().toUpperCase() === normalizedRequired;
+
+  useE_h(() => {
+    if (open) setTyped('');
+  }, [open]);
+
+  return (
+    <Sheet open={open} onClose={busy ? undefined : onCancel}>
+      <div className="delete-sheet col gap-16">
+        <div className="delete-sheet-icon">
+          <Icons.Close size={28}/>
+        </div>
+        <div className="col gap-6">
+          <div className="t-h1">{t.deleteAccountTitle}</div>
+          <div className="delete-warning-title">{t.deleteAccountWarningTitle}</div>
+          <div className="t-muted">{t.deleteAccountWarningBody}</div>
+        </div>
+        <ul className="delete-warning-list">
+          <li>{t.deleteAccountConsequence1}</li>
+          <li>{t.deleteAccountConsequence2}</li>
+          <li>{t.deleteAccountConsequence3}</li>
+        </ul>
+        <label className="delete-confirm-label">
+          {String(t.deleteConfirmPrompt || '').replace('{phrase}', requiredPhrase)}
+        </label>
+        <input
+          className="input delete-confirm-input"
+          type="text"
+          value={typed}
+          onChange={(event) => setTyped(event.target.value)}
+          autoCorrect="off"
+          autoCapitalize="characters"
+          spellCheck={false}
+        />
+        {error && <div className="delete-error">{error}</div>}
+        <div className="row gap-8">
+          <Btn variant="ghost" style={{ flex: 1 }} onClick={onCancel} disabled={busy}>
+            {t.cancel}
+          </Btn>
+          <Btn variant="danger" style={{ flex: 1 }} onClick={matches ? onConfirm : undefined} disabled={!matches || busy}>
+            {busy ? t.deleteAccountDeleting : t.deleteAccountConfirm}
           </Btn>
         </div>
       </div>

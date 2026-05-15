@@ -930,6 +930,47 @@ button.chip:active { transform: scale(0.95); }
   background: color-mix(in srgb, var(--danger) 12%, transparent);
   color: var(--danger);
 }
+.delete-sheet-icon {
+  width: 58px;
+  height: 58px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
+}
+.delete-warning-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding-inline-start: 20px;
+  color: var(--text-2);
+  font-size: 13.5px;
+  line-height: 1.45;
+}
+.delete-warning-title {
+  color: var(--danger);
+  font-size: 14px;
+  font-weight: 800;
+}
+.delete-confirm-label {
+  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 700;
+}
+.delete-confirm-input {
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+.delete-error {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  color: var(--danger);
+  font-size: 13px;
+  font-weight: 700;
+}
 .toast {
   position: absolute;
   bottom: 90px;
