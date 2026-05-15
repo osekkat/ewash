@@ -1291,3 +1291,48 @@ def verify_customer_token(
             return None
         row.last_used_at = datetime.now(timezone.utc)
         return row.customer_phone
+
+
+def find_booking_by_client_request_id(
+    client_request_id: str | None,
+    *,
+    session=None,
+    engine: Engine | None = None,
+) -> BookingRow | None:
+    """Look up a booking by its idempotency key.
+
+    Returns the matching BookingRow or None. On Postgres the partial unique
+    index `ix_bookings_client_request_id_partial` makes this an indexed lookup;
+    on SQLite (tests) the column has no index and the scan is small enough that
+    it doesn't matter.
+
+    Callers fall into two shapes:
+
+    * **Inside an existing transaction** — the API handler that's about to
+      `persist_confirmed_booking` first does the lookup. Pass `session=<sess>`
+      so we don't open a second transaction (which would deadlock on Postgres
+      under heavy concurrency).
+    * **Standalone** — pass nothing; we resolve the configured engine and
+      open our own short-lived session.
+
+    Returns None for empty / None input so callers can pipe the request body
+    straight in without a None check.
+    """
+    if not client_request_id:
+        return None
+
+    if session is not None:
+        return session.scalar(
+            select(BookingRow).where(BookingRow.client_request_id == client_request_id)
+        )
+
+    db_engine = _engine_or_configured(engine)
+    if db_engine is None:
+        return None
+    with session_scope(db_engine) as sess:
+        row = sess.scalar(
+            select(BookingRow).where(BookingRow.client_request_id == client_request_id)
+        )
+        if row is not None:
+            sess.expunge(row)
+        return row
