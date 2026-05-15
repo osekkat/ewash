@@ -11,7 +11,7 @@ from functools import lru_cache
 import logging
 import re
 
-from sqlalchemy import Engine, delete, select
+from sqlalchemy import Engine, delete, func, select
 
 from .config import settings
 from .db import init_db, make_engine, session_scope
@@ -23,6 +23,7 @@ from .models import (
     PromoDiscountRow,
     ReminderRuleRow,
     ServicePriceRow,
+    ServiceRow,
     TimeSlotRow,
 )
 
@@ -44,6 +45,16 @@ VEHICLE_CATEGORY_KEY = {
     "veh_b":    "B",
     "veh_c":    "C",
     "veh_moto": "MOTO",
+}
+
+# Clean category labels for API responses (no leading letter / no emoji).
+# Distinct from the WhatsApp list-row titles in VEHICLE_CATEGORIES which embed
+# the category letter ("A — …") for in-chat clarity.
+VEHICLE_CATEGORY_LABEL = {
+    "A":    "Citadine",
+    "B":    "Berline / SUV",
+    "C":    "Grande berline/SUV",
+    "MOTO": "Moto/Scooter",
 }
 
 
@@ -731,3 +742,83 @@ def service_name(service_id: str) -> str:
         if sid == service_id:
             return name
     return service_id
+
+
+def service_label(service_id: str, category: str, *, promo_code: str | None = None) -> str:
+    """Human-readable service label including price: 'Le Complet — 125 DH'.
+
+    Falls back to the bare service name when no price is found (unknown id or
+    category mismatch). Promo discount is applied via service_price().
+    """
+    name = service_name(service_id)
+    price = service_price(service_id, category, promo_code=promo_code)
+    if price is None:
+        return name
+    return f"{name} — {price} DH"
+
+
+def vehicle_label(category: str, *, make: str | None = None) -> str:
+    """Human-readable vehicle label, e.g. 'Citadine (Clio)' or 'Moto/Scooter'.
+
+    `make` is appended in parentheses for car categories only — moto bookings
+    don't carry a model field in the bot flow today.
+    """
+    base = VEHICLE_CATEGORY_LABEL.get(category, category)
+    if make and category != MOTO_PRICE_CATEGORY:
+        clean = make.strip()
+        if clean:
+            return f"{base} ({clean})"
+    return base
+
+
+def location_label(location_kind: str, *, center_id: str | None = None) -> str:
+    """Human-readable location label, e.g. 'À domicile' or 'Stand <center name>'.
+
+    For `location_kind="center"`, looks up the active centers list. If the
+    center name already begins with "Stand" (case-insensitive), it is returned
+    as-is to avoid "Stand Stand …" — otherwise the prefix is added.
+    """
+    if location_kind == "home":
+        return "À domicile"
+    if location_kind == "center":
+        if center_id:
+            for cid, name, _details in active_centers():
+                if cid == center_id:
+                    if name.lower().startswith("stand "):
+                        return name
+                    return f"Stand {name}"
+        return "Au stand"
+    return location_kind
+
+
+def compute_catalog_etag_seed(*, engine: Engine | None = None) -> str:
+    """Stable string capturing the catalog's revision.
+
+    Computed from max(updated_at) across all DB-backed catalog tables. Any
+    admin edit invalidates the seed (and thus the bootstrap ETag). When the
+    DB is unreachable or every table is empty, returns the fixed "static-v1"
+    seed so the static catalog still produces a consistent ETag.
+    """
+    db_engine = _engine_or_configured(engine)
+    if db_engine is None:
+        return "static-v1"
+    try:
+        with session_scope(db_engine) as session:
+            max_updates: list[str] = []
+            for table_cls in (
+                ServiceRow,
+                ServicePriceRow,
+                PromoCodeRow,
+                PromoDiscountRow,
+                CenterRow,
+                TimeSlotRow,
+                ClosedDateRow,
+                AdminTextRow,
+            ):
+                max_dt = session.scalar(select(func.max(table_cls.updated_at)))
+                if max_dt is not None:
+                    max_updates.append(max_dt.isoformat())
+        return "|".join(max_updates) if max_updates else "static-v1"
+    except Exception:
+        log.exception("compute_catalog_etag_seed failed; returning static seed")
+        return "static-v1"
