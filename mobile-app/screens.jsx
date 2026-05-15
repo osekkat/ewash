@@ -760,7 +760,54 @@ function ServicesScreen({ t, lang, openBooking, theme }) {
 // ─────────────────────────────────────────────────────────────
 // PROFILE
 // ─────────────────────────────────────────────────────────────
+function _clearLocalAuthState() {
+  const tokenKey = window.EwashAPI && window.EwashAPI._TOKEN_KEY
+    ? window.EwashAPI._TOKEN_KEY
+    : 'ewash.bookings_token';
+  const phoneKey = window.EwashAPI && window.EwashAPI._PHONE_KEY
+    ? window.EwashAPI._PHONE_KEY
+    : 'ewash.phone';
+  [tokenKey, phoneKey, 'ewash.booking_draft'].forEach((key) => {
+    try {
+      localStorage.removeItem(key);
+    } catch (err) {
+      if (window.EwashLog) {
+        window.EwashLog.warn('localstorage.error', { op: 'remove', key });
+      }
+    }
+  });
+}
+
 function ProfileScreen({ t, lang, setLang, theme, setTheme, variant, setVariant, profile, onLogout }) {
+  const [confirmingAllOut, setConfirmingAllOut] = useS_h(false);
+  const [logoutBusy, setLogoutBusy] = useS_h(null);
+
+  const doLogout = async (scope) => {
+    if (logoutBusy) return;
+    setLogoutBusy(scope);
+    if (window.EwashLog) window.EwashLog.info('auth.logout', { scope });
+    try {
+      if (!window.EwashAPI || !window.EwashAPI.revokeToken) {
+        const err = new Error('revokeToken unavailable');
+        err.error_code = 'api_unavailable';
+        throw err;
+      }
+      await window.EwashAPI.revokeToken({ scope });
+    } catch (err) {
+      if (window.EwashLog) {
+        window.EwashLog.warn('auth.logout.warn', {
+          scope,
+          error_code: (err && err.error_code) || 'logout_failed',
+          status: err && err.status,
+        });
+      }
+    } finally {
+      _clearLocalAuthState();
+      setLogoutBusy(null);
+      onLogout();
+    }
+  };
+
   return (
     <div className="app-scroll">
       <TopBar title={t.myProfile} />
@@ -857,13 +904,36 @@ function ProfileScreen({ t, lang, setLang, theme, setTheme, variant, setVariant,
 
         <ProfileSection>
           <ProfileRow icon={<Icons.Message size={18}/>} label={t.helpCenter} />
-          <ProfileRow icon={<Icons.LogOut size={18}/>} label={t.logout} onClick={onLogout} danger />
+          <ProfileRow
+            icon={<Icons.LogOut size={18}/>}
+            label={logoutBusy === 'current' ? t.logoutInProgress : t.logout}
+            onClick={() => doLogout('current')}
+            danger
+            disabled={!!logoutBusy}
+          />
+          <ProfileRow
+            icon={<Icons.Shield size={18}/>}
+            label={t.logoutEverywhere}
+            onClick={() => setConfirmingAllOut(true)}
+            danger
+            disabled={!!logoutBusy}
+          />
         </ProfileSection>
 
         <div className="text-center t-tiny" style={{ paddingBlock: 8 }}>
           ewash · {t.appVersion} 1.0.0 (Casablanca)
         </div>
       </div>
+      <LogoutEverywhereSheet
+        open={confirmingAllOut}
+        t={t}
+        busy={logoutBusy === 'all'}
+        onCancel={() => setConfirmingAllOut(false)}
+        onConfirm={() => {
+          setConfirmingAllOut(false);
+          doLogout('all');
+        }}
+      />
     </div>
   );
 }
@@ -882,14 +952,15 @@ function ProfileSection({ title, children }) {
   );
 }
 
-function ProfileRow({ icon, label, value, right, onClick, danger }) {
+function ProfileRow({ icon, label, value, right, onClick, danger, disabled }) {
   return (
-    <button onClick={onClick} style={{
+    <button onClick={disabled ? undefined : onClick} disabled={disabled} style={{
       display: 'flex', alignItems: 'center', gap: 14,
       padding: '14px 16px', width: '100%',
       borderBottom: '1px solid var(--border)',
-      textAlign: 'inherit', cursor: onClick ? 'pointer' : 'default',
+      textAlign: 'inherit', cursor: disabled ? 'not-allowed' : onClick ? 'pointer' : 'default',
       color: danger ? 'var(--danger)' : 'var(--text)',
+      opacity: disabled ? 0.58 : 1,
     }}>
       <div style={{
         width: 36, height: 36, borderRadius: 10,
@@ -901,6 +972,30 @@ function ProfileRow({ icon, label, value, right, onClick, danger }) {
       {value && <div className="t-muted" style={{ fontSize: 13 }}>{value}</div>}
       {right || (onClick && !danger && <Icons.ChevronRight size={16} style={{ color: 'var(--text-3)' }}/>)}
     </button>
+  );
+}
+
+function LogoutEverywhereSheet({ open, t, busy, onConfirm, onCancel }) {
+  return (
+    <Sheet open={open} onClose={onCancel}>
+      <div className="logout-sheet col gap-16">
+        <div className="logout-sheet-icon">
+          <Icons.Shield size={28}/>
+        </div>
+        <div className="col gap-6">
+          <div className="t-h1">{t.logoutEverywhereTitle}</div>
+          <div className="t-muted">{t.logoutEverywhereBody}</div>
+        </div>
+        <div className="row gap-8">
+          <Btn variant="ghost" style={{ flex: 1 }} onClick={onCancel} disabled={busy}>
+            {t.cancel}
+          </Btn>
+          <Btn variant="danger" style={{ flex: 1 }} onClick={onConfirm} disabled={busy}>
+            {busy ? t.logoutInProgress : t.logoutEverywhereConfirm}
+          </Btn>
+        </div>
+      </div>
+    </Sheet>
   );
 }
 

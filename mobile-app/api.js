@@ -362,6 +362,23 @@
     });
   }
 
+  async function revokeToken(params) {
+    const token = _getToken();
+    if (!token) {
+      const err = new Error("No bookings_token in localStorage");
+      err.error_code = "no_local_token";
+      throw err;
+    }
+    const scope = params && params.scope ? params.scope : "current";
+    const response = await _fetch("/api/v1/tokens/revoke", {
+      method: "POST",
+      headers: { "X-Ewash-Token": token },
+      body: { scope: scope },
+    });
+    if (response && response.new_token) _saveToken(response.new_token);
+    return response;
+  }
+
   window.EwashAPI = {
     _fetch: _fetch,
     _TOKEN_KEY: BOOKINGS_STORAGE_KEY,
@@ -371,5 +388,6 @@
     validatePromo: validatePromo,
     submitBooking: submitBooking,
     getMyBookings: getMyBookings,
+    revokeToken: revokeToken,
   };
 })();
