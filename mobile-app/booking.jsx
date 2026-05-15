@@ -39,6 +39,14 @@ const VALID_PROMOS = ['ECO15', 'CIH10', 'PARTNER'];
 const STEPS_CAR = ['category', 'vehicle', 'location', 'service', 'date', 'note'];
 const STEPS_MOTO = ['category', 'location', 'service', 'date', 'note'];
 
+function _bookingDataSize(data) {
+  try {
+    return JSON.stringify(data).length;
+  } catch (_) {
+    return 0;
+  }
+}
+
 // ─────────────────────────────────────────────────────────────
 // BOOKING ROOT — state machine
 // ─────────────────────────────────────────────────────────────
@@ -77,6 +85,13 @@ function BookingFlow({ t, lang, theme, variant, onClose, onComplete, profile }) 
   const stepperIdx = stepperSteps.indexOf(stepperKey);
 
   const goTo = (next) => {
+    if (window.EwashLog) {
+      window.EwashLog.info('booking.flow', {
+        from_step: step,
+        to_step: next,
+        data_size: _bookingDataSize(data),
+      });
+    }
     setHistory((h) => [...h, step]);
     setStep(next);
   };
@@ -84,6 +99,13 @@ function BookingFlow({ t, lang, theme, variant, onClose, onComplete, profile }) 
     setHistory((h) => {
       if (h.length === 0) { onClose(); return h; }
       const prev = h[h.length - 1];
+      if (window.EwashLog) {
+        window.EwashLog.info('booking.flow', {
+          from_step: step,
+          to_step: prev,
+          data_size: _bookingDataSize(data),
+        });
+      }
       setStep(prev);
       return h.slice(0, -1);
     });
@@ -868,6 +890,24 @@ function RecapStep({ t, lang, data, patch, totalPrice, onEdit, onCancel, onConfi
   const catLabel = data.category === 'M' ? t.catMoto : t['cat' + data.category];
   const phoneDigits = data.phone.replace(/\s/g, '').length;
   const phoneValid = phoneDigits >= 9;
+  const confirm = () => {
+    if (window.EwashLog) {
+      window.EwashLog.hash(data.phone).then((phone_hash) => {
+        window.EwashLog.info('booking.confirm', {
+          phone_hash,
+          category: data.category,
+          service: data.service && data.service.name,
+          total_dh: totalPrice,
+          has_promo: !!data.promoApplied,
+          addon_count: data.addons.length,
+          client_request_id: '',
+        });
+      }).catch(() => {
+        window.EwashLog.warn('booking.error', { step: 'recap', error_code: 'phone_hash_failed' });
+      });
+    }
+    onConfirm();
+  };
   return (
     <>
       <div className="px-20 col gap-6 mb-16">
@@ -934,7 +974,7 @@ function RecapStep({ t, lang, data, patch, totalPrice, onEdit, onCancel, onConfi
         </button>
       </div>
       <CtaDock hint={!phoneValid ? t.phoneRecapHint : undefined}>
-        <Btn block lg onClick={onConfirm} disabled={!phoneValid}
+        <Btn block lg onClick={confirm} disabled={!phoneValid}
           style={{ opacity: phoneValid ? 1 : 0.4 }}
           icon={<Icons.Check size={20} stroke={2.5}/>}>
           {t.confirmBooking}
@@ -1008,6 +1048,15 @@ function RecapRow({ icon, label, value, multiline }) {
 // ─────────────────────────────────────────────────────────────
 function ConfirmedStep({ t, lang, data, totalPrice, variant, onAddons, onDone }) {
   const ref = useM_b(() => 'EW-2026-' + String(Math.floor(Math.random() * 9000) + 1000), []);
+  useE_b(() => {
+    if (!window.EwashLog) return;
+    window.EwashLog.info('booking.confirmed', {
+      ref,
+      total_dh: totalPrice,
+      token_changed: false,
+      duration_ms: 0,
+    });
+  }, [ref, totalPrice]);
   // Auto-open the upsell modal after a brief beat so the user sees the
   // confirmation first. Dismissable only via the two CTAs inside it.
   const [offerOpen, setOfferOpen] = useS_b(false);

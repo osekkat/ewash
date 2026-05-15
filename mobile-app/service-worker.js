@@ -15,6 +15,8 @@
  */
 const SW_VERSION = '2026-05-15-pwa-integration';
 const CACHE = `ewash-${SW_VERSION}`;
+const SW_LOG_LIMIT = 100;
+let swLogCount = 0;
 const ASSETS = [
   './',
   './index.html',
@@ -35,21 +37,60 @@ const ASSETS = [
   './assets/apple-touch-icon.png',
 ];
 
+self.EwashLog = {
+  info(scope, payload) {
+    if (swLogCount >= SW_LOG_LIMIT) return;
+    swLogCount += 1;
+    console.info(`[ewash.${scope}]`, {
+      t: new Date().toISOString(),
+      level: 'info',
+      scope: `ewash.${scope}`,
+      version: SW_VERSION,
+      cache_name: CACHE,
+      ...(payload || {}),
+    });
+  },
+  warn(scope, payload) {
+    if (swLogCount >= SW_LOG_LIMIT) return;
+    swLogCount += 1;
+    console.warn(`[ewash.${scope}.warn]`, {
+      t: new Date().toISOString(),
+      level: 'warn',
+      scope: `ewash.${scope}`,
+      version: SW_VERSION,
+      cache_name: CACHE,
+      ...(payload || {}),
+    });
+  },
+};
+
 self.addEventListener('install', (event) => {
+  self.EwashLog.info('sw.install', { asset_count: ASSETS.length });
   event.waitUntil(
     caches.open(CACHE)
       .then((cache) => cache.addAll(
         ASSETS.map((url) => new Request(url, { cache: 'reload' }))
       ))
       .then(() => self.skipWaiting())
+      .catch((err) => {
+        self.EwashLog.warn('sw.install', {
+          error_code: (err && err.message) || 'install_failed',
+        });
+      })
   );
 });
 
 self.addEventListener('activate', (event) => {
+  self.EwashLog.info('sw.activate', {});
   event.waitUntil(
     caches.keys()
       .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
       .then(() => self.clients.claim())
+      .catch((err) => {
+        self.EwashLog.warn('sw.activate', {
+          error_code: (err && err.message) || 'activate_failed',
+        });
+      })
   );
 });
 
@@ -70,6 +111,11 @@ self.addEventListener('fetch', (event) => {
     url = null;
   }
   if (url && url.pathname.startsWith('/api/')) {
+    self.EwashLog.info('sw.fetch', {
+      path: url.pathname,
+      method: req.method,
+      bypassed: true,
+    });
     return;
   }
 
@@ -80,7 +126,15 @@ self.addEventListener('fetch', (event) => {
       if (response && response.status === 200 &&
           (response.type === 'basic' || response.type === 'cors')) {
         const clone = response.clone();
-        caches.open(CACHE).then((c) => c.put(req, clone));
+        caches.open(CACHE)
+          .then((c) => c.put(req, clone))
+          .catch((err) => {
+            self.EwashLog.warn('sw.fetch', {
+              path: url ? url.pathname : '',
+              method: req.method,
+              error_code: (err && err.message) || 'cache_put_failed',
+            });
+          });
       }
       return response;
     }).catch(() => caches.match(req))

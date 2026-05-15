@@ -14,7 +14,7 @@ function useCountUp(target, duration = 1200) {
     if (reduced) { setValue(target); return; }
     let raf, start;
     const tick = (ts) => {
-      if (start == null) start = ts;
+      if (start === undefined) start = ts;
       const t = Math.min(1, (ts - start) / duration);
       const eased = 1 - Math.pow(1 - t, 3);
       setValue(Math.round(target * eased));
@@ -240,6 +240,22 @@ function BookingsScreen({ t, lang, openBooking, theme }) {
       { date: '04 avr', time: '14:00', service: 'Le Complet', cat: 'Berline', loc: 'Stand Bouskoura', status: 'cancelled', ref: 'EW-2026-0362' },
     ],
   };
+  useE_h(() => {
+    if (!window.EwashLog) return;
+    window.EwashLog.info('bookings.list', {
+      count: items[tab].length,
+      state: items[tab].length ? 'list' : 'empty',
+      has_token: !!(window.EwashAPI && window.EwashAPI._getToken()),
+    });
+  }, [tab]);
+
+  const selectTab = (next) => {
+    if (window.EwashLog && next !== tab) {
+      window.EwashLog.info('lifecycle.tab', { from_tab: `bookings:${tab}`, to_tab: `bookings:${next}` });
+    }
+    setTab(next);
+  };
+
   return (
     <div className="app-scroll">
       <TopBar title={t.bookings} right={<button className="icon-btn"><Icons.Search size={20}/></button>}/>
@@ -249,7 +265,7 @@ function BookingsScreen({ t, lang, openBooking, theme }) {
           borderRadius: 999, padding: 4,
         }}>
           {['upcoming', 'past'].map(k => (
-            <button key={k} onClick={() => setTab(k)} style={{
+            <button key={k} onClick={() => selectTab(k)} style={{
               flex: 1, padding: '11px 16px', borderRadius: 999,
               background: tab === k ? 'var(--surface)' : 'transparent',
               color: tab === k ? 'var(--text)' : 'var(--text-2)',

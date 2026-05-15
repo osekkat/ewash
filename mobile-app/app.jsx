@@ -9,6 +9,81 @@ const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
   "lang": "fr"
 }/*EDITMODE-END*/;
 
+function _copyDebugText(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    return navigator.clipboard.writeText(text);
+  }
+  const el = document.createElement('textarea');
+  el.value = text;
+  el.setAttribute('readonly', '');
+  el.style.position = 'fixed';
+  el.style.inset = '0 auto auto -9999px';
+  document.body.appendChild(el);
+  el.select();
+  try {
+    document.execCommand('copy');
+  } finally {
+    document.body.removeChild(el);
+  }
+  return Promise.resolve();
+}
+
+function DebugOverlay() {
+  const logger = window.EwashLog;
+  const [entries, setEntries] = useS_a(() => logger ? logger.snapshot() : []);
+  const [collapsed, setCollapsed] = useS_a(true);
+  const [copied, setCopied] = useS_a(false);
+
+  useE_a(() => {
+    if (!logger) return undefined;
+    setEntries(logger.snapshot());
+    const onLog = (event) => {
+      setEntries((prev) => prev.concat(event.detail).slice(-100));
+    };
+    window.addEventListener('ewashlog', onLog);
+    return () => window.removeEventListener('ewashlog', onLog);
+  }, [logger]);
+
+  if (!logger || !logger.debugMode) return null;
+
+  const copyLogs = (event) => {
+    event.stopPropagation();
+    _copyDebugText(JSON.stringify(logger.snapshot(), null, 2)).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+    }).catch(() => {
+      if (logger) logger.warn('lifecycle.debug_copy', { error_code: 'clipboard_failed' });
+    });
+  };
+
+  return (
+    <div className="debug-overlay" data-collapsed={collapsed ? 'true' : 'false'}>
+      <header onClick={() => setCollapsed(!collapsed)}>
+        <span>EwashLog · {entries.length} · {logger.sessionId}</span>
+        <button type="button" onClick={copyLogs}>{copied ? 'Copied' : 'Copy'}</button>
+      </header>
+      {!collapsed && (
+        <div className="entries">
+          {entries.slice(-40).map((entry, idx) => {
+            const payload = Object.assign({}, entry);
+            delete payload.t;
+            delete payload.scope;
+            delete payload.level;
+            delete payload.session;
+            return (
+              <div key={idx} className={`entry level-${entry.level}`}>
+                <small>{entry.t.split('T')[1].slice(0, 8)}</small>
+                <code>{entry.scope}</code>
+                <pre>{JSON.stringify(payload)}</pre>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─────────────────────────────────────────────────────────────
 // MAIN APP
 // ─────────────────────────────────────────────────────────────
@@ -25,6 +100,16 @@ function App() {
   const [tab, setTab] = useS_a('home'); // home, bookings, services, profile
   const [modal, setModal] = useS_a(null); // 'booking' | 'support' | null
   const [toast, setToast] = useS_a(null);
+
+  const log = window.EwashLog;
+  const setPhaseLogged = (next) => {
+    if (log) log.info('lifecycle.phase', { from_phase: phase, to_phase: next });
+    setPhase(next);
+  };
+  const setTabLogged = (next) => {
+    if (log && next !== tab) log.info('lifecycle.tab', { from_tab: tab, to_tab: next });
+    setTab(next);
+  };
 
   const profile = useM_a(() => ({
     name: lang === 'ar' ? 'يوسف' : 'Youssef',
@@ -64,11 +149,11 @@ function App() {
   // ───── Phase rendering
   let phaseContent = null;
   if (phase === 'splash') {
-    phaseContent = <SplashScreen t={t} onDone={() => setPhase('lang')} />;
+    phaseContent = <SplashScreen t={t} onDone={() => setPhaseLogged('lang')} />;
   } else if (phase === 'lang') {
     phaseContent = <LangScreen t={t} lang={lang}
       setLang={(l) => setTweak('lang', l)}
-      onDone={() => setPhase('app')}/>;
+      onDone={() => setPhaseLogged('app')}/>;
   } else if (phase === 'app') {
     phaseContent = (
       <>
@@ -77,7 +162,7 @@ function App() {
             profile={profile}
             openBooking={() => setModal('booking')}
             gotoSupport={() => setModal('support')}
-            gotoTariffs={() => setTab('services')}/>
+            gotoTariffs={() => setTabLogged('services')}/>
         )}
         {!modal && tab === 'bookings' && (
           <BookingsScreen t={t} lang={lang} openBooking={() => setModal('booking')} theme={theme}/>
@@ -93,19 +178,19 @@ function App() {
             variant={variant}
             setVariant={(v) => setTweak('variant', v)}
             profile={profile}
-            onLogout={() => { setPhase('lang'); setTab('home'); }}/>
+            onLogout={() => { setPhaseLogged('lang'); setTabLogged('home'); }}/>
         )}
         {modal === 'booking' && (
           <BookingFlow t={t} lang={lang} theme={theme} variant={variant}
             profile={profile}
             onClose={() => setModal(null)}
-            onComplete={() => { setModal(null); setTab('bookings'); setToast(t.bookingConfirmed); }}/>
+            onComplete={() => { setModal(null); setTabLogged('bookings'); setToast(t.bookingConfirmed); }}/>
         )}
         {modal === 'support' && (
           <SupportScreen t={t} theme={theme} onBack={() => setModal(null)}/>
         )}
         {!modal && (
-          <BottomNav t={t} screen={tab} setScreen={setTab}/>
+          <BottomNav t={t} screen={tab} setScreen={setTabLogged}/>
         )}
       </>
     );
@@ -155,12 +240,13 @@ function App() {
           ]}/>
         <TweakSection label="Flow" />
         <TweakButton label="Replay onboarding"
-          onClick={() => { setPhase('splash'); setTab('home'); setModal(null); }}/>
+          onClick={() => { setPhaseLogged('splash'); setTabLogged('home'); setModal(null); }}/>
         <TweakButton label="Skip to app"
-          onClick={() => { setPhase('app'); setModal(null); }}/>
+          onClick={() => { setPhaseLogged('app'); setModal(null); }}/>
         <TweakButton label="Start a booking"
-          onClick={() => { setPhase('app'); setModal('booking'); }}/>
+          onClick={() => { setPhaseLogged('app'); setModal('booking'); }}/>
       </TweaksPanel>
+      <DebugOverlay />
     </>
   );
 }

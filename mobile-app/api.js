@@ -2,6 +2,90 @@
   const BOOKINGS_STORAGE_KEY = ["ewash.bookings", "token"].join("_");
   const PHONE_STORAGE_KEY = "ewash.phone";
   const DEFAULT_TIMEOUT_MS = 10000;
+  const LOG_RING_LIMIT = 200;
+
+  function _makeSessionId() {
+    const cryptoObj = window.crypto || window.msCrypto;
+    if (cryptoObj && cryptoObj.getRandomValues) {
+      const bytes = new Uint8Array([0, 0, 0, 0]);
+      cryptoObj.getRandomValues(bytes);
+      return Array.from(bytes, function (b) {
+        return b.toString(16).padStart(2, "0");
+      }).join("");
+    }
+    return Math.random().toString(16).slice(2, 10).padEnd(8, "0").slice(0, 8);
+  }
+
+  function _createLogger() {
+    const ring = [];
+    const debugMode = new URLSearchParams(location.search).has("debug");
+    const sessionId = _makeSessionId();
+
+    function _push(level, scope, payload) {
+      const fullScope = scope.indexOf("ewash.") === 0 ? scope : "ewash." + scope;
+      const entry = Object.assign(
+        {
+          t: new Date().toISOString(),
+          level: level,
+          scope: fullScope,
+          session: sessionId,
+        },
+        payload || {}
+      );
+      ring.push(entry);
+      if (ring.length > LOG_RING_LIMIT) ring.shift();
+
+      const suffix = level === "error" ? ".fatal" : level === "warn" ? ".warn" : "";
+      const label = "[" + fullScope + suffix + "]";
+      if (level === "error") console.error(label, entry);
+      else if (level === "warn") console.warn(label, entry);
+      else console.info(label, entry);
+
+      try {
+        window.dispatchEvent(new CustomEvent("ewashlog", { detail: entry }));
+      } catch (_) {
+        // Logging must never break the customer flow.
+      }
+    }
+
+    async function hash(value) {
+      if (!value) return "";
+      try {
+        const digest = await crypto.subtle.digest(
+          "SHA-256",
+          new TextEncoder().encode(String(value))
+        );
+        return Array.from(new Uint8Array(digest))
+          .slice(0, 4)
+          .map(function (b) {
+            return b.toString(16).padStart(2, "0");
+          })
+          .join("");
+      } catch (_) {
+        return "";
+      }
+    }
+
+    return {
+      info: function (scope, payload) { _push("info", scope, payload); },
+      warn: function (scope, payload) { _push("warn", scope, payload); },
+      fatal: function (scope, payload) { _push("error", scope, payload); },
+      snapshot: function () { return ring.slice(); },
+      hash: hash,
+      sessionId: sessionId,
+      debugMode: debugMode,
+    };
+  }
+
+  const EwashLog = window.EwashLog || _createLogger();
+  window.EwashLog = EwashLog;
+  if (EwashLog.debugMode) {
+    EwashLog.info("lifecycle.boot", {
+      url: location.href,
+      ua: navigator.userAgent,
+      api_base: window.EWASH_API_BASE || "",
+    });
+  }
 
   function _base() {
     return window.EWASH_API_BASE || "";
@@ -30,6 +114,12 @@
     }
   }
 
+  function _apiScope(path) {
+    const cleanPath = path.split("?")[0].replace(/^\/api\/v1\/?/, "");
+    const scope = cleanPath || "root";
+    return "api." + scope.replace(/^\//, "").replace(/\//g, "_").replace(/-/g, "_");
+  }
+
   async function _fetch(path, options) {
     options = options || {};
 
@@ -45,6 +135,14 @@
       controller.abort();
     }, timeout);
     const startedAt = performance.now();
+    const retryCount = options.retry_count || 0;
+    const scope = _apiScope(path);
+
+    EwashLog.info(scope, {
+      path: path,
+      method: method,
+      retry_count: retryCount,
+    });
 
     try {
       const resp = await fetch(_base() + path, {
@@ -69,11 +167,26 @@
         err.status = resp.status;
         _setDuration(err, duration);
         err._ewashLogged = true;
-        console.warn("[ewash.api]", method, path, "->", resp.status, err.error_code, duration + "ms");
+        const payload = {
+          path: path,
+          method: method,
+          status: resp.status,
+          duration_ms: +duration,
+          error_code: err.error_code,
+          retry_count: retryCount,
+        };
+        if (resp.status >= 500) EwashLog.fatal(scope, payload);
+        else EwashLog.warn(scope, payload);
         throw err;
       }
 
-      console.info("[ewash.api]", method, path, "->", resp.status, duration + "ms");
+      EwashLog.info(scope, {
+        path: path,
+        method: method,
+        status: resp.status,
+        duration_ms: +duration,
+        retry_count: retryCount,
+      });
       if (resp.status === 204 || resp.status === 304) {
         return null;
       }
@@ -82,14 +195,14 @@
       if (!err || !err._ewashLogged) {
         const failedDuration = _durationMs(startedAt);
         _setDuration(err, failedDuration);
-        console.warn(
-          "[ewash.api]",
-          method,
-          path,
-          "->",
-          (err && (err.name || err.message)) || "error",
-          failedDuration + "ms"
-        );
+        EwashLog.fatal(scope, {
+          path: path,
+          method: method,
+          status: 0,
+          duration_ms: +failedDuration,
+          error_code: (err && (err.name || err.message)) || "network_error",
+          retry_count: retryCount,
+        });
       }
       throw err;
     } finally {
@@ -105,7 +218,7 @@
     let lastErr;
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
-        return await _fetch(path, options);
+        return await _fetch(path, Object.assign({}, options || {}, { retry_count: attempt }));
       } catch (err) {
         lastErr = err;
         // 4xx is deterministic — retrying changes nothing, so surface immediately.
@@ -115,15 +228,13 @@
         // 5xx / network errors / aborts → backoff and retry while attempts remain.
         if (attempt < retries) {
           const delay = backoffMs * Math.pow(2, attempt);
-          console.info(
-            "[ewash.api]",
-            "retry",
-            path,
-            "in",
-            delay,
-            "ms after",
-            (err && err.error_code) || (err && err.name) || "error"
-          );
+          EwashLog.info("api.retry", {
+            path: path,
+            method: (options && options.method) || "GET",
+            delay_ms: delay,
+            retry_count: attempt + 1,
+            error_code: (err && err.error_code) || (err && err.name) || "error",
+          });
           await new Promise(function (resolve) {
             setTimeout(resolve, delay);
           });
@@ -138,6 +249,7 @@
       return localStorage.getItem(BOOKINGS_STORAGE_KEY) || "";
     } catch (_) {
       // Private mode, storage disabled — treat as "no token", caller decides.
+      EwashLog.warn("localstorage.error", { op: "get", key: "bookings_token" });
       return "";
     }
   }
@@ -148,6 +260,7 @@
       localStorage.setItem(BOOKINGS_STORAGE_KEY, token);
     } catch (_) {
       // Storage quota / private mode — best-effort persistence only.
+      EwashLog.warn("localstorage.error", { op: "set", key: "bookings_token" });
     }
   }
 
@@ -157,6 +270,7 @@
       localStorage.setItem(PHONE_STORAGE_KEY, phone);
     } catch (_) {
       // ditto.
+      EwashLog.warn("localstorage.error", { op: "set", key: "phone" });
     }
   }
 
@@ -187,6 +301,16 @@
       payload,
       existingToken ? { bookings_token: existingToken } : {}
     );
+    const phoneHash = await EwashLog.hash(payload && payload.phone);
+    EwashLog.info("booking.confirm", {
+      phone_hash: phoneHash,
+      category: payload && payload.category,
+      service: payload && payload.service_id,
+      total_dh: payload && payload.total_dh,
+      has_promo: !!(payload && payload.promo_code),
+      addon_count: payload && payload.addon_ids ? payload.addon_ids.length : 0,
+      client_request_id: payload && payload.client_request_id,
+    });
     const response = await _fetch("/api/v1/bookings", {
       method: "POST",
       body: requestBody,
@@ -199,10 +323,11 @@
     if (payload && payload.phone) _savePhone(payload.phone);
 
     if (response) {
-      console.info("[ewash.api.booking]", {
+      EwashLog.info("booking.confirmed", {
         ref: response.ref,
-        total: response.total_dh,
+        total_dh: response.total_dh,
         token_changed: existingToken !== response.bookings_token,
+        duration_ms: response.duration_ms,
         is_idempotent_replay: response.is_idempotent_replay === true,
       });
     }
