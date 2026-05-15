@@ -12,6 +12,7 @@ from app.db import init_db, make_engine, session_scope
 from app.main import app
 from app.models import (
     BookingRow,
+    ConversationEventRow,
     ConversationSessionRow,
     CustomerName,
     CustomerTokenRow,
@@ -162,7 +163,7 @@ def _seed_customer_for_erasure(engine, phone: str = "212600000551") -> Booking:
 
 def _customer_side_count(session, phone: str) -> int:
     total = 0
-    for model in (CustomerTokenRow, CustomerName, CustomerVehicle, ConversationSessionRow):
+    for model in (CustomerTokenRow, CustomerName, CustomerVehicle, ConversationEventRow, ConversationSessionRow):
         total += session.scalar(
             select(func.count()).select_from(model).where(model.customer_phone == phone)
         ) or 0

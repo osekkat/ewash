@@ -25,6 +25,7 @@ from app.config import settings
 from app.db import init_db, make_engine, session_scope
 from app.models import (
     BookingRow,
+    ConversationEventRow,
     ConversationSessionRow,
     Customer,
     CustomerName,
@@ -325,12 +326,19 @@ def test_delete_me_purges_conversation_sessions_for_phone(api_db):
     with session_scope(api_db) as session:
         # ``_seed_customer`` above already inserted the customers row for this
         # phone; ConversationSessionRow only needs the FK to satisfy.
-        session.add(
-            ConversationSessionRow(
-                customer_phone=phone,
-                current_stage="MENU",
-            )
+        conversation = ConversationSessionRow(
+            customer_phone=phone,
+            current_stage="MENU",
         )
+        session.add(conversation)
+        session.flush()
+        session.add(ConversationEventRow(
+            session_id=conversation.id,
+            customer_phone=phone,
+            stage="MENU",
+            event_type="stage_seen",
+            payload_json='{"free_text": "garage blue gate"}',
+        ))
     token = mint_customer_token(phone, engine=api_db)
 
     with _client() as client:
@@ -345,7 +353,11 @@ def test_delete_me_purges_conversation_sessions_for_phone(api_db):
         sessions = session.scalars(
             select(ConversationSessionRow).where(ConversationSessionRow.customer_phone == phone)
         ).all()
+        events = session.scalars(
+            select(ConversationEventRow).where(ConversationEventRow.customer_phone == phone)
+        ).all()
     case.assertEqual(sessions, [])
+    case.assertEqual(events, [])
 
 
 def test_delete_me_does_not_affect_other_customers(api_db):

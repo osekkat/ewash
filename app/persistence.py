@@ -1649,6 +1649,18 @@ def anonymize_customer(
 
     with session_scope(db_engine) as session:
         deleted = 0
+        target_session_ids = select(ConversationSessionRow.id).where(
+            ConversationSessionRow.customer_phone == customer_phone
+        )
+        event_result = session.execute(
+            delete(ConversationEventRow).where(
+                or_(
+                    ConversationEventRow.customer_phone == customer_phone,
+                    ConversationEventRow.session_id.in_(target_session_ids),
+                )
+            )
+        )
+        deleted += int(event_result.rowcount or 0)
         for model in (
             CustomerTokenRow,
             CustomerName,
