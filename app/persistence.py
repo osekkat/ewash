@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy import Engine, func, select, or_
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
 from .booking import Booking, all_bookings
 from .admin_i18n import t as admin_t
@@ -191,7 +192,12 @@ def _next_booking_ref_counter(session, *, year: int) -> int:
     return int(counter.last_counter)
 
 
-def assign_booking_ref(booking: Booking, *, engine: Engine | None = None) -> str:
+def assign_booking_ref(
+    booking: Booking,
+    *,
+    engine: Engine | None = None,
+    session: Session | None = None,
+) -> str:
     """Assign a booking reference that is monotonic against persisted refs.
 
     The in-memory Booking counter resets on each Railway redeploy, while
@@ -199,6 +205,11 @@ def assign_booking_ref(booking: Booking, *, engine: Engine | None = None) -> str
     counter from the DB max so a fresh process does not reuse EW-YYYY-0001 and
     get ignored as an existing persisted row.
     """
+    if session is not None:
+        year = _now().year
+        next_counter = _next_booking_ref_counter(session, year=year)
+        return booking.assign_ref(counter_value=next_counter)
+
     db_engine = _engine_or_configured(engine)
     if db_engine is None:
         return booking.assign_ref()
@@ -312,16 +323,14 @@ def persist_customer_name(
     display_name: str,
     *,
     engine: Engine | None = None,
+    session: Session | None = None,
 ) -> CustomerName | None:
     """Record a name used by a phone number and mark it as the latest one."""
     phone = str(phone or "").strip()
     cleaned = re.sub(r"\s+", " ", (display_name or "").strip())[:120]
     if not phone or not cleaned:
         return None
-    db_engine = _engine_or_configured(engine)
-    if db_engine is None:
-        return None
-    with session_scope(db_engine) as session:
+    if session is not None:
         customer = session.get(Customer, phone)
         if customer is None:
             customer = Customer(phone=phone, display_name=cleaned)
@@ -329,9 +338,21 @@ def persist_customer_name(
             session.flush()
         row = _upsert_customer_name(session, customer, cleaned)
         session.flush()
+        return row
+    db_engine = _engine_or_configured(engine)
+    if db_engine is None:
+        return None
+    with session_scope(db_engine) as db_session:
+        customer = db_session.get(Customer, phone)
+        if customer is None:
+            customer = Customer(phone=phone, display_name=cleaned)
+            db_session.add(customer)
+            db_session.flush()
+        row = _upsert_customer_name(db_session, customer, cleaned)
+        db_session.flush()
         if row is None:
             return None
-        session.expunge(row)
+        db_session.expunge(row)
         return row
 
 
@@ -738,11 +759,82 @@ def _add_booking_line_items(session, row: BookingRow, booking: Booking) -> None:
         )
 
 
+def _persist_confirmed_booking_in_session(
+    session: Session,
+    booking: Booking,
+    *,
+    source: str = "whatsapp",
+) -> BookingRow | None:
+    existing = session.scalars(select(BookingRow).where(BookingRow.ref == booking.ref)).first()
+    if existing is not None:
+        return existing
+
+    customer = _find_or_create_customer(session, booking)
+    vehicle = _find_or_create_vehicle(session, booking)
+    appointment_date, appointment_start_at, appointment_end_at = _appointment_bounds(booking)
+    row = BookingRow(
+        ref=booking.ref,
+        customer_phone=customer.phone,
+        customer_vehicle_id=vehicle.id if vehicle else None,
+        status="pending_ewash_confirmation",
+        customer_name=booking.name,
+        vehicle_type=booking.vehicle_type,
+        car_model=booking.car_model,
+        color=booking.color,
+        service_id=booking.service,
+        service_bucket=booking.service_bucket,
+        service_label=booking.service_label,
+        price_dh=booking.price_dh,
+        price_regular_dh=booking.price_regular_dh,
+        promo_code=booking.promo_code,
+        promo_label=booking.promo_label,
+        location_mode=booking.location_mode,
+        center=booking.center,
+        center_id=booking.center_id,
+        geo=booking.geo,
+        address=booking.address,
+        address_text=booking.address,
+        location_name=booking.location_name,
+        location_address=booking.location_address,
+        latitude=booking.latitude,
+        longitude=booking.longitude,
+        date_label=booking.date_label,
+        slot=booking.slot,
+        appointment_date=appointment_date,
+        slot_id=booking.slot_id,
+        note=booking.note,
+        addon_service=booking.addon_service,
+        addon_service_label=booking.addon_service_label,
+        addon_price_dh=booking.addon_price_dh,
+        total_price_dh=(booking.price_dh or 0) + (booking.addon_price_dh or 0),
+        appointment_start_at=appointment_start_at,
+        appointment_end_at=appointment_end_at,
+        client_request_id=booking.client_request_id,
+        source=source,
+        raw_booking_json=json.dumps(asdict(booking), ensure_ascii=False, default=str),
+    )
+    session.add(row)
+    session.flush()
+    _add_booking_line_items(session, row, booking)
+    session.add(
+        BookingStatusEventRow(
+            booking_id=row.id,
+            from_status="awaiting_confirmation",
+            to_status="pending_ewash_confirmation",
+            actor="customer",
+            note="Confirmation PWA" if source == "api" else "Confirmation WhatsApp",
+        )
+    )
+    session.flush()
+    return row
+
+
 def persist_confirmed_booking(
     booking: Booking,
     *,
     source: str = "whatsapp",
     engine: Engine | None = None,
+    session: Session | None = None,
 ) -> BookingRow | None:
     """Mirror a confirmed booking into the CRM database.
 
@@ -757,76 +849,21 @@ def persist_confirmed_booking(
     Postgres CHECK constraint (migration 0006) rejects unknown values; Pydantic
     validation in the API layer should reject them earlier.
     """
+    if not booking.ref:
+        booking.assign_ref()
+
+    if session is not None:
+        return _persist_confirmed_booking_in_session(session, booking, source=source)
+
     db_engine = _engine_or_configured(engine)
     if db_engine is None:
         log.info("persist_confirmed_booking skipped: DATABASE_URL not configured ref=%s", booking.ref)
         return None
 
-    if not booking.ref:
-        booking.assign_ref()
-
-    with session_scope(db_engine) as session:
-        existing = session.scalars(select(BookingRow).where(BookingRow.ref == booking.ref)).first()
-        if existing is not None:
-            return existing
-
-        customer = _find_or_create_customer(session, booking)
-        vehicle = _find_or_create_vehicle(session, booking)
-        appointment_date, appointment_start_at, appointment_end_at = _appointment_bounds(booking)
-        row = BookingRow(
-            ref=booking.ref,
-            customer_phone=customer.phone,
-            customer_vehicle_id=vehicle.id if vehicle else None,
-            status="pending_ewash_confirmation",
-            customer_name=booking.name,
-            vehicle_type=booking.vehicle_type,
-            car_model=booking.car_model,
-            color=booking.color,
-            service_id=booking.service,
-            service_bucket=booking.service_bucket,
-            service_label=booking.service_label,
-            price_dh=booking.price_dh,
-            price_regular_dh=booking.price_regular_dh,
-            promo_code=booking.promo_code,
-            promo_label=booking.promo_label,
-            location_mode=booking.location_mode,
-            center=booking.center,
-            center_id=booking.center_id,
-            geo=booking.geo,
-            address=booking.address,
-            address_text=booking.address,
-            location_name=booking.location_name,
-            location_address=booking.location_address,
-            latitude=booking.latitude,
-            longitude=booking.longitude,
-            date_label=booking.date_label,
-            slot=booking.slot,
-            appointment_date=appointment_date,
-            slot_id=booking.slot_id,
-            note=booking.note,
-            addon_service=booking.addon_service,
-            addon_service_label=booking.addon_service_label,
-            addon_price_dh=booking.addon_price_dh,
-            total_price_dh=(booking.price_dh or 0) + (booking.addon_price_dh or 0),
-            appointment_start_at=appointment_start_at,
-            appointment_end_at=appointment_end_at,
-            source=source,
-            raw_booking_json=json.dumps(asdict(booking), ensure_ascii=False, default=str),
-        )
-        session.add(row)
-        session.flush()
-        _add_booking_line_items(session, row, booking)
-        session.add(
-            BookingStatusEventRow(
-                booking_id=row.id,
-                from_status="awaiting_confirmation",
-                to_status="pending_ewash_confirmation",
-                actor="customer",
-                note="Confirmation WhatsApp",
-            )
-        )
-        session.flush()
-        session.expunge(row)
+    with session_scope(db_engine) as db_session:
+        row = _persist_confirmed_booking_in_session(db_session, booking, source=source)
+        if row is not None:
+            db_session.expunge(row)
         return row
 
 
@@ -838,6 +875,7 @@ def persist_booking_addon(
     addon_price_dh: int,
     denormalize_to_legacy: bool = True,
     engine: Engine | None = None,
+    session: Session | None = None,
 ) -> None:
     """Attach a single addon to an existing booking row.
 
@@ -856,10 +894,9 @@ def persist_booking_addon(
     template (which reads a single addon) and historical denormalization. The
     line-item table is the authoritative multi-addon record.
     """
-    db_engine = _engine_or_configured(engine)
-    if db_engine is None or not ref:
+    if not ref:
         return
-    with session_scope(db_engine) as session:
+    if session is not None:
         row = session.scalars(select(BookingRow).where(BookingRow.ref == ref)).first()
         if row is None:
             log.warning("persist_booking_addon: ref=%s not found", ref)
@@ -921,6 +958,20 @@ def persist_booking_addon(
                 discount_label="-10%",
                 sort_order=next_sort,
             )
+        )
+        return
+
+    db_engine = _engine_or_configured(engine)
+    if db_engine is None:
+        return
+    with session_scope(db_engine) as db_session:
+        persist_booking_addon(
+            ref,
+            addon_service=addon_service,
+            addon_service_label=addon_service_label,
+            addon_price_dh=addon_price_dh,
+            denormalize_to_legacy=denormalize_to_legacy,
+            session=db_session,
         )
 
 

@@ -200,6 +200,21 @@ class BookingsListResponse(BaseModel):
     next_cursor: Optional[str] = None
 
 
+# ── Token revoke (PWA logout) ─────────────────────────────────────────────
+
+
+class TokenRevokeRequest(StrictBase):
+    # ``current`` is the default and revokes only the calling token. ``all``
+    # is the panic case (e.g. lost phone) and wipes every token bound to the
+    # phone owning the calling token. The PWA's Profile logout button uses
+    # ``current``; ``all`` is exposed for a future "Déconnecter partout" CTA.
+    scope: Literal["current", "all"] = "current"
+
+
+class TokenRevokeResponse(BaseModel):
+    revoked_count: int
+
+
 # ── Errors ────────────────────────────────────────────────────────────────
 
 
@@ -227,5 +242,7 @@ __all__ = [
     "BootstrapResponse",
     "BookingListItemOut",
     "BookingsListResponse",
+    "TokenRevokeRequest",
+    "TokenRevokeResponse",
     "ErrorResponse",
 ]

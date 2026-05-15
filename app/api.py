@@ -1,19 +1,24 @@
 """PWA-facing /api/v1 router skeleton and shared error handling."""
-from __future__ import annotations
 
 import hashlib
 import logging
 import re
 import time
+from datetime import date as date_cls
 from datetime import datetime, timedelta
 from typing import Literal
 
-from fastapi import APIRouter, FastAPI, Query, Request, Response
+from fastapi import APIRouter, Body, FastAPI, Query, Request, Response
 from fastapi.responses import JSONResponse
 from slowapi.util import get_remote_address
 
-from app import api_validation, catalog, notifications
+from app import api_validation, booking as booking_module, catalog, notifications, persistence
 from app.api_schemas import (
+    BookingCreateRequest,
+    BookingCreateResponse,
+    BookingLineItemOut,
+    BookingListItemOut,
+    BookingsListResponse,
     BootstrapResponse,
     CategoryOut,
     CenterOut,
@@ -23,9 +28,13 @@ from app.api_schemas import (
     ServiceOut,
     StaffContactOut,
     TimeSlotOut,
+    TokenRevokeRequest,
+    TokenRevokeResponse,
 )
+from app.config import settings
 from app.notifications import InvalidPhone
-from app.rate_limit import limiter
+from app.rate_limit import _token_key_func, hit_phone_limit, limiter
+from app.security import hash_token
 
 logger = logging.getLogger("ewash.api")
 
@@ -60,6 +69,24 @@ _DOMAIN_EXC_MAP: dict[type[Exception], tuple[int, str]] = {
     ),
     InvalidPhone: (400, InvalidPhone.error_code),
 }
+
+_DOMAIN_EXC_FIELD_MAP: dict[type[Exception], str] = {
+    api_validation.ClosedDate: "date",
+    api_validation.UnknownSlot: "slot",
+    api_validation.SlotTooSoon: "slot",
+    api_validation.InvalidDate: "date",
+    api_validation.UnknownService: "service_id",
+    api_validation.InvalidServiceForCategory: "service_id",
+    api_validation.UnknownAddon: "addon_ids",
+    api_validation.DuplicateAddon: "addon_ids",
+    api_validation.NotADetailingService: "addon_ids",
+    api_validation.UnknownCenter: "location.center_id",
+    api_validation.MissingCenterId: "location.center_id",
+    api_validation.CenterIdNotAllowed: "location.center_id",
+    InvalidPhone: "phone",
+}
+
+_JOURS_FR = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"]
 
 
 def _service_out(
@@ -141,10 +168,22 @@ async def get_services(
     return result
 
 
-def _json_error(status_code: int, code: str, message: str) -> JSONResponse:
+def _json_error(
+    status_code: int,
+    code: str,
+    message: str,
+    *,
+    field: str | None = None,
+    details: dict | None = None,
+) -> JSONResponse:
     response = JSONResponse(
         status_code=status_code,
-        content=ErrorResponse(error_code=code, message=message).model_dump(),
+        content=ErrorResponse(
+            error_code=code,
+            message=message,
+            field=field,
+            details=details or {},
+        ).model_dump(),
     )
     response.headers["X-Ewash-Error-Code"] = code
     return response
@@ -153,13 +192,15 @@ def _json_error(status_code: int, code: str, message: str) -> JSONResponse:
 def domain_error_response(exc: Exception) -> JSONResponse:
     """Convert a known domain exception into the stable PWA error envelope."""
     status_code, code = _DOMAIN_EXC_MAP.get(type(exc), (500, "internal_error"))
+    field = _DOMAIN_EXC_FIELD_MAP.get(type(exc))
     logger.info(
-        "ewash.api domain_error type=%s status=%d error_code=%s",
+        "ewash.api domain_error type=%s status=%d error_code=%s field=%s",
         type(exc).__name__,
         status_code,
         code,
+        field or "-",
     )
-    return _json_error(status_code, code, str(exc))
+    return _json_error(status_code, code, str(exc), field=field)
 
 
 async def api_exception_handler(request: Request, exc: Exception) -> JSONResponse:
@@ -181,6 +222,152 @@ def install_exception_handlers(app: FastAPI) -> None:
 
 
 # ── Catalog endpoints ────────────────────────────────────────────────────
+
+def _hash_for_log(value: str, *, length: int = 12) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:length] if value else "-"
+
+
+def _date_label(date_iso: str) -> str:
+    try:
+        parsed = date_cls.fromisoformat(date_iso)
+    except ValueError:
+        return date_iso
+    return f"{_JOURS_FR[parsed.weekday()].capitalize()} {parsed.strftime('%d/%m/%Y')}"
+
+
+def _slot_label(slot_id: str) -> str:
+    return catalog.label_for(catalog.active_time_slots(), slot_id)
+
+
+def _clean_booking_text_fields(booking: booking_module.Booking) -> None:
+    booking.note = api_validation.clean_text(booking.note, max_len=500) or ""
+    booking.address = api_validation.clean_text(booking.address, max_len=200) or ""
+    booking.location_address = api_validation.clean_text(
+        booking.location_address,
+        max_len=200,
+    ) or ""
+    booking.car_model = api_validation.clean_text(booking.car_model, max_len=64) or ""
+    booking.color = api_validation.clean_text(booking.color, max_len=64) or ""
+    booking.name = api_validation.clean_text(booking.name, max_len=120) or ""
+
+
+@router.post("/bookings", response_model=BookingCreateResponse)
+@limiter.limit(settings.rate_limit_bookings_per_ip, key_func=get_remote_address)
+async def create_booking(
+    request: Request,
+    response: Response,
+    body: BookingCreateRequest = Body(...),
+) -> BookingCreateResponse | JSONResponse:
+    """Create a PWA booking in the same pending staff-confirmation state as WhatsApp."""
+    del response  # SlowAPI requires the parameter so it can inject rate-limit headers.
+    started = time.perf_counter()
+
+    try:
+        phone = notifications.normalize_phone(body.phone)
+        request.state.phone_normalized = phone
+        hit_phone_limit(phone, settings.rate_limit_bookings_per_phone)
+
+        api_validation.validate_service_for_category(body.service_id, body.category)
+        api_validation.validate_addon_ids(body.addon_ids)
+        api_validation.validate_center_id(
+            body.location.center_id,
+            location_kind=body.location.kind,
+        )
+        api_validation.validate_slot_and_date(body.date, body.slot)
+
+        promo_code = catalog.normalize_promo_code(body.promo_code) if body.promo_code else None
+        promo_label = catalog.promo_label(promo_code) if promo_code else ""
+        server_price = catalog.service_price(body.service_id, body.category, promo_code=promo_code)
+        server_regular = catalog.public_service_price(body.service_id, body.category)
+        if server_price is None or server_regular is None:
+            raise api_validation.UnknownService(
+                f"service_id={body.service_id} has no price for category={body.category}"
+            )
+    except tuple(_DOMAIN_EXC_MAP) as exc:
+        return domain_error_response(exc)
+
+    service_label = catalog.service_label(
+        body.service_id,
+        body.category,
+        promo_code=promo_code,
+    )
+    vehicle_label = catalog.vehicle_label(
+        body.category,
+        make=body.vehicle.make if body.vehicle else None,
+    )
+    location_label = catalog.location_label(
+        body.location.kind,
+        center_id=body.location.center_id,
+    )
+    slot_label = _slot_label(body.slot)
+
+    booking = booking_module.from_api_payload(
+        body,
+        server_price_dh=server_price,
+        server_regular_price_dh=server_regular,
+        service_label=service_label,
+        vehicle_label=vehicle_label,
+        location_label=location_label,
+        date_label=_date_label(body.date),
+        slot_label=slot_label,
+        promo_label=promo_label,
+    )
+    _clean_booking_text_fields(booking)
+
+    engine = persistence._configured_engine()
+    if engine is None:
+        return _json_error(
+            503,
+            "db_unavailable",
+            "Database not configured",
+            details={"resource": "database"},
+        )
+
+    with persistence.session_scope(engine) as session:
+        persistence.assign_booking_ref(booking, session=session)
+        request.state.booking_ref = booking.ref
+        booking.client_request_id = body.client_request_id
+        persistence.persist_confirmed_booking(booking, source="api", session=session)
+        persistence.persist_customer_name(phone, booking.name, session=session)
+
+    duration_ms = (time.perf_counter() - started) * 1000
+    logger.info(
+        "ewash.api.bookings.create ref=%s phone_hash=%s source=api category=%s "
+        "service=%s price=%d total=%d promo=%s duration_ms=%.1f",
+        booking.ref,
+        _hash_for_log(phone),
+        booking.category,
+        booking.service,
+        booking.price_dh,
+        booking.price_dh,
+        promo_code or "-",
+        duration_ms,
+    )
+
+    return BookingCreateResponse(
+        ref=booking.ref,
+        status="pending_ewash_confirmation",
+        price_dh=booking.price_dh,
+        total_dh=booking.price_dh,
+        vehicle_label=vehicle_label,
+        service_label=service_label,
+        date_label=booking.date_label,
+        slot_label=slot_label,
+        location_label=location_label,
+        line_items=[
+            BookingLineItemOut(
+                kind="main",
+                service_id=booking.service,
+                label=service_label,
+                price_dh=booking.price_dh,
+                regular_price_dh=server_regular if promo_code else None,
+                sort_order=0,
+            )
+        ],
+        bookings_token="",
+        is_idempotent_replay=False,
+    )
+
 
 def _build_category_payload() -> list[CategoryOut]:
     """Project the static VEHICLE_CATEGORIES tuples into the API contract.
@@ -485,18 +672,140 @@ async def get_bootstrap(
     return body
 
 
+# ── Bookings list (token-scoped read of customer's own bookings) ─────────
+
+
+@router.get("/bookings", response_model=BookingsListResponse)
+@limiter.limit(settings.rate_limit_bookings_list_per_token, key_func=_token_key_func)
+async def list_bookings(
+    request: Request,
+    response: Response,
+) -> BookingsListResponse | JSONResponse:
+    """Return the customer's recent bookings scoped to the X-Ewash-Token bearer.
+
+    Phone enumeration is mechanically impossible: the route reads only the
+    opaque token from the header and looks up the SHA-256 digest. There is no
+    ``?phone=`` parameter — supplying one returns 400 ``phone_param_not_accepted``
+    so the misuse is loud rather than silent.
+
+    The ``response`` parameter has no body-side use; slowapi reads it from the
+    handler signature to inject the ``X-RateLimit-*`` headers.
+    """
+    del response
+    started = time.perf_counter()
+
+    if "phone" in request.query_params:
+        logger.warning(
+            "bookings.list error=phone_param_not_accepted ip_hash=%s",
+            _hash_for_log(get_remote_address(request) or ""),
+        )
+        return _json_error(
+            400,
+            "phone_param_not_accepted",
+            "Pass the customer token via X-Ewash-Token; phone enumeration is not supported.",
+        )
+
+    token = request.headers.get("X-Ewash-Token", "")
+    if not token:
+        logger.warning(
+            "bookings.list error=missing_token ip_hash=%s",
+            _hash_for_log(get_remote_address(request) or ""),
+        )
+        return _json_error(401, "missing_token", "X-Ewash-Token required")
+
+    items = persistence.list_bookings_for_token(token, limit=20)
+    matched_phone = persistence.verify_customer_token(token)
+    if matched_phone is None:
+        logger.warning(
+            "bookings.list error=invalid_token token_prefix=%s ip_hash=%s",
+            hash_token(token)[:8],
+            _hash_for_log(get_remote_address(request) or ""),
+        )
+        return _json_error(401, "invalid_token", "Token not recognized")
+
+    request.state.phone_normalized = matched_phone
+
+    duration_ms = (time.perf_counter() - started) * 1000
+    logger.info(
+        "bookings.list phone_hash=%s count=%d ip_hash=%s duration_ms=%.1f",
+        _hash_for_log(matched_phone),
+        len(items),
+        _hash_for_log(get_remote_address(request) or ""),
+        duration_ms,
+    )
+    return BookingsListResponse(
+        bookings=[BookingListItemOut(**item) for item in items]
+    )
+
+
+# ── Token revoke (PWA logout) ────────────────────────────────────────────
+
+
+@router.post("/tokens/revoke", response_model=TokenRevokeResponse)
+@limiter.limit("10/hour", key_func=_token_key_func)
+async def revoke_token(
+    request: Request,
+    response: Response,
+    body: TokenRevokeRequest,
+) -> TokenRevokeResponse | JSONResponse:
+    """Revoke the calling token (default) or every token for its phone (``all``).
+
+    The token in ``X-Ewash-Token`` is verified just like a read endpoint — a
+    missing or unknown token gets 401 with the same envelope shape so the PWA
+    treats it identically. On success the rows are physically deleted; any
+    later call carrying the same token will 401 with ``invalid_token``.
+    """
+    started = time.perf_counter()
+
+    token = request.headers.get("X-Ewash-Token", "")
+    if not token:
+        logger.warning(
+            "tokens.revoke error=missing_token ip_hash=%s",
+            _hash_for_log(get_remote_address(request) or ""),
+        )
+        return _json_error(401, "missing_token", "X-Ewash-Token required")
+
+    phone = persistence.verify_customer_token(token)
+    if phone is None:
+        logger.warning(
+            "tokens.revoke error=invalid_token token_prefix=%s ip_hash=%s",
+            hash_token(token)[:8],
+            _hash_for_log(get_remote_address(request) or ""),
+        )
+        return _json_error(401, "invalid_token", "Token not recognized")
+
+    request.state.phone_normalized = phone
+    if body.scope == "all":
+        count = persistence.revoke_all_tokens_for_phone(phone)
+    else:
+        count = persistence.revoke_token_by_hash(hash_token(token))
+
+    duration_ms = (time.perf_counter() - started) * 1000
+    logger.info(
+        "tokens.revoked phone_hash=%s scope=%s count=%d duration_ms=%.1f",
+        _hash_for_log(phone),
+        body.scope,
+        count,
+        duration_ms,
+    )
+    return TokenRevokeResponse(revoked_count=count)
+
+
 __all__ = [
     "_DOMAIN_EXC_MAP",
     "_slots_with_lead_filter",
     "api_exception_handler",
+    "create_booking",
     "domain_error_response",
     "get_bootstrap",
     "get_services",
     "install_exception_handlers",
+    "list_bookings",
     "list_catalog_categories",
     "list_catalog_centers",
     "list_catalog_closed_dates",
     "list_catalog_time_slots",
+    "revoke_token",
     "router",
     "validate_promo",
 ]
