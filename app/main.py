@@ -13,10 +13,13 @@ from fastapi import FastAPI, Header, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 
 from . import admin, handlers, meta
 from .config import settings
 from .persistence import mark_abandoned_conversations
+from .rate_limit import limiter
 
 APP_VERSION = "v0.3.0-alpha17"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -52,6 +55,8 @@ def _configure_cors(target_app: FastAPI) -> None:
 
 
 app = FastAPI(title="Ewash WhatsApp Agent", version=APP_VERSION.removeprefix("v"))
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 _configure_cors(app)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.include_router(admin.router)

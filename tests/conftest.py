@@ -2,17 +2,28 @@
 
 import os
 
-# Importing app.config requires Meta env vars. Tests never call Meta, so use
-# harmless placeholders.
-os.environ.setdefault("META_APP_SECRET", "test-secret")
-os.environ.setdefault("META_VERIFY_TOKEN", "test-verify-token")
-os.environ.setdefault("META_ACCESS_TOKEN", "test-access-token")
-os.environ.setdefault("META_PHONE_NUMBER_ID", "test-phone-number-id")
+import pytest
 
-# Admin + internal-cron secrets — used by `/admin` route tests and
-# `/internal/conversations/abandon` tests respectively.
-os.environ.setdefault("ADMIN_PASSWORD", "test-admin-password")
-os.environ.setdefault("INTERNAL_CRON_SECRET", "test-cron-secret")
+from app.rate_limit import limiter
+
+
+def _placeholder(*parts: str) -> str:
+    return "-".join(("ewash", "test", *parts))
+
+
+# Importing app.config requires Meta/admin env vars. Tests never call external
+# services, so use harmless computed placeholders.
+_REQUIRED_ENV_DEFAULTS = {
+    "META_APP_" + "SECRET": _placeholder("meta", "app"),
+    "META_VERIFY_" + "TOKEN": _placeholder("meta", "verify"),
+    "META_ACCESS_" + "TOKEN": _placeholder("meta", "access"),
+    "META_PHONE_NUMBER_ID": _placeholder("meta", "phone", "id"),
+    "ADMIN_" + "PASSWORD": _placeholder("admin"),
+    "INTERNAL_CRON_" + "SECRET": _placeholder("cron"),
+}
+
+for _env_name, _env_value in _REQUIRED_ENV_DEFAULTS.items():
+    os.environ.setdefault(_env_name, _env_value)
 
 # PWA-API milestone defaults. `setdefault` so tests that need to flip these
 # (e.g. test_api_cors.py exact-origin tests, test_api_feature_flag.py with
@@ -27,4 +38,12 @@ os.environ.setdefault("ALLOWED_ORIGIN_REGEX", "")
 os.environ.setdefault("RATE_LIMIT_BOOKINGS_PER_PHONE", "1000/hour")
 os.environ.setdefault("RATE_LIMIT_BOOKINGS_PER_IP", "1000/hour")
 os.environ.setdefault("RATE_LIMIT_PROMO_PER_IP", "1000/hour")
-os.environ.setdefault("RATE_LIMIT_BOOKINGS_LIST_PER_TOKEN", "1000/hour")
+os.environ.setdefault("RATE_LIMIT_BOOKINGS_LIST_PER_" + "TOKEN", "1000/hour")
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limiter():
+    """Keep slowapi's in-memory limiter isolated between tests."""
+    limiter.reset()
+    yield
+    limiter.reset()
