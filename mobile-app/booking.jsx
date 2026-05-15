@@ -20,21 +20,6 @@ const CATEGORY_ICONS = {
   MOTO: Icons.Moto,
 };
 
-const SERVICE_DURATIONS = {
-  svc_ext: 25,
-  svc_cpl: 45,
-  svc_sal: 150,
-  svc_pol: 180,
-  svc_cer6m: 120,
-  svc_cer6w: 60,
-  svc_cuir: 70,
-  svc_plastq: 55,
-  svc_optq: 45,
-  svc_lustre: 90,
-  svc_scooter: 25,
-  svc_moto: 35,
-};
-
 function _isMotoCategory(category) {
   return category === MOTO_CATEGORY;
 }
@@ -58,7 +43,7 @@ function _categorySub(t, category) {
 function _normalizeService(service) {
   if (!service) return null;
   return Object.assign({}, service, {
-    durationMin: service.durationMin || SERVICE_DURATIONS[service.id] || 45,
+    durationMin: service.duration_min || service.durationMin || 45,
   });
 }
 
