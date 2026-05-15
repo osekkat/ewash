@@ -100,6 +100,10 @@ function App() {
   const [tab, setTab] = useS_a('home'); // home, bookings, services, profile
   const [modal, setModal] = useS_a(null); // 'booking' | 'support' | null
   const [toast, setToast] = useS_a(null);
+  // App-level staff_contact, sourced from the bootstrap endpoint once at
+  // startup. Used by BookingsScreen's detail modal "Contacter le support"
+  // CTA — booking.jsx fetches its own bootstrap inside the flow.
+  const [staffContact, setStaffContact] = useS_a({ available: false, whatsapp_phone: '' });
 
   const log = window.EwashLog;
   const setPhaseLogged = (next) => {
@@ -146,6 +150,22 @@ function App() {
     else document.documentElement.removeAttribute('data-pwa-standalone');
   }, [isStandalone]);
 
+  useE_a(() => {
+    // Lightweight bootstrap-only-for-staff_contact fetch. Booking.jsx fetches
+    // a fuller bootstrap (with services etc.) when the flow opens; here we
+    // only need the staff WhatsApp number for the Bookings detail modal.
+    if (!window.EwashAPI || !window.EwashAPI.getBootstrap) return;
+    let alive = true;
+    window.EwashAPI.getBootstrap({}).then((b) => {
+      if (!alive || !b || !b.staff_contact) return;
+      setStaffContact(b.staff_contact);
+    }).catch(() => {
+      // Stay on the default { available: false }. The Contact-Support CTA
+      // simply won't appear, which is the right degraded behaviour.
+    });
+    return () => { alive = false; };
+  }, []);
+
   // ───── Phase rendering
   let phaseContent = null;
   if (phase === 'splash') {
@@ -165,7 +185,8 @@ function App() {
             gotoTariffs={() => setTabLogged('services')}/>
         )}
         {!modal && tab === 'bookings' && (
-          <BookingsScreen t={t} lang={lang} openBooking={() => setModal('booking')} theme={theme}/>
+          <BookingsScreen t={t} lang={lang} openBooking={() => setModal('booking')} theme={theme}
+            staffContact={staffContact}/>
         )}
         {!modal && tab === 'services' && (
           <ServicesScreen t={t} lang={lang} openBooking={() => setModal('booking')} theme={theme}/>

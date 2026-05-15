@@ -225,139 +225,414 @@ function HomeScreen({ t, lang, openBooking, gotoSupport, gotoTariffs, theme, var
 }
 
 // ─────────────────────────────────────────────────────────────
-// BOOKINGS HISTORY
+// BOOKINGS HISTORY — live data via EwashAPI.getMyBookings()
 // ─────────────────────────────────────────────────────────────
-function BookingsScreen({ t, lang, openBooking, theme }) {
-  const [tab, setTab] = useS_h('upcoming');
-  const items = {
-    upcoming: [
-      { date: '16 mai', time: '10:30', service: 'Le Complet', cat: 'Berline', loc: 'Bd Anfa, Casablanca', status: 'upcoming', ref: 'EW-2026-0419' },
-      { date: '23 mai', time: '15:00', service: "L'Extérieur", cat: 'Berline', loc: 'Stand Bouskoura', status: 'upcoming', ref: 'EW-2026-0421' },
-    ],
-    past: [
-      { date: '02 mai', time: '11:00', service: 'Céramique', cat: 'Berline', loc: 'Bd Anfa', status: 'completed', ref: 'EW-2026-0399', rating: 5 },
-      { date: '18 avr', time: '09:30', service: 'Polissage', cat: 'Berline', loc: 'Bd Anfa', status: 'completed', ref: 'EW-2026-0381', rating: 5 },
-      { date: '04 avr', time: '14:00', service: 'Le Complet', cat: 'Berline', loc: 'Stand Bouskoura', status: 'cancelled', ref: 'EW-2026-0362' },
-    ],
-  };
-  useE_h(() => {
-    if (!window.EwashLog) return;
-    window.EwashLog.info('bookings.list', {
-      count: items[tab].length,
-      state: items[tab].length ? 'list' : 'empty',
-      has_token: !!(window.EwashAPI && window.EwashAPI._getToken()),
-    });
-  }, [tab]);
 
-  const selectTab = (next) => {
-    if (window.EwashLog && next !== tab) {
-      window.EwashLog.info('lifecycle.tab', { from_tab: `bookings:${tab}`, to_tab: `bookings:${next}` });
+const _FR_MONTH_ABBREV = ['jan', 'fév', 'mar', 'avr', 'mai', 'juin', 'juil', 'aoû', 'sep', 'oct', 'nov', 'déc'];
+
+const _INERT_STATUSES = new Set([
+  'customer_cancelled',
+  'admin_cancelled',
+  'expired',
+  'no_show',
+  'completed',
+  'completed_with_issue',
+  'refunded',
+]);
+
+const _REUSABLE_STATUSES = new Set([
+  'completed',
+  'completed_with_issue',
+  'customer_cancelled',
+  'admin_cancelled',
+  'expired',
+  'no_show',
+]);
+
+function _bookingChipClass(status) {
+  if (status === 'confirmed' || status === 'rescheduled' ||
+      status === 'technician_en_route' || status === 'arrived' ||
+      status === 'in_progress') return 'chip chip-accent';
+  if (status === 'completed' || status === 'completed_with_issue') return 'chip chip-primary';
+  return 'chip';
+}
+
+function _waLinkFor(phone, text) {
+  const digits = String(phone || '').replace(/[^0-9]/g, '');
+  if (!digits) return null;
+  return 'https://wa.me/' + digits + '?text=' + encodeURIComponent(text);
+}
+
+function BookingsScreen({ t, lang, openBooking, theme, staffContact }) {
+  const [uiState, setUiState] = useS_h('loading');
+  const [bookings, setBookings] = useS_h([]);
+  const [selectedRef, setSelectedRef] = useS_h(null);
+  const [fetchTick, setFetchTick] = useS_h(0);
+
+  const refetch = () => setFetchTick(function (n) { return n + 1; });
+
+  useE_h(() => {
+    let alive = true;
+    setUiState('loading');
+
+    if (typeof navigator !== 'undefined' && navigator && navigator.onLine === false) {
+      setUiState('offline');
+      return function () { alive = false; };
     }
-    setTab(next);
-  };
+
+    if (!window.EwashAPI || !window.EwashAPI.getMyBookings) {
+      // api.js failed to load (CDN block, network, etc.). Surface as a
+      // generic error rather than silently rendering an empty page.
+      setUiState('error');
+      return function () { alive = false; };
+    }
+
+    window.EwashAPI.getMyBookings()
+      .then(function (resp) {
+        if (!alive) return;
+        const items = (resp && resp.bookings) || [];
+        if (window.EwashLog) window.EwashLog.info('bookings.list', { count: items.length });
+        if (!items.length) { setBookings([]); setUiState('empty'); return; }
+        setBookings(items);
+        setUiState('list');
+      })
+      .catch(function (err) {
+        if (!alive) return;
+        const error_code = (err && err.error_code) || null;
+        const status = (err && err.status) || null;
+        if (window.EwashLog) window.EwashLog.warn('bookings.list.error', { error_code: error_code, status: status });
+        if (error_code === 'no_local_token') { setUiState('no_token'); return; }
+        if (error_code === 'invalid_token') {
+          // The token the PWA holds is no longer valid (server-revoked,
+          // hand-deleted, or DB wiped). Drop it so the next fresh booking
+          // mints a clean replacement.
+          try { localStorage.removeItem('ewash.bookings_token'); } catch (e) { /* ignore */ }
+          setUiState('no_token');
+          return;
+        }
+        setUiState('error');
+      });
+
+    return function () { alive = false; };
+  }, [fetchTick]);
+
+  const selected = selectedRef ? bookings.find(function (b) { return b.ref === selectedRef; }) : null;
 
   return (
     <div className="app-scroll">
-      <TopBar title={t.bookings} right={<button className="icon-btn"><Icons.Search size={20}/></button>}/>
+      <TopBar title={t.bookings} right={null} />
       <div className="px-16 col gap-16 anim-stagger" style={{ paddingBottom: 24 }}>
-        <div className="row" style={{
-          background: 'var(--surface-2)',
-          borderRadius: 999, padding: 4,
-        }}>
-          {['upcoming', 'past'].map(k => (
-            <button key={k} onClick={() => selectTab(k)} style={{
-              flex: 1, padding: '11px 16px', borderRadius: 999,
-              background: tab === k ? 'var(--surface)' : 'transparent',
-              color: tab === k ? 'var(--text)' : 'var(--text-2)',
-              fontWeight: tab === k ? 700 : 600, fontSize: 13.5,
-              letterSpacing: '-0.005em',
-              boxShadow: tab === k
-                ? '0 1px 2px rgba(14,42,42,0.05), 0 4px 8px -2px rgba(14,42,42,0.06)'
-                : 'none',
-              transition: 'background 0.22s var(--ease-soft), color 0.22s var(--ease-soft), box-shadow 0.22s var(--ease-soft), font-weight 0.18s',
-            }}>{t[k]}</button>
-          ))}
-        </div>
 
-        {items[tab].length === 0 && (
-          <div className="card center" style={{
-            padding: '36px 24px', flexDirection: 'column', gap: 12,
-            background: 'var(--surface-2)', border: 'none',
-          }}>
-            <div style={{
-              width: 56, height: 56, borderRadius: 18,
-              background: 'var(--surface)',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              color: 'var(--text-3)',
-              boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.5), 0 4px 12px -4px rgba(14,42,42,0.08)',
-            }}>
-              <Icons.Calendar size={26}/>
-            </div>
-            <div className="col gap-4" style={{ alignItems: 'center', textAlign: 'center' }}>
-              <div style={{ fontWeight: 700, fontSize: 14.5 }}>Aucune réservation</div>
-              <div className="t-muted" style={{ fontSize: 13 }}>Vos rendez-vous apparaîtront ici</div>
-            </div>
-            <Btn variant="soft" onClick={openBooking} style={{ marginTop: 4 }}>
-              {t.bookCta}
-            </Btn>
-          </div>
+        {uiState === 'loading' && <BookingsLoadingSkeleton />}
+
+        {uiState === 'offline' && (
+          <BookingsErrorCard
+            title={t.networkErrorTitle || 'Hors ligne'}
+            message="Pas de connexion. Réessayez quand vous revenez en ligne."
+            onRetry={refetch}
+          />
         )}
 
-        {items[tab].map((b, i) => (
-          <div key={i} className="card" style={{ padding: 0, overflow: 'hidden' }}>
-            <div className="row gap-12" style={{ padding: 16 }}>
-              <div style={{
-                width: 50, minWidth: 50,
-                borderRadius: 12,
-                background: 'var(--surface-2)',
-                color: 'var(--text)',
-                textAlign: 'center',
-                padding: '8px 0',
-              }}>
-                <div className="t-num" style={{ fontWeight: 800, fontSize: 18, lineHeight: 1.1 }}>{b.date.split(' ')[0]}</div>
-                <div className="t-tiny" style={{ letterSpacing: '0.1em', textTransform: 'uppercase' }}>{b.date.split(' ')[1]}</div>
-              </div>
-              <div className="col gap-4 flex-1" style={{ minWidth: 0 }}>
-                <div className="row between">
-                  <div style={{ fontWeight: 700, fontSize: 14.5 }}>{b.service}</div>
-                  {b.status === 'upcoming' && <span className="chip chip-accent" style={{ fontSize: 10.5, padding: '3px 8px' }}>{t.upcoming}</span>}
-                  {b.status === 'completed' && <span className="chip" style={{ fontSize: 10.5, padding: '3px 8px' }}>{t.completed}</span>}
-                  {b.status === 'cancelled' && <span className="chip" style={{ fontSize: 10.5, padding: '3px 8px', color: 'var(--danger)', borderColor: 'var(--danger)' }}>{t.cancelled}</span>}
-                </div>
-                <div className="t-muted" style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-                  <Icons.Clock size={12}/> {b.time} · {b.cat}
-                </div>
-                <div className="t-muted" style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-                  <Icons.Pin size={12}/> {b.loc}
-                </div>
-                {b.rating && (
-                  <div className="row gap-2 mt-4">
-                    {Array.from({ length: 5 }).map((_, j) => (
-                      <Icons.Star key={j} size={12} style={{ color: j < b.rating ? 'var(--accent)' : 'var(--border-strong)' }}/>
-                    ))}
-                  </div>
-                )}
+        {uiState === 'error' && (
+          <BookingsErrorCard
+            title={t.networkErrorTitle || 'Erreur'}
+            message="Impossible de charger vos réservations."
+            onRetry={refetch}
+          />
+        )}
+
+        {uiState === 'no_token' && (
+          <BookingsNoTokenCard t={t} onBook={openBooking} />
+        )}
+
+        {uiState === 'empty' && (
+          <BookingsEmptyCard t={t} onBook={openBooking} />
+        )}
+
+        {uiState === 'list' && bookings.map(function (b) {
+          return (
+            <BookingCard
+              key={b.ref}
+              booking={b}
+              onTap={function () { setSelectedRef(b.ref); }}
+            />
+          );
+        })}
+      </div>
+
+      <Sheet open={!!selected} onClose={function () { setSelectedRef(null); }}>
+        {selected && (
+          <BookingDetailContent
+            booking={selected}
+            onClose={function () { setSelectedRef(null); }}
+            t={t}
+            lang={lang}
+            staffContact={staffContact}
+            openBooking={openBooking}
+          />
+        )}
+      </Sheet>
+    </div>
+  );
+}
+
+function BookingsLoadingSkeleton() {
+  return (
+    <React.Fragment>
+      {[0, 1, 2].map(function (i) {
+        return (
+          <div key={i} className="card" style={{ padding: 16, opacity: 0.55 }}>
+            <div className="row gap-12">
+              <div style={{ width: 50, height: 50, borderRadius: 12, background: 'var(--surface-2)' }} />
+              <div className="col gap-8 flex-1">
+                <div style={{ height: 14, width: '60%', borderRadius: 6, background: 'var(--surface-2)' }} />
+                <div style={{ height: 11, width: '40%', borderRadius: 6, background: 'var(--surface-2)' }} />
+                <div style={{ height: 11, width: '50%', borderRadius: 6, background: 'var(--surface-2)' }} />
               </div>
             </div>
-            {b.status === 'upcoming' && (
-              <div className="row" style={{ borderTop: '1px solid var(--border)' }}>
-                <button style={{ flex: 1, padding: '12px 0', fontWeight: 600, fontSize: 13.5, color: 'var(--primary)' }}>{t.track}</button>
-                <div style={{ width: 1, background: 'var(--border)' }} />
-                <button style={{ flex: 1, padding: '12px 0', fontWeight: 600, fontSize: 13.5, color: 'var(--text-2)' }}>{t.edit}</button>
-              </div>
-            )}
-            {b.status === 'completed' && (
-              <div className="row" style={{ borderTop: '1px solid var(--border)' }}>
-                <button style={{ flex: 1, padding: '12px 0', fontWeight: 600, fontSize: 13.5, color: 'var(--primary)' }} onClick={openBooking}>{t.rebook}</button>
-                {!b.rating && <>
-                  <div style={{ width: 1, background: 'var(--border)' }} />
-                  <button style={{ flex: 1, padding: '12px 0', fontWeight: 600, fontSize: 13.5, color: 'var(--text-2)' }}>{t.leaveReview}</button>
-                </>}
-              </div>
-            )}
           </div>
-        ))}
+        );
+      })}
+    </React.Fragment>
+  );
+}
+
+function BookingsErrorCard({ title, message, onRetry }) {
+  return (
+    <div className="card center" style={{
+      padding: '36px 24px', flexDirection: 'column', gap: 12,
+      background: 'var(--surface-2)', border: 'none',
+    }}>
+      <div style={{
+        width: 56, height: 56, borderRadius: 18,
+        background: 'var(--surface)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        color: 'var(--text-3)',
+      }}>
+        <Icons.Bell size={26} />
       </div>
+      <div className="col gap-4" style={{ alignItems: 'center', textAlign: 'center' }}>
+        <div style={{ fontWeight: 700, fontSize: 14.5 }}>{title}</div>
+        <div className="t-muted" style={{ fontSize: 13 }}>{message}</div>
+      </div>
+      <Btn variant="soft" onClick={onRetry} style={{ marginTop: 4 }}>
+        Réessayer
+      </Btn>
+    </div>
+  );
+}
+
+function BookingsNoTokenCard({ t, onBook }) {
+  return (
+    <div className="card center" style={{
+      padding: '36px 24px', flexDirection: 'column', gap: 12,
+      background: 'var(--surface-2)', border: 'none',
+    }}>
+      <div style={{
+        width: 56, height: 56, borderRadius: 18,
+        background: 'var(--surface)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        color: 'var(--text-3)',
+      }}>
+        <Icons.Calendar size={26} />
+      </div>
+      <div className="col gap-4" style={{ alignItems: 'center', textAlign: 'center' }}>
+        <div style={{ fontWeight: 700, fontSize: 14.5 }}>Réservez votre premier lavage</div>
+        <div className="t-muted" style={{ fontSize: 13 }}>
+          Vos rendez-vous apparaîtront ici dès votre première réservation.
+        </div>
+      </div>
+      <Btn variant="soft" onClick={onBook} style={{ marginTop: 4 }}>
+        {t.bookCta || 'Commencer'}
+      </Btn>
+    </div>
+  );
+}
+
+function BookingsEmptyCard({ t, onBook }) {
+  return (
+    <div className="card center" style={{
+      padding: '36px 24px', flexDirection: 'column', gap: 12,
+      background: 'var(--surface-2)', border: 'none',
+    }}>
+      <div style={{
+        width: 56, height: 56, borderRadius: 18,
+        background: 'var(--surface)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        color: 'var(--text-3)',
+      }}>
+        <Icons.Calendar size={26} />
+      </div>
+      <div className="col gap-4" style={{ alignItems: 'center', textAlign: 'center' }}>
+        <div style={{ fontWeight: 700, fontSize: 14.5 }}>Aucune réservation</div>
+        <div className="t-muted" style={{ fontSize: 13 }}>Vos rendez-vous apparaîtront ici</div>
+      </div>
+      <Btn variant="soft" onClick={onBook} style={{ marginTop: 4 }}>
+        {t.bookCta || 'Réserver maintenant'}
+      </Btn>
+    </div>
+  );
+}
+
+function BookingCard({ booking, onTap }) {
+  let dayNum = '–';
+  let monthAbbrev = '';
+  if (booking.date_iso) {
+    const parts = booking.date_iso.split('-');
+    if (parts.length === 3) {
+      dayNum = parts[2];
+      const monthIdx = parseInt(parts[1], 10) - 1;
+      if (monthIdx >= 0 && monthIdx < _FR_MONTH_ABBREV.length) {
+        monthAbbrev = _FR_MONTH_ABBREV[monthIdx];
+      }
+    }
+  }
+  return (
+    <button
+      className="card"
+      style={{
+        padding: 0, overflow: 'hidden',
+        textAlign: 'left', width: '100%',
+        background: 'var(--surface)',
+        border: '1px solid var(--border)',
+        cursor: 'pointer',
+      }}
+      onClick={onTap}
+    >
+      <div className="row gap-12" style={{ padding: 16 }}>
+        <div style={{
+          width: 50, minWidth: 50,
+          borderRadius: 12,
+          background: 'var(--surface-2)',
+          color: 'var(--text)',
+          textAlign: 'center',
+          padding: '8px 0',
+        }}>
+          <div className="t-num" style={{ fontWeight: 800, fontSize: 18, lineHeight: 1.1 }}>{dayNum}</div>
+          <div className="t-tiny" style={{ letterSpacing: '0.1em', textTransform: 'uppercase' }}>{monthAbbrev}</div>
+        </div>
+        <div className="col gap-4 flex-1" style={{ minWidth: 0 }}>
+          <div className="row between">
+            <div style={{ fontWeight: 700, fontSize: 14.5 }}>{booking.service_label || '—'}</div>
+            <span className={_bookingChipClass(booking.status)} style={{ fontSize: 10.5, padding: '3px 8px' }}>
+              {booking.status_label || booking.status}
+            </span>
+          </div>
+          <div className="t-muted" style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+            <Icons.Clock size={12} /> {booking.slot_label || '—'}{booking.vehicle_label ? ' · ' + booking.vehicle_label : ''}
+          </div>
+          <div className="t-muted" style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+            <Icons.Pin size={12} /> {booking.location_label || '—'}
+          </div>
+        </div>
+      </div>
+    </button>
+  );
+}
+
+function BookingDetailContent({ booking, onClose, t, lang, staffContact, openBooking }) {
+  const canCalendar = !_INERT_STATUSES.has(booking.status);
+  const canRebook = _REUSABLE_STATUSES.has(booking.status);
+
+  const shareWhatsApp = function () {
+    // Even without a configured staff_contact, the customer can still share a
+    // ready-made message via the WhatsApp app picker — the wa.me URL works
+    // without a target number, falling back to the app's contact picker.
+    const phone = staffContact && staffContact.whatsapp_phone;
+    const text = "Bonjour, ma réservation Ewash " + booking.ref + " le " + (booking.date_label || '') + " à " + (booking.slot_label || '') + ". Pouvez-vous me donner plus d'infos ?";
+    const url = phone ? _waLinkFor(phone, text) : ('https://wa.me/?text=' + encodeURIComponent(text));
+    if (!url) return;
+    if (window.EwashLog) window.EwashLog.info('bookings.share', { ref: booking.ref, channel: 'whatsapp' });
+    window.open(url, '_blank');
+  };
+
+  const contactSupport = function () {
+    const phone = staffContact && staffContact.whatsapp_phone;
+    if (!phone) return;
+    const text = "Bonjour, j'ai besoin d'aide concernant ma réservation " + booking.ref + ".";
+    const url = _waLinkFor(phone, text);
+    if (!url) return;
+    if (window.EwashLog) window.EwashLog.info('bookings.contact_support', { ref: booking.ref });
+    window.open(url, '_blank');
+  };
+
+  const bookAgain = function () {
+    if (window.EwashLog) {
+      window.EwashLog.info('bookings.detail.book_again', { ref: booking.ref, service_id: booking.service_id });
+    }
+    onClose();
+    if (openBooking) openBooking();
+  };
+
+  const addToCalendar = function () {
+    if (window.EwashLog) window.EwashLog.info('bookings.detail.calendar', { ref: booking.ref });
+    if (window.EwashCalendar && window.EwashCalendar.download) {
+      window.EwashCalendar.download(booking, lang);
+      return;
+    }
+    // Fallback: Google Calendar template URL. Works on every mobile browser
+    // and falls back to a friendly "Add event" UI on desktop.
+    if (!booking.date_iso) return;
+    const date = booking.date_iso.replace(/-/g, '');
+    const startH = String(booking.slot_start_hour || 9).padStart(2, '0');
+    const endH = String(booking.slot_end_hour || (booking.slot_start_hour || 9) + 2).padStart(2, '0');
+    const dates = date + 'T' + startH + '0000/' + date + 'T' + endH + '0000';
+    const title = 'Ewash ' + booking.ref + ' — ' + (booking.service_label || '');
+    const location = booking.location_label || '';
+    const url = 'https://calendar.google.com/calendar/render?action=TEMPLATE&text=' + encodeURIComponent(title) + '&dates=' + dates + '&location=' + encodeURIComponent(location);
+    window.open(url, '_blank');
+  };
+
+  return (
+    <div className="col gap-16" style={{ padding: '8px 16px 24px' }}>
+      <div className="col gap-6">
+        <div style={{ fontWeight: 700, fontSize: 18 }}>{booking.ref}</div>
+        <span className={_bookingChipClass(booking.status)} style={{ fontSize: 11, padding: '3px 8px', alignSelf: 'flex-start' }}>
+          {booking.status_label || booking.status}
+        </span>
+      </div>
+
+      <div className="col" style={{ gap: 0 }}>
+        <BookingDetailRow label="Service" value={booking.service_label} />
+        <BookingDetailRow label="Véhicule" value={booking.vehicle_label} />
+        <BookingDetailRow label="Date" value={booking.date_label} />
+        <BookingDetailRow label="Créneau" value={booking.slot_label} />
+        <BookingDetailRow label="Lieu" value={booking.location_label} />
+        <BookingDetailRow label="Total" value={(booking.total_price_dh || 0) + ' DH'} />
+      </div>
+
+      <div className="col gap-8">
+        {canCalendar && (
+          <Btn variant="soft" onClick={addToCalendar}>
+            <Icons.Calendar size={16} />&nbsp;{t.addToCalendar || 'Ajouter au calendrier'}
+          </Btn>
+        )}
+        <Btn variant="soft" onClick={shareWhatsApp}>
+          <Icons.Send size={16} />&nbsp;Partager via WhatsApp
+        </Btn>
+        {canRebook && (
+          <Btn variant="soft" onClick={bookAgain}>
+            <Icons.Plus size={16} />&nbsp;Réserver à nouveau
+          </Btn>
+        )}
+        {staffContact && staffContact.available && staffContact.whatsapp_phone && (
+          <Btn variant="soft" onClick={contactSupport}>
+            <Icons.Message size={16} />&nbsp;Contacter le support
+          </Btn>
+        )}
+        <Btn variant="primary" onClick={onClose}>
+          Fermer
+        </Btn>
+      </div>
+    </div>
+  );
+}
+
+function BookingDetailRow({ label, value }) {
+  return (
+    <div className="row between" style={{ gap: 16, padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
+      <div className="t-muted" style={{ fontSize: 13 }}>{label}</div>
+      <div style={{ fontSize: 13.5, fontWeight: 600, textAlign: 'right' }}>{value || '—'}</div>
     </div>
   );
 }
