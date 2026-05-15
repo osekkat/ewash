@@ -100,6 +100,38 @@ function _bookingDataSize(data) {
   }
 }
 
+function _payloadFromBookingData(d) {
+  const serviceId = d.service && d.service.id ? d.service.id : d.service;
+  return {
+    phone: d.phone,
+    name: d.name,
+    category: d.category,
+    vehicle: d.category !== MOTO_CATEGORY ? {
+      make: d.make,
+      color: d.color,
+      plate: d.plate || null,
+    } : null,
+    location: {
+      kind: d.locationKind,
+      pin_address: d.locationKind === 'home' ? d.pinAddress : null,
+      address_details: d.addressDetails || null,
+      center_id: d.locationKind === 'center' ? d.centerId : null,
+    },
+    promo_code: d.promoApplied ? d.promoCode : null,
+    service_id: serviceId,
+    date: d.date && d.date.iso,
+    slot: d.time,
+    note: d.note || null,
+    addon_ids: d.addons || [],
+    client_request_id: d.clientRequestId,
+  };
+}
+
+function _submitErrorMessage(t, err) {
+  if (err && err.status === 429) return t.submitRateLimited || t.networkErrorTitle;
+  return t.submitBookingError || t.networkErrorTitle;
+}
+
 // ─────────────────────────────────────────────────────────────
 // BOOKING ROOT — state machine
 // ─────────────────────────────────────────────────────────────
@@ -129,6 +161,8 @@ function BookingFlow({ t, lang, theme, variant, onClose, onComplete, profile }) 
   const [bootstrapErr, setBootstrapErr] = useS_b(null);
   const [bootstrapLoading, setBootstrapLoading] = useS_b(false);
   const [bootstrapRetry, setBootstrapRetry] = useS_b(0);
+  const [confirmedRef, setConfirmedRef] = useS_b('');
+  const [confirmedTotal, setConfirmedTotal] = useS_b(null);
 
   const kind = _isMotoCategory(data.category) ? 'moto' : 'car';
   const stepperSteps = kind === 'moto' ? STEPS_MOTO : STEPS_CAR;
@@ -256,6 +290,14 @@ function BookingFlow({ t, lang, theme, variant, onClose, onComplete, profile }) 
     setBootstrapRetry((n) => n + 1);
   };
 
+  const submitBooking = async () => {
+    const payload = _payloadFromBookingData(data);
+    const response = await window.EwashAPI.submitBooking(payload);
+    setConfirmedRef(response.ref);
+    setConfirmedTotal(response.total_dh);
+    setStep('confirmed');
+  };
+
   // ───── render
   return (
     <div className="col" style={{ flex: 1, background: 'var(--bg)' }}>
@@ -330,10 +372,13 @@ function BookingFlow({ t, lang, theme, variant, onClose, onComplete, profile }) 
             totalPrice={totalPrice}
             onEdit={() => setStep('category')}
             onCancel={onClose}
-            onConfirm={() => setStep('confirmed')}/>
+            onConfirm={submitBooking}
+            showToast={setToastMsg}/>
         )}
         {step === 'confirmed' && (
           <ConfirmedStep t={t} lang={lang} data={data} totalPrice={totalPrice}
+            confirmedRef={confirmedRef}
+            confirmedTotal={confirmedTotal}
             variant={variant}
             centers={centersList}
             slots={slotsList}
@@ -1108,7 +1153,7 @@ function NoteStep({ t, data, patch, onNext }) {
 // ─────────────────────────────────────────────────────────────
 // STEP: Recap
 // ─────────────────────────────────────────────────────────────
-function RecapStep({ t, lang, data, patch, totalPrice, categories, centers, slots, staffContact, onEdit, onCancel, onConfirm }) {
+function RecapStep({ t, lang, data, patch, totalPrice, categories, centers, slots, staffContact, onEdit, onCancel, onConfirm, showToast }) {
   const category = _findById(categories, data.category);
   const catLabel = _categoryLabel(t, category, data.category);
   const centerLabel = _centerLabel(centers, data.centerId);
@@ -1116,23 +1161,39 @@ function RecapStep({ t, lang, data, patch, totalPrice, categories, centers, slot
   const promoLabel = data.promoCode ? data.promoCode : '';
   const phoneDigits = data.phone.replace(/\s/g, '').length;
   const phoneValid = phoneDigits >= 9;
-  const confirm = () => {
+  const [submitting, setSubmitting] = useS_b(false);
+  const confirm = async () => {
+    if (submitting) return;
     if (window.EwashLog) {
       window.EwashLog.hash(data.phone).then((phone_hash) => {
         window.EwashLog.info('booking.confirm', {
           phone_hash,
           category: data.category,
-          service: data.service && data.service.name,
+          service: data.service && data.service.id,
           total_dh: totalPrice,
           has_promo: !!data.promoApplied,
           addon_count: data.addons.length,
-          client_request_id: '',
+          client_request_id: data.clientRequestId || '',
         });
       }).catch(() => {
         window.EwashLog.warn('booking.error', { step: 'recap', error_code: 'phone_hash_failed' });
       });
     }
-    onConfirm();
+    setSubmitting(true);
+    try {
+      await onConfirm();
+    } catch (err) {
+      if (window.EwashLog) {
+        window.EwashLog.warn('booking.error', {
+          step: 'submit',
+          error_code: (err && err.error_code) || 'booking_submit_failed',
+          status: err && err.status,
+        });
+      }
+      if (showToast) showToast(_submitErrorMessage(t, err));
+    } finally {
+      setSubmitting(false);
+    }
   };
   return (
     <>
@@ -1200,10 +1261,10 @@ function RecapStep({ t, lang, data, patch, totalPrice, categories, centers, slot
         </button>
       </div>
       <CtaDock hint={!phoneValid ? t.phoneRecapHint : undefined}>
-        <Btn block lg onClick={confirm} disabled={!phoneValid}
-          style={{ opacity: phoneValid ? 1 : 0.4 }}
+        <Btn block lg onClick={confirm} disabled={!phoneValid || submitting}
+          style={{ opacity: (phoneValid && !submitting) ? 1 : 0.4 }}
           icon={<Icons.Check size={20} stroke={2.5}/>}>
-          {t.confirmBooking}
+          {submitting ? (t.submittingBooking || t.confirmBooking) : t.confirmBooking}
         </Btn>
       </CtaDock>
     </>
@@ -1272,19 +1333,21 @@ function RecapRow({ icon, label, value, multiline }) {
 // ─────────────────────────────────────────────────────────────
 // STEP: Confirmed (with addon offer)
 // ─────────────────────────────────────────────────────────────
-function ConfirmedStep({ t, lang, data, totalPrice, variant, centers, slots, addons, staffContact, onAddons, onDone }) {
-  const ref = useM_b(() => 'EW-2026-' + String(Math.floor(Math.random() * 9000) + 1000), []);
+function ConfirmedStep({ t, lang, data, totalPrice, confirmedRef, confirmedTotal, variant, centers, slots, addons, staffContact, onAddons, onDone }) {
+  const ref = confirmedRef || '';
+  const displayedTotal = confirmedTotal == null ? totalPrice : confirmedTotal;
   const centerLabel = _centerLabel(centers, data.centerId);
   const slotLabel = _slotLabel(slots, data.time);
   useE_b(() => {
+    if (!ref) return;
     if (!window.EwashLog) return;
     window.EwashLog.info('booking.confirmed', {
       ref,
-      total_dh: totalPrice,
+      total_dh: displayedTotal,
       token_changed: false,
       duration_ms: 0,
     });
-  }, [ref, totalPrice]);
+  }, [ref, displayedTotal]);
   // Auto-open the upsell modal after a brief beat so the user sees the
   // confirmation first. Dismissable only via the two CTAs inside it.
   const [offerOpen, setOfferOpen] = useS_b(false);
@@ -1373,7 +1436,7 @@ function ConfirmedStep({ t, lang, data, totalPrice, variant, centers, slots, add
             </div>
             <div className="col" style={{ alignItems: 'flex-end', textAlign: 'end' }}>
               <div className="t-tiny" style={{ color: 'var(--text-3)', fontWeight: 600 }}>{t.total}</div>
-              <div className="t-num" style={{ fontWeight: 800, fontSize: 18 }}>{totalPrice}<span style={{ fontSize: 10, marginInlineStart: 2 }}>DH</span></div>
+              <div className="t-num" style={{ fontWeight: 800, fontSize: 18 }}>{displayedTotal}<span style={{ fontSize: 10, marginInlineStart: 2 }}>DH</span></div>
             </div>
           </div>
         </div>
