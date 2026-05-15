@@ -890,6 +890,44 @@ button.chip:active { transform: scale(0.95); }
 .debug-overlay .level-warn { background: rgba(255, 196, 0, 0.14); }
 .debug-overlay .level-error { background: rgba(255, 75, 92, 0.18); }
 
+.booking-skeleton-card {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  min-height: 84px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+}
+.booking-skeleton-icon,
+.booking-skeleton-line {
+  position: relative;
+  overflow: hidden;
+  background: var(--surface-2);
+}
+.booking-skeleton-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 14px;
+  flex: 0 0 auto;
+}
+.booking-skeleton-line {
+  height: 14px;
+  border-radius: 999px;
+}
+.booking-skeleton-line.small {
+  height: 10px;
+}
+.booking-skeleton-icon::after,
+.booking-skeleton-line::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.34), transparent);
+  animation: shimmer 1.45s ease-in-out infinite;
+}
+
 /* Logo wordmark fallback */
 .wordmark {
   font-family: var(--font-display);

@@ -3,41 +3,94 @@
 
 const { useState: useS_b, useEffect: useE_b, useMemo: useM_b } = React;
 
-// ─────────────────────────────────────────────────────────────
-// Domain data
-// ─────────────────────────────────────────────────────────────
-const CATEGORIES = [
-  { id: 'A', label: 'La Citadine', subKey: 'catASub', Icon: Icons.Car, kind: 'car' },
-  { id: 'B', label: 'Petite berline / SUV', subKey: 'catBSub', Icon: Icons.CarSide, kind: 'car' },
-  { id: 'C', label: 'Grande berline / SUV', subKey: 'catCSub', Icon: Icons.Suv, kind: 'car' },
-  { id: 'M', label: 'Moto', subKey: 'catMotoSub', Icon: Icons.Moto, kind: 'moto' },
-];
-
-const CENTERS = [
-  { id: 'bouskoura', name: 'Stand physique', addr: 'Mall Triangle Vert, Bouskoura', dist: 18.7, open: true, hours: '9h–22h30 · 7j/7' },
-];
-
-const SERVICE_OPTIONS = TARIFF_LAVAGE.map(s => ({ ...s }));
-const MOTO_SERVICES = [
-  { name: 'Le Vroom Vroom · Scooter', durationMin: 25, prices: { M: 85 },
-    desc: 'Carrosserie, selle, jantes + wax hydrophobe 1 semaine' },
-  { name: 'Le Vroom Vroom · Moto', durationMin: 35, prices: { M: 105 },
-    desc: 'Carrosserie, selle, jantes, chaîne + wax hydrophobe 1 semaine', popular: true },
-];
-
-const ADDONS = [
-  { id: 'cuir', name: 'Rénovation cuir', price: 250, desc: 'Sièges cuir nettoyés et nourris' },
-  { id: 'plast', name: 'Rénovation plastiques 6 mois', price: 200, desc: 'Pare-chocs & moulures · 6 mois' },
-  { id: 'optiques', name: 'Rénovation optiques', price: 150, desc: 'Phares retrouvent leur clarté' },
-  { id: 'lustrage', name: 'Lustrage', price: 650, desc: 'Brillance éclatante + protection' },
-];
-
-// Promo codes simulated
-const VALID_PROMOS = ['ECO15', 'CIH10', 'PARTNER'];
-
 // Step ordering depends on vehicle kind
 const STEPS_CAR = ['category', 'vehicle', 'location', 'service', 'date', 'note'];
 const STEPS_MOTO = ['category', 'location', 'service', 'date', 'note'];
+const MOTO_CATEGORY = 'MOTO';
+const DEFAULT_STAFF_CONTACT = { available: false, whatsapp_phone: '' };
+
+const CATEGORY_ICONS = {
+  A: Icons.Car,
+  B: Icons.CarSide,
+  C: Icons.Suv,
+  MOTO: Icons.Moto,
+};
+
+const SERVICE_DURATIONS = {
+  svc_ext: 25,
+  svc_cpl: 45,
+  svc_sal: 150,
+  svc_pol: 180,
+  svc_cer6m: 120,
+  svc_cer6w: 60,
+  svc_cuir: 70,
+  svc_plastq: 55,
+  svc_optq: 45,
+  svc_lustre: 90,
+  svc_scooter: 25,
+  svc_moto: 35,
+};
+
+function _isMotoCategory(category) {
+  return category === MOTO_CATEGORY;
+}
+
+function _categoryIcon(categoryId) {
+  return CATEGORY_ICONS[categoryId] || Icons.Car;
+}
+
+function _categoryLabel(t, category, categoryId) {
+  if (!categoryId) return '';
+  if (_isMotoCategory(categoryId)) return t.catMoto || (category && category.label) || 'Moto';
+  return t['cat' + categoryId] || (category && category.label) || categoryId;
+}
+
+function _categorySub(t, category) {
+  if (!category) return '';
+  if (_isMotoCategory(category.id)) return t.catMotoSub || category.sub || '';
+  return t['cat' + category.id + 'Sub'] || category.sub || '';
+}
+
+function _normalizeService(service) {
+  if (!service) return null;
+  return Object.assign({}, service, {
+    durationMin: service.durationMin || SERVICE_DURATIONS[service.id] || 45,
+  });
+}
+
+function _servicesForCategory(bootstrap, category) {
+  if (!bootstrap || !bootstrap.services || !category) return [];
+  if (_isMotoCategory(category)) return (bootstrap.services.moto || []).map(_normalizeService);
+  return []
+    .concat(bootstrap.services.wash || [])
+    .concat(bootstrap.services.detailing || [])
+    .map(_normalizeService);
+}
+
+function _addonOptions(bootstrap) {
+  if (!bootstrap || !bootstrap.services) return [];
+  return (bootstrap.services.detailing || []).map(_normalizeService);
+}
+
+function _findById(items, id) {
+  return (items || []).find((item) => item.id === id) || null;
+}
+
+function _centerLabel(centers, centerId) {
+  const center = _findById(centers, centerId);
+  return center ? center.name : '';
+}
+
+function _slotStartMinutes(slot) {
+  const match = slot && slot.id ? /^slot_(\d+)_\d+$/.exec(slot.id) : null;
+  if (!match) return 0;
+  return Number(match[1]) * 60;
+}
+
+function _slotLabel(slots, slotId) {
+  const slot = _findById(slots, slotId);
+  return slot ? slot.label : '';
+}
 
 function _bookingDataSize(data) {
   try {
@@ -54,7 +107,7 @@ function BookingFlow({ t, lang, theme, variant, onClose, onComplete, profile }) 
   const [data, setData] = useS_b({
     name: profile.name,
     phone: '', // collected in the recap step (replaces the old OTP login flow)
-    category: null, // 'A' | 'B' | 'C' | 'M'
+    category: null, // 'A' | 'B' | 'C' | 'MOTO'
     make: '', color: '', plate: '',
     locationKind: null, // 'home' | 'center'
     pinAddress: '173 Bd Anfa, Casablanca',
@@ -72,9 +125,85 @@ function BookingFlow({ t, lang, theme, variant, onClose, onComplete, profile }) 
   const [step, setStep] = useS_b('category');
   const [history, setHistory] = useS_b([]);
   const [toastMsg, setToastMsg] = useS_b(null);
+  const [bootstrap, setBootstrap] = useS_b(null);
+  const [bootstrapErr, setBootstrapErr] = useS_b(null);
+  const [bootstrapLoading, setBootstrapLoading] = useS_b(false);
+  const [bootstrapRetry, setBootstrapRetry] = useS_b(0);
 
-  const kind = data.category === 'M' ? 'moto' : 'car';
+  const kind = _isMotoCategory(data.category) ? 'moto' : 'car';
   const stepperSteps = kind === 'moto' ? STEPS_MOTO : STEPS_CAR;
+  const categoriesList = bootstrap?.categories || [];
+  const centersList = bootstrap?.centers || [];
+  const servicesList = useM_b(
+    () => _servicesForCategory(bootstrap, data.category),
+    [bootstrap, data.category]
+  );
+  const addonsList = useM_b(() => _addonOptions(bootstrap), [bootstrap]);
+  const closedDatesSet = useM_b(
+    () => new Set((bootstrap && bootstrap.closed_dates) || []),
+    [bootstrap]
+  );
+  const slotsList = bootstrap?.time_slots || [];
+  const staffContact = bootstrap?.staff_contact || DEFAULT_STAFF_CONTACT;
+
+  useE_b(() => {
+    let alive = true;
+    setBootstrapLoading(true);
+    setBootstrapErr(null);
+    window.EwashAPI.getBootstrap({})
+      .then((payload) => {
+        if (!alive) return;
+        setBootstrap(payload);
+        setBootstrapLoading(false);
+      })
+      .catch((err) => {
+        if (!alive) return;
+        setBootstrapErr(err);
+        setBootstrapLoading(false);
+        if (window.EwashLog) {
+          window.EwashLog.warn('booking.error', {
+            step: 'bootstrap',
+            error_code: (err && err.error_code) || 'bootstrap_failed',
+          });
+        }
+      });
+    return () => { alive = false; };
+  }, [bootstrapRetry]);
+
+  useE_b(() => {
+    if (!data.category) return undefined;
+    let alive = true;
+    setBootstrapLoading(true);
+    window.EwashAPI.getBootstrap({
+      category: data.category,
+      promo: data.promoApplied ? data.promoCode : null,
+    })
+      .then((payload) => {
+        if (!alive) return;
+        setBootstrap(payload);
+        setBootstrapLoading(false);
+      })
+      .catch((err) => {
+        if (!alive) return;
+        setBootstrapErr(err);
+        setBootstrapLoading(false);
+        if (window.EwashLog) {
+          window.EwashLog.warn('booking.error', {
+            step: 'bootstrap_category',
+            error_code: (err && err.error_code) || 'bootstrap_failed',
+          });
+        }
+      });
+    return () => { alive = false; };
+  }, [data.category, data.promoApplied, data.promoCode, bootstrapRetry]);
+
+  useE_b(() => {
+    if (!data.service || !servicesList.length) return;
+    const refreshed = _findById(servicesList, data.service.id);
+    if (refreshed && refreshed.price_dh !== data.service.price_dh) {
+      patch({ service: refreshed });
+    }
+  }, [servicesList, data.service]);
 
   // For step indicator
   const stepperKey = step === 'addressPin' ? 'location'
@@ -114,14 +243,18 @@ function BookingFlow({ t, lang, theme, variant, onClose, onComplete, profile }) 
 
   const totalPrice = useM_b(() => {
     if (!data.service || !data.category) return 0;
-    const cat = data.category === 'M' ? 'M' : data.category;
-    let base = (data.service.prices[cat] || data.service.prices.A) || 0;
-    if (data.promoApplied) base = Math.round(base * 0.85);
+    const base = data.service.price_dh || 0;
     const addonsTotal = data.addons.reduce((s, id) => {
-      const a = ADDONS.find(x => x.id === id); return s + (a?.price || 0);
+      const addon = _findById(addonsList, id);
+      return s + ((addon && addon.price_dh) || 0);
     }, 0);
     return base + addonsTotal;
-  }, [data]);
+  }, [data, addonsList]);
+
+  const retryBootstrap = () => {
+    setBootstrapErr(null);
+    setBootstrapRetry((n) => n + 1);
+  };
 
   // ───── render
   return (
@@ -133,10 +266,18 @@ function BookingFlow({ t, lang, theme, variant, onClose, onComplete, profile }) 
       />
 
       <div className="app-scroll flex-1">
+        {bootstrapErr && !bootstrap && (
+          <BookingBootstrapError t={t} onRetry={retryBootstrap} />
+        )}
+        {!bootstrapErr && !bootstrap && (
+          <BookingFlowSkeleton t={t} />
+        )}
+        {bootstrap && (
+          <>
         {step === 'category' && (
-          <CategoryStep t={t} data={data} patch={patch} onNext={() => {
+          <CategoryStep t={t} data={data} patch={patch} categories={categoriesList} onNext={() => {
             // moto skips vehicle details + promo step
-            if (data.category === 'M') goTo('location');
+            if (_isMotoCategory(data.category)) goTo('location');
             else goTo('vehicle');
           }}/>
         )}
@@ -144,17 +285,17 @@ function BookingFlow({ t, lang, theme, variant, onClose, onComplete, profile }) 
           <VehicleStep t={t} data={data} patch={patch} onNext={() => goTo('location')}/>
         )}
         {step === 'location' && (
-          <LocationStep t={t} data={data} patch={patch}
+          <LocationStep t={t} data={data} centers={centersList}
             onHome={() => { patch({ locationKind: 'home' }); goTo('addressPin'); }}
             onCenter={() => { patch({ locationKind: 'center' }); goTo('centers'); }}/>
         )}
         {step === 'addressPin' && (
           <AddressPinStep t={t} data={data} patch={patch}
-            onNext={() => goTo(data.category === 'M' ? 'service' : 'promo')}/>
+            onNext={() => goTo(_isMotoCategory(data.category) ? 'service' : 'promo')}/>
         )}
         {step === 'centers' && (
-          <CentersStep t={t} data={data} patch={patch}
-            onNext={(id) => { patch({ centerId: id }); goTo(data.category === 'M' ? 'service' : 'promo'); }}/>
+          <CentersStep t={t} data={data} centers={centersList}
+            onNext={(id) => { patch({ centerId: id }); goTo(_isMotoCategory(data.category) ? 'service' : 'promo'); }}/>
         )}
         {step === 'promo' && (
           <PromoStep t={t} data={data} patch={patch}
@@ -163,15 +304,17 @@ function BookingFlow({ t, lang, theme, variant, onClose, onComplete, profile }) 
         )}
         {step === 'service' && (
           <ServiceStep t={t} data={data} patch={patch}
-            services={data.category === 'M' ? MOTO_SERVICES : SERVICE_OPTIONS}
+            services={servicesList}
+            loading={bootstrapLoading}
             onNext={() => goTo('date')}/>
         )}
         {step === 'date' && (
           <DateStep t={t} lang={lang} data={data} patch={patch}
+            closedDatesSet={closedDatesSet}
             onNext={() => goTo('time')}/>
         )}
         {step === 'time' && (
-          <TimeStep t={t} data={data} patch={patch}
+          <TimeStep t={t} data={data} patch={patch} slots={slotsList}
             onNext={() => goTo('note')}/>
         )}
         {step === 'note' && (
@@ -180,6 +323,10 @@ function BookingFlow({ t, lang, theme, variant, onClose, onComplete, profile }) 
         )}
         {step === 'recap' && (
           <RecapStep t={t} lang={lang} data={data} patch={patch}
+            categories={categoriesList}
+            centers={centersList}
+            slots={slotsList}
+            staffContact={staffContact}
             totalPrice={totalPrice}
             onEdit={() => setStep('category')}
             onCancel={onClose}
@@ -188,12 +335,18 @@ function BookingFlow({ t, lang, theme, variant, onClose, onComplete, profile }) 
         {step === 'confirmed' && (
           <ConfirmedStep t={t} lang={lang} data={data} totalPrice={totalPrice}
             variant={variant}
+            centers={centersList}
+            slots={slotsList}
+            addons={addonsList}
+            staffContact={staffContact}
             onAddons={() => setStep('addons')}
             onDone={onComplete}/>
         )}
         {step === 'addons' && (
-          <AddonsStep t={t} data={data} patch={patch}
+          <AddonsStep t={t} data={data} patch={patch} addons={addonsList}
             totalPrice={totalPrice} onDone={onComplete}/>
+        )}
+          </>
         )}
       </div>
 
@@ -240,10 +393,54 @@ function BookingHeader({ t, step, onBack, onClose, stepperIdx, stepperTotal, sho
   );
 }
 
+function BookingFlowSkeleton({ t, title, subtitle }) {
+  return (
+    <div className="px-16 col gap-12" style={{ paddingTop: 18, paddingBottom: 100 }}>
+      <div className="px-4 col gap-6 mb-4">
+        <div className="t-h1">{title || t.chooseCategory}</div>
+        <div className="t-muted">{subtitle || t.loadingCatalog}</div>
+      </div>
+      {[0, 1, 2].map((idx) => (
+        <div key={idx} className="booking-skeleton-card">
+          <div className="booking-skeleton-icon" />
+          <div className="col gap-8 flex-1">
+            <div className="booking-skeleton-line" style={{ width: idx === 1 ? '52%' : '64%' }} />
+            <div className="booking-skeleton-line small" style={{ width: idx === 2 ? '72%' : '86%' }} />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function BookingBootstrapError({ t, onRetry }) {
+  return (
+    <div className="px-16 col gap-12" style={{ paddingTop: 24, paddingBottom: 100 }}>
+      <div className="card" style={{ padding: 18 }}>
+        <div className="row gap-12" style={{ alignItems: 'flex-start' }}>
+          <div style={{
+            width: 44, height: 44, borderRadius: 14,
+            background: 'color-mix(in srgb, var(--danger) 14%, transparent)',
+            color: 'var(--danger)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+          }}>
+            <Icons.Close size={22}/>
+          </div>
+          <div className="col gap-6 flex-1">
+            <div style={{ fontWeight: 800, fontSize: 16 }}>{t.networkErrorTitle}</div>
+            <div className="t-muted">{t.networkErrorBody}</div>
+          </div>
+        </div>
+        <Btn block style={{ marginTop: 16 }} onClick={onRetry}>{t.retry}</Btn>
+      </div>
+    </div>
+  );
+}
+
 // ─────────────────────────────────────────────────────────────
 // STEP: Category
 // ─────────────────────────────────────────────────────────────
-function CategoryStep({ t, data, patch, onNext }) {
+function CategoryStep({ t, data, patch, categories, onNext }) {
   return (
     <>
       <div className="px-20 col gap-6 mb-16">
@@ -251,15 +448,24 @@ function CategoryStep({ t, data, patch, onNext }) {
         <div className="t-muted">{t.chooseCategorySub}</div>
       </div>
       <div className="px-16 col gap-10 anim-stagger" style={{ paddingBottom: 100 }}>
-        {CATEGORIES.map(c => (
+        {categories.map(c => {
+          const Icon = _categoryIcon(c.id);
+          return (
           <SelectCard key={c.id}
             selected={data.category === c.id}
-            onClick={() => patch({ category: c.id })}
-            icon={<c.Icon size={28}/>}>
-            <div style={{ fontWeight: 700, fontSize: 15 }}>{t['cat' + (c.id === 'M' ? 'Moto' : c.id)]}</div>
-            <div className="t-muted" style={{ fontSize: 12.5 }}>{t[c.subKey]}</div>
+            onClick={() => patch({
+              category: c.id,
+              service: null,
+              addons: [],
+              promoCode: null,
+              promoApplied: false,
+            })}
+            icon={<Icon size={28}/>}>
+            <div style={{ fontWeight: 700, fontSize: 15 }}>{_categoryLabel(t, c, c.id)}</div>
+            <div className="t-muted" style={{ fontSize: 12.5 }}>{_categorySub(t, c)}</div>
           </SelectCard>
-        ))}
+          );
+        })}
       </div>
       <CtaDock>
         <Btn block lg disabled={!data.category}
@@ -331,7 +537,8 @@ function VehicleStep({ t, data, patch, onNext }) {
 // ─────────────────────────────────────────────────────────────
 // STEP: Location
 // ─────────────────────────────────────────────────────────────
-function LocationStep({ t, data, onHome, onCenter }) {
+function LocationStep({ t, centers, onHome, onCenter }) {
+  const firstCenter = centers[0];
   return (
     <>
       <div className="px-20 col gap-6 mb-16">
@@ -373,7 +580,7 @@ function LocationStep({ t, data, onHome, onCenter }) {
             <div style={{ fontWeight: 700, fontSize: 16 }}>{t.atCenter}</div>
             <div className="t-muted">{t.atCenterSub}</div>
             <div className="t-tiny mt-4" style={{ color: 'var(--text-2)' }}>
-              Mall Triangle Vert · Bouskoura
+              {firstCenter ? firstCenter.name : t.atCenterSub}
             </div>
           </div>
           <Icons.ChevronRight size={20} style={{ color: 'var(--text-3)', alignSelf: 'center' }}/>
@@ -468,15 +675,15 @@ function AddressPinStep({ t, data, patch, onNext }) {
 // ─────────────────────────────────────────────────────────────
 // STEP: Centers
 // ─────────────────────────────────────────────────────────────
-function CentersStep({ t, data, onNext }) {
+function CentersStep({ t, centers, onNext }) {
   return (
     <>
       <div className="px-20 col gap-6 mb-16">
         <div className="t-h1">{t.pickCenter}</div>
-        <div className="t-muted">Mall Triangle Vert · Bouskoura</div>
+        <div className="t-muted">{centers[0] ? centers[0].name : t.atCenterSub}</div>
       </div>
       <div className="px-16 col gap-10 anim-stagger" style={{ paddingBottom: 24 }}>
-        {CENTERS.map(c => (
+        {centers.map(c => (
           <button key={c.id} onClick={() => onNext(c.id)} className="card" style={{
             padding: 14, display: 'flex', gap: 12, alignItems: 'flex-start',
             textAlign: 'inherit',
@@ -489,24 +696,13 @@ function CentersStep({ t, data, onNext }) {
             <div className="col gap-4 flex-1" style={{ minWidth: 0 }}>
               <div className="row between">
                 <div style={{ fontWeight: 700, fontSize: 15 }}>{c.name}</div>
-                <span className="t-tiny" style={{ fontWeight: 600, color: 'var(--text-2)' }}>{c.dist} {t.km}</span>
               </div>
-              <div className="t-muted">{c.addr}</div>
+              <div className="t-muted">{c.details}</div>
               <div className="row gap-6 mt-4">
-                {c.closingSoon ? (
-                  <span className="chip" style={{
-                    background: 'rgba(242,232,28,0.18)', color: '#7A5E1F',
-                    borderColor: 'transparent', fontSize: 10.5, padding: '3px 8px',
-                  }}>
-                    <Icons.Clock size={10}/> {t.closingSoon}
-                  </span>
-                ) : (
-                  <span className="chip chip-accent" style={{ fontSize: 10.5, padding: '3px 8px' }}>
-                    <span style={{ width: 6, height: 6, borderRadius: 99, background: 'currentColor' }}/>
-                    {t.open}
-                  </span>
-                )}
-                <span className="t-tiny" style={{ color: 'var(--text-2)' }}>{c.hours}</span>
+                <span className="chip chip-accent" style={{ fontSize: 10.5, padding: '3px 8px' }}>
+                  <span style={{ width: 6, height: 6, borderRadius: 99, background: 'currentColor' }}/>
+                  {t.open}
+                </span>
               </div>
             </div>
             <Icons.ChevronRight size={18} style={{ color: 'var(--text-3)', marginTop: 14 }}/>
@@ -524,14 +720,34 @@ function PromoStep({ t, data, patch, onNext, showToast }) {
   const [open, setOpen] = useS_b(false);
   const [code, setCode] = useS_b('');
   const [err, setErr] = useS_b(false);
+  const [loading, setLoading] = useS_b(false);
   const apply = () => {
-    if (VALID_PROMOS.includes(code.trim().toUpperCase())) {
-      patch({ promoCode: code.trim().toUpperCase(), promoApplied: true });
-      showToast(t.promoValid);
-      setTimeout(onNext, 600);
-    } else {
-      setErr(true);
-    }
+    const normalized = code.trim().toUpperCase();
+    if (!normalized || loading) return;
+    setLoading(true);
+    setErr(false);
+    window.EwashAPI.validatePromo({ code: normalized, category: data.category })
+      .then((result) => {
+        if (result && result.valid) {
+          patch({ promoCode: normalized, promoApplied: true });
+          showToast(result.label || t.promoValid);
+          setTimeout(onNext, 600);
+        } else {
+          patch({ promoCode: null, promoApplied: false });
+          setErr(true);
+        }
+      })
+      .catch((error) => {
+        patch({ promoCode: null, promoApplied: false });
+        setErr(true);
+        if (window.EwashLog) {
+          window.EwashLog.warn('booking.error', {
+            step: 'promo',
+            error_code: (error && error.error_code) || 'promo_validate_failed',
+          });
+        }
+      })
+      .finally(() => setLoading(false));
   };
   return (
     <>
@@ -556,7 +772,7 @@ function PromoStep({ t, data, patch, onNext, showToast }) {
               </div>
               <Icons.ChevronRight size={18} style={{ color: 'var(--text-3)' }}/>
             </button>
-            <button onClick={onNext} className="card-soft" style={{
+            <button onClick={() => { patch({ promoCode: null, promoApplied: false }); onNext(); }} className="card-soft" style={{
               padding: 14, fontWeight: 600, fontSize: 14,
               color: 'var(--text-2)', borderRadius: 16,
             }}>{t.noPromo}</button>
@@ -585,12 +801,12 @@ function PromoStep({ t, data, patch, onNext, showToast }) {
                 <Btn variant="soft" style={{ flex: 1 }} onClick={() => setOpen(false)}>
                   {t.cancel}
                 </Btn>
-                <Btn style={{ flex: 1 }} onClick={apply} disabled={!code}>
-                  {t.applyPromo}
+                <Btn style={{ flex: 1 }} onClick={apply} disabled={!code || loading}>
+                  {loading ? t.loadingCatalog : t.applyPromo}
                 </Btn>
               </div>
             </div>
-            <button onClick={onNext} className="t-muted" style={{
+            <button onClick={() => { patch({ promoCode: null, promoApplied: false }); onNext(); }} className="t-muted" style={{
               padding: 14, textAlign: 'center', fontWeight: 600,
             }}>{t.noPromo}</button>
           </>
@@ -603,8 +819,7 @@ function PromoStep({ t, data, patch, onNext, showToast }) {
 // ─────────────────────────────────────────────────────────────
 // STEP: Service
 // ─────────────────────────────────────────────────────────────
-function ServiceStep({ t, data, patch, onNext, services }) {
-  const catKey = data.category === 'M' ? 'M' : data.category;
+function ServiceStep({ t, data, patch, onNext, services, loading }) {
   return (
     <>
       <div className="px-20 col gap-6 mb-16">
@@ -612,10 +827,13 @@ function ServiceStep({ t, data, patch, onNext, services }) {
         <div className="t-muted">{t.serviceSub}</div>
       </div>
       <div className="px-16 col gap-10 anim-stagger" style={{ paddingBottom: 100 }}>
+        {loading && !services.length && (
+          <BookingFlowSkeleton t={t} title={t.chooseService} subtitle={t.loadingCatalog} />
+        )}
         {services.map((s, i) => {
-          const selected = data.service?.name === s.name;
-          let price = s.prices[catKey] || s.prices.A;
-          const discountedPrice = data.promoApplied ? Math.round(price * 0.85) : null;
+          const selected = data.service?.id === s.id;
+          const price = s.price_dh || 0;
+          const regularPrice = s.regular_price_dh;
           return (
             <button key={i} onClick={() => patch({ service: s })}
               className={`svc-card ${selected ? 'selected' : ''}`}
@@ -632,12 +850,12 @@ function ServiceStep({ t, data, patch, onNext, services }) {
                 <div className="t-muted" style={{ fontSize: 12.5 }}>{s.desc}</div>
                 <div className="row gap-12 mt-4" style={{ alignItems: 'baseline' }}>
                   <div className="row gap-2" style={{ alignItems: 'baseline' }}>
-                    {discountedPrice ? (
+                    {regularPrice ? (
                       <>
                         <span className="t-num" style={{ fontWeight: 800, fontSize: 17, color: 'var(--accent-soft-text)' }}>
-                          {discountedPrice}
+                          {price}
                         </span>
-                        <span style={{ fontSize: 10, color: 'var(--text-3)', textDecoration: 'line-through' }}>{price}</span>
+                        <span style={{ fontSize: 10, color: 'var(--text-3)', textDecoration: 'line-through' }}>{regularPrice}</span>
                       </>
                     ) : (
                       <span className="t-num" style={{ fontWeight: 800, fontSize: 17 }}>{price}</span>
@@ -664,7 +882,7 @@ function ServiceStep({ t, data, patch, onNext, services }) {
 // ─────────────────────────────────────────────────────────────
 // STEP: Date
 // ─────────────────────────────────────────────────────────────
-function DateStep({ t, lang, data, patch, onNext }) {
+function DateStep({ t, lang, data, patch, onNext, closedDatesSet }) {
   const [showMore, setShowMore] = useS_b(false);
   const start = useM_b(() => {
     const d = new Date();
@@ -678,6 +896,11 @@ function DateStep({ t, lang, data, patch, onNext }) {
       d: dt.getDate(),
       m: dt.getMonth(),
       y: dt.getFullYear(),
+      iso: [
+        dt.getFullYear(),
+        String(dt.getMonth() + 1).padStart(2, '0'),
+        String(dt.getDate()).padStart(2, '0'),
+      ].join('-'),
       dow: t.days[dt.getDay()],
       isToday: i === 0,
       isTomorrow: i === 1,
@@ -694,16 +917,19 @@ function DateStep({ t, lang, data, patch, onNext }) {
         <div className="row wrap gap-8">
           {days.map((d, i) => {
             const sel = isSel(d);
+            const closed = closedDatesSet.has(d.iso);
             return (
-              <button key={i} onClick={() => patch({ date: d })} className="press"
+              <button key={i} onClick={() => { if (!closed) patch({ date: d, time: null }); }} className="press"
+                disabled={closed}
                 style={{
                   width: 'calc(25% - 6px)',
                   padding: '12px 0', borderRadius: 14,
-                  background: sel ? 'var(--primary)' : 'var(--surface)',
-                  color: sel ? 'var(--primary-text)' : 'var(--text)',
+                  background: closed ? 'var(--surface-2)' : sel ? 'var(--primary)' : 'var(--surface)',
+                  color: closed ? 'var(--text-3)' : sel ? 'var(--primary-text)' : 'var(--text)',
                   border: `1px solid ${sel ? 'var(--primary)' : 'var(--border)'}`,
                   display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2,
-                  cursor: 'pointer',
+                  cursor: closed ? 'not-allowed' : 'pointer',
+                  opacity: closed ? 0.52 : 1,
                   boxShadow: sel
                     ? '0 8px 18px -8px color-mix(in srgb, var(--primary) 60%, transparent)'
                     : 'none',
@@ -742,32 +968,28 @@ function DateStep({ t, lang, data, patch, onNext }) {
 // ─────────────────────────────────────────────────────────────
 // STEP: Time
 // ─────────────────────────────────────────────────────────────
-function TimeStep({ t, data, patch, onNext }) {
-  const ALL_SLOTS = {
-    morning: ['08:30', '09:00', '09:30', '10:00', '10:30', '11:00', '11:30'],
-    afternoon: ['12:30', '13:00', '14:00', '14:30', '15:00', '15:30', '16:00', '16:30'],
-    evening: ['17:00', '17:30', '18:00', '18:30', '19:00'],
-  };
+function TimeStep({ t, data, patch, onNext, slots }) {
   // If the chosen date is today, only show slots ≥ now + 2h.
-  const slots = useM_b(() => {
+  const groupedSlots = useM_b(() => {
     const now = new Date();
     const isToday = data.date &&
       data.date.d === now.getDate() &&
       data.date.m === now.getMonth() &&
       data.date.y === now.getFullYear();
-    if (!isToday) return ALL_SLOTS;
     const minMinutes = now.getHours() * 60 + now.getMinutes() + 120;
-    const keep = (s) => {
-      const [h, m] = s.split(':').map(Number);
-      return h * 60 + m >= minMinutes;
+    const keep = (slot) => {
+      return !isToday || _slotStartMinutes(slot) >= minMinutes;
     };
-    return {
-      morning: ALL_SLOTS.morning.filter(keep),
-      afternoon: ALL_SLOTS.afternoon.filter(keep),
-      evening: ALL_SLOTS.evening.filter(keep),
-    };
-  }, [data.date]);
-  const empty = !slots.morning.length && !slots.afternoon.length && !slots.evening.length;
+    const grouped = { morning: [], afternoon: [], evening: [] };
+    (slots || []).filter(keep).forEach((slot) => {
+      const start = _slotStartMinutes(slot);
+      if (start < 12 * 60) grouped.morning.push(slot);
+      else if (start < 17 * 60) grouped.afternoon.push(slot);
+      else grouped.evening.push(slot);
+    });
+    return grouped;
+  }, [data.date, slots]);
+  const empty = !groupedSlots.morning.length && !groupedSlots.afternoon.length && !groupedSlots.evening.length;
   return (
     <>
       <div className="px-20 col gap-6 mb-12">
@@ -782,7 +1004,7 @@ function TimeStep({ t, data, patch, onNext }) {
             <div className="t-muted">Plus de créneaux aujourd'hui — choisissez une autre date.</div>
           </div>
         )}
-        {Object.entries(slots).map(([part, list]) => {
+        {Object.entries(groupedSlots).map(([part, list]) => {
           if (!list.length) return null;
           return (
             <div key={part} className="col gap-10">
@@ -794,11 +1016,11 @@ function TimeStep({ t, data, patch, onNext }) {
                 <div style={{ flex: 1, height: 1, background: 'var(--border)' }}/>
               </div>
               <div className="row wrap gap-8">
-                {list.map(time => {
-                  const sel = data.time === time;
+                {list.map(slot => {
+                  const sel = data.time === slot.id;
                   return (
-                    <button key={time}
-                      onClick={() => patch({ time })}
+                    <button key={slot.id}
+                      onClick={() => patch({ time: slot.id })}
                       className="press"
                       style={{
                         width: 'calc(25% - 6px)',
@@ -815,7 +1037,7 @@ function TimeStep({ t, data, patch, onNext }) {
                           : 'none',
                         transform: sel ? 'translateY(-1px)' : 'translateY(0)',
                         transition: 'background 0.18s var(--ease-soft), border-color 0.18s var(--ease-soft), color 0.18s var(--ease-soft), box-shadow 0.22s var(--ease-soft), transform 0.22s var(--ease-spring)',
-                      }}>{time}</button>
+                      }}>{slot.label}</button>
                   );
                 })}
               </div>
@@ -886,8 +1108,12 @@ function NoteStep({ t, data, patch, onNext }) {
 // ─────────────────────────────────────────────────────────────
 // STEP: Recap
 // ─────────────────────────────────────────────────────────────
-function RecapStep({ t, lang, data, patch, totalPrice, onEdit, onCancel, onConfirm }) {
-  const catLabel = data.category === 'M' ? t.catMoto : t['cat' + data.category];
+function RecapStep({ t, lang, data, patch, totalPrice, categories, centers, slots, staffContact, onEdit, onCancel, onConfirm }) {
+  const category = _findById(categories, data.category);
+  const catLabel = _categoryLabel(t, category, data.category);
+  const centerLabel = _centerLabel(centers, data.centerId);
+  const slotLabel = _slotLabel(slots, data.time);
+  const promoLabel = data.promoCode ? data.promoCode : '';
   const phoneDigits = data.phone.replace(/\s/g, '').length;
   const phoneValid = phoneDigits >= 9;
   const confirm = () => {
@@ -918,23 +1144,23 @@ function RecapStep({ t, lang, data, patch, totalPrice, onEdit, onCancel, onConfi
         <div className="card card-elev" style={{ padding: 0, overflow: 'hidden' }}>
           <PhoneRecapRow t={t} value={data.phone}
             onChange={(v) => patch({ phone: v.replace(/[^\d ]/g, '') })}/>
-          <RecapRow icon={data.category === 'M' ? <Icons.Moto size={18}/> : <Icons.Car size={18}/>}
+          <RecapRow icon={_isMotoCategory(data.category) ? <Icons.Moto size={18}/> : <Icons.Car size={18}/>}
             label={t.vehicle}
-            value={data.category === 'M' ? t.catMoto : `${catLabel}${data.make ? ' · ' + data.make : ''}${data.color ? ' · ' + data.color : ''}`}/>
+            value={_isMotoCategory(data.category) ? t.catMoto : `${catLabel}${data.make ? ' · ' + data.make : ''}${data.color ? ' · ' + data.color : ''}`}/>
           <RecapRow icon={<Icons.Pin size={18}/>} label={t.location}
             value={data.locationKind === 'home'
               ? data.pinAddress
-              : (CENTERS.find(c => c.id === data.centerId)?.name || '')}/>
+              : centerLabel}/>
           <RecapRow icon={<Icons.Sparkle size={18}/>} label={t.service}
             value={data.service?.name}/>
           <RecapRow icon={<Icons.Calendar size={18}/>} label={t.dateTime}
-            value={data.date ? `${data.date.dow} ${data.date.d} ${t.months[data.date.m]} · ${data.time}` : ''}/>
+            value={data.date ? `${data.date.dow} ${data.date.d} ${t.months[data.date.m]} · ${slotLabel}` : ''}/>
           {data.note && (
             <RecapRow icon={<Icons.Note size={18}/>} label={t.note} value={data.note} multiline/>
           )}
           {data.promoApplied && (
             <RecapRow icon={<Icons.Tag size={18}/>} label={t.promo}
-              value={<span style={{ color: 'var(--accent-soft-text)', fontWeight: 700 }}>{data.promoCode} · -15%</span>}/>
+              value={<span style={{ color: 'var(--accent-soft-text)', fontWeight: 700 }}>{promoLabel}</span>}/>
           )}
         </div>
 
@@ -1046,8 +1272,10 @@ function RecapRow({ icon, label, value, multiline }) {
 // ─────────────────────────────────────────────────────────────
 // STEP: Confirmed (with addon offer)
 // ─────────────────────────────────────────────────────────────
-function ConfirmedStep({ t, lang, data, totalPrice, variant, onAddons, onDone }) {
+function ConfirmedStep({ t, lang, data, totalPrice, variant, centers, slots, addons, staffContact, onAddons, onDone }) {
   const ref = useM_b(() => 'EW-2026-' + String(Math.floor(Math.random() * 9000) + 1000), []);
+  const centerLabel = _centerLabel(centers, data.centerId);
+  const slotLabel = _slotLabel(slots, data.time);
   useE_b(() => {
     if (!window.EwashLog) return;
     window.EwashLog.info('booking.confirmed', {
@@ -1061,10 +1289,10 @@ function ConfirmedStep({ t, lang, data, totalPrice, variant, onAddons, onDone })
   // confirmation first. Dismissable only via the two CTAs inside it.
   const [offerOpen, setOfferOpen] = useS_b(false);
   useE_b(() => {
-    if (data.category === 'M') return;
+    if (_isMotoCategory(data.category) || !addons.length) return;
     const id = setTimeout(() => setOfferOpen(true), 800);
     return () => clearTimeout(id);
-  }, [data.category]);
+  }, [data.category, addons.length]);
   return (
     <div className="col anim-fade" style={{ paddingBottom: 12 }}>
       {/* Confirmation hero */}
@@ -1137,10 +1365,10 @@ function ConfirmedStep({ t, lang, data, totalPrice, variant, onAddons, onDone })
             <div className="col gap-2 flex-1">
               <div style={{ fontWeight: 700, fontSize: 14.5 }}>{data.service?.name}</div>
               <div className="t-muted" style={{ fontSize: 12.5, display: 'flex', alignItems: 'center', gap: 5 }}>
-                <Icons.Clock size={12}/> {data.time} · {data.service?.durationMin} {t.min}
+                <Icons.Clock size={12}/> {slotLabel} · {data.service?.durationMin} {t.min}
               </div>
               <div className="t-muted" style={{ fontSize: 12.5, display: 'flex', alignItems: 'center', gap: 5 }}>
-                <Icons.Pin size={12}/> {data.locationKind === 'home' ? data.pinAddress : CENTERS.find(c => c.id === data.centerId)?.name}
+                <Icons.Pin size={12}/> {data.locationKind === 'home' ? data.pinAddress : centerLabel}
               </div>
             </div>
             <div className="col" style={{ alignItems: 'flex-end', textAlign: 'end' }}>
@@ -1164,9 +1392,9 @@ function ConfirmedStep({ t, lang, data, totalPrice, variant, onAddons, onDone })
         </Btn>
       </div>
 
-      {offerOpen && data.category !== 'M' && (
+      {offerOpen && !_isMotoCategory(data.category) && (
         <OfferSheet
-          t={t} variant={variant}
+          t={t} variant={variant} addons={addons}
           onDecline={() => setOfferOpen(false)}
           onAccept={() => { setOfferOpen(false); onAddons(); }}/>
       )}
@@ -1176,7 +1404,7 @@ function ConfirmedStep({ t, lang, data, totalPrice, variant, onAddons, onDone })
 
 // Add-on upsell as an auto-opening bottom sheet. Backdrop click is a no-op —
 // the user has to tap Non merci or Voir l'offre to dismiss it.
-function OfferSheet({ t, variant, onDecline, onAccept }) {
+function OfferSheet({ t, variant, addons, onDecline, onAccept }) {
   return (
     <div style={{
       position: 'absolute', inset: 0,
@@ -1205,7 +1433,7 @@ function OfferSheet({ t, variant, onDecline, onAccept }) {
           margin: '0 auto 16px',
         }}/>
 
-        {/* -15% medallion */}
+        {/* Service add-on marker */}
         <div style={{
           position: 'absolute',
           top: 20, insetInlineEnd: -16,
@@ -1220,7 +1448,7 @@ function OfferSheet({ t, variant, onDecline, onAccept }) {
           fontWeight: 800, fontSize: 24,
           letterSpacing: '-0.02em',
           pointerEvents: 'none',
-        }}>−15%</div>
+        }}><Icons.Sparkle size={42}/></div>
 
         <div style={{ maxWidth: 'calc(100% - 90px)', position: 'relative', marginBottom: 14 }}>
           <div className="t-tiny" style={{
@@ -1244,15 +1472,12 @@ function OfferSheet({ t, variant, onDecline, onAccept }) {
           borderRadius: 14, padding: '12px 14px', marginBottom: 18,
           position: 'relative',
         }}>
-          {ADDONS.slice(0, 3).map((a) => (
+          {addons.slice(0, 3).map((a) => (
             <div key={a.id} className="row between" style={{ alignItems: 'baseline' }}>
               <span style={{ fontSize: 13.5, fontWeight: 600 }}>{a.name}</span>
               <div className="row gap-6" style={{ alignItems: 'baseline' }}>
-                <span style={{ fontSize: 11.5, opacity: 0.55, textDecoration: 'line-through' }}>
-                  {a.price} DH
-                </span>
                 <span className="t-num" style={{ fontWeight: 800, fontSize: 15.5 }}>
-                  {Math.round(a.price * 0.85)} DH
+                  {a.price_dh} DH
                 </span>
               </div>
             </div>
@@ -1293,7 +1518,7 @@ function OfferSheet({ t, variant, onDecline, onAccept }) {
 // ─────────────────────────────────────────────────────────────
 // STEP: Add-ons
 // ─────────────────────────────────────────────────────────────
-function AddonsStep({ t, data, patch, totalPrice, onDone }) {
+function AddonsStep({ t, data, patch, addons, totalPrice, onDone }) {
   const toggle = (id) => {
     const next = data.addons.includes(id)
       ? data.addons.filter(x => x !== id)
@@ -1305,14 +1530,12 @@ function AddonsStep({ t, data, patch, totalPrice, onDone }) {
       <div className="px-20 col gap-6 mb-16">
         <div className="row gap-8" style={{ alignItems: 'center' }}>
           <div className="t-h1">{t.addonsTitle}</div>
-          <span className="chip chip-accent" style={{ fontSize: 11 }}>-15%</span>
         </div>
         <div className="t-muted">{t.addonsSub}</div>
       </div>
       <div className="px-16 col gap-10" style={{ paddingBottom: 100 }}>
-        {ADDONS.map(a => {
+        {addons.map(a => {
           const sel = data.addons.includes(a.id);
-          const discounted = Math.round(a.price * 0.85);
           return (
             <button key={a.id} onClick={() => toggle(a.id)}
               className={`svc-card ${sel ? 'selected' : ''}`}
@@ -1327,8 +1550,7 @@ function AddonsStep({ t, data, patch, totalPrice, onDone }) {
                 <div style={{ fontWeight: 700, fontSize: 14.5 }}>{a.name}</div>
                 <div className="t-muted" style={{ fontSize: 12.5 }}>{a.desc}</div>
                 <div className="row gap-6 mt-4" style={{ alignItems: 'baseline' }}>
-                  <span className="t-num" style={{ fontWeight: 800, fontSize: 15, color: 'var(--accent-soft-text)' }}>{discounted}</span>
-                  <span style={{ fontSize: 11, color: 'var(--text-3)', textDecoration: 'line-through' }}>{a.price}</span>
+                  <span className="t-num" style={{ fontWeight: 800, fontSize: 15, color: 'var(--accent-soft-text)' }}>{a.price_dh}</span>
                   <span className="t-tiny" style={{ color: 'var(--text-2)' }}>DH</span>
                 </div>
               </div>
