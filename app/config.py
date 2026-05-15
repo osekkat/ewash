@@ -48,6 +48,13 @@ class Settings(BaseSettings):
     rate_limit_catalog_per_ip: str = "60/minute"
     rate_limit_promo_per_ip: str = "60/hour"
     rate_limit_bookings_list_per_token: str = "60/hour"
+    # PWA logout is a single tap; 10/hour absorbs flaky-network double-taps
+    # without enabling sustained token-enumeration attempts against the
+    # revoke endpoint. Per-token bucket — see ewash-byd for the per-IP gap.
+    rate_limit_token_revoke_per_token: str = "10/hour"
+    # GDPR self-serve erasure (DELETE /me) is once-in-a-customer-lifetime;
+    # the very low cap keeps the audit-log table from being spammed.
+    rate_limit_me_delete_per_token: str = "3/hour"
 
     def allowed_origins_list(self) -> list[str]:
         """Parse ``allowed_origins`` into a clean list of non-empty origins."""

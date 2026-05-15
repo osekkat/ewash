@@ -1087,7 +1087,7 @@ async def list_bookings(
     response_model=TokenRevokeResponse,
     response_model_exclude_none=True,
 )
-@limiter.limit("10/hour", key_func=_token_key_func)
+@limiter.limit(settings.rate_limit_token_revoke_per_token, key_func=_token_key_func)
 async def revoke_token(
     request: Request,
     response: Response,
@@ -1142,7 +1142,7 @@ async def revoke_token(
 
 
 @router.delete("/me", response_model=MeDeleteResponse)
-@limiter.limit("3/hour", key_func=_token_key_func)
+@limiter.limit(settings.rate_limit_me_delete_per_token, key_func=_token_key_func)
 async def delete_my_account(
     request: Request,
     response: Response,
