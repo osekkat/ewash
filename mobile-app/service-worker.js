@@ -5,8 +5,16 @@
  *
  * Tradeoff: every request pays a network round-trip when online.
  * Win: no version-bump dance — code edits show up on the next reload.
+ *
+ * Versioning:
+ *   Bump SW_VERSION on every SW behavior change. The CACHE_NAME embeds the
+ *   version so the `activate` handler can evict every prior cache in a single
+ *   `caches.keys()` pass. Vercel serves this file with `Cache-Control:
+ *   no-store` (see mobile-app/vercel.json), so browsers always revalidate it
+ *   and the new version takes over on the next page load.
  */
-const CACHE = 'ewash';
+const SW_VERSION = '2026-05-15-pwa-integration';
+const CACHE = `ewash-${SW_VERSION}`;
 const ASSETS = [
   './',
   './index.html',
