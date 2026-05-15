@@ -1,4 +1,5 @@
 """Environment configuration loaded via pydantic-settings."""
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -25,6 +26,31 @@ class Settings(BaseSettings):
     admin_session_ttl_seconds: int = 60 * 60 * 24 * 7
     internal_cron_secret: str = ""
     admin_default_locale: str = "fr"
+
+    # CORS for the PWA — comma-separated exact origins.
+    allowed_origins: str = ""
+    # Single regex for branch-deploy preview URLs,
+    # e.g. ``^https://ewash-mobile-app-.*\.vercel\.app$``.
+    allowed_origin_regex: str = ""
+
+    # Feature flag — disables the /api/v1 router entirely when False.
+    # Accepts both ``EWASH_API_ENABLED`` (Railway convention) and ``API_ENABLED``.
+    api_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("EWASH_API_ENABLED", "API_ENABLED"),
+    )
+
+    # Rate limits (slowapi syntax — see https://limits.readthedocs.io).
+    # 5/hour/phone is generous for a real customer (no one books 6 washes per
+    # hour) and tight enough to throttle obvious abuse.
+    rate_limit_bookings_per_phone: str = "5/hour"
+    rate_limit_bookings_per_ip: str = "20/hour"
+    rate_limit_promo_per_ip: str = "60/hour"
+    rate_limit_bookings_list_per_token: str = "60/hour"
+
+    def allowed_origins_list(self) -> list[str]:
+        """Parse ``allowed_origins`` into a clean list of non-empty origins."""
+        return [o.strip() for o in self.allowed_origins.split(",") if o.strip()]
 
 
 settings = Settings()
