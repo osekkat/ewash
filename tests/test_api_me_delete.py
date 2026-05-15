@@ -201,6 +201,58 @@ def test_delete_me_happy_path_purges_tokens_and_anonymizes_bookings(api_db):
         case.assertEqual(booking_row.raw_booking_json, "{}")
 
 
+def test_delete_me_allows_returning_customer_to_delete_again(api_db):
+    phone = "212600000516"
+    _seed_customer(api_db, phone)
+    _seed_booking(api_db, phone=phone, ref="EW-2026-7300")
+    first_token = mint_customer_token(phone, engine=api_db)
+
+    with _client() as client:
+        first = client.request(
+            "DELETE",
+            "/api/v1/me",
+            json={"confirm": CONFIRM_PHRASE},
+            headers={"X-Ewash-Token": first_token},
+        )
+    case.assertEqual(first.status_code, 200)
+
+    # The same real phone can later book again. A second erasure must not collide
+    # with the deterministic DEL-* customer row left by the first erasure.
+    _seed_customer(api_db, phone)
+    persistence.persist_customer_name(phone, "Hassan Returned", engine=api_db)
+    _seed_booking(api_db, phone=phone, ref="EW-2026-7301")
+    second_token = mint_customer_token(phone, engine=api_db)
+
+    with _client() as client:
+        second = client.request(
+            "DELETE",
+            "/api/v1/me",
+            json={"confirm": CONFIRM_PHRASE},
+            headers={"X-Ewash-Token": second_token},
+        )
+
+    case.assertEqual(second.status_code, 200)
+    case.assertEqual(second.json()["anonymized_bookings"], 1)
+    case.assertIsNone(persistence.verify_customer_token(second_token, engine=api_db))
+
+    with session_scope(api_db) as session:
+        live_customer = session.scalar(select(Customer).where(Customer.phone == phone))
+        live_bookings = session.scalars(
+            select(BookingRow).where(BookingRow.customer_phone == phone)
+        ).all()
+        audits = session.scalars(select(DataErasureAuditRow)).all()
+        bookings = session.scalars(select(BookingRow).order_by(BookingRow.ref)).all()
+
+    case.assertIsNone(live_customer)
+    case.assertEqual(live_bookings, [])
+    case.assertEqual(len(audits), 2)
+    case.assertEqual([row.ref for row in bookings], ["EW-2026-7300", "EW-2026-7301"])
+    for booking_row in bookings:
+        case.assertTrue(booking_row.customer_phone.startswith("DEL-"))
+        case.assertEqual(booking_row.customer_name, "Anonyme")
+        case.assertEqual(booking_row.raw_booking_json, "{}")
+
+
 def test_delete_me_writes_audit_row(api_db):
     phone = "212600000502"
     _seed_customer(api_db, phone)

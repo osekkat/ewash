@@ -1731,6 +1731,9 @@ def anonymize_customer(
             booking_row.raw_booking_json = "{}"
         session.flush()
 
+        existing_anon_customer = session.scalar(
+            select(Customer).where(Customer.phone == anon_phone)
+        )
         customer = session.scalar(
             select(Customer).where(Customer.phone == customer_phone)
         )
@@ -1741,7 +1744,19 @@ def anonymize_customer(
             customer.last_bot_stage = ""
             customer.last_bot_stage_label = ""
             customer.last_bot_stage_at = None
-            customer.phone = anon_phone
+            if existing_anon_customer is None:
+                customer.phone = anon_phone
+            else:
+                existing_anon_customer.booking_count = (
+                    (existing_anon_customer.booking_count or 0)
+                    + (customer.booking_count or 0)
+                )
+                session.execute(
+                    update(BookingRow)
+                    .where(BookingRow.customer_phone == customer_phone)
+                    .values(customer_phone=anon_phone)
+                )
+                session.delete(customer)
             session.flush()
 
         # SQLite has no ON UPDATE CASCADE; explicitly migrate any bookings that

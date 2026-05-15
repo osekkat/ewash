@@ -503,6 +503,50 @@ def test_admin_erase_customer_happy_path(monkeypatch, tmp_path):
     _configured_engine.cache_clear()
 
 
+def test_admin_erase_allows_returning_customer_to_be_erased_again(monkeypatch, tmp_path):
+    phone = "212600000553"
+    db_url = f"sqlite+pysqlite:///{tmp_path / 'admin-erase-repeat.db'}"
+    engine = make_engine(db_url)
+    init_db(engine)
+    _seed_customer_for_erasure(engine, phone)
+    client = _logged_in_admin_client(monkeypatch, db_url)
+
+    first = client.post(
+        f"/admin/customers/{phone}/erase",
+        content="confirm=ERASE&notes=First",
+        headers={"content-type": "application/x-www-form-urlencoded"},
+        follow_redirects=False,
+    )
+    assert first.status_code == 303
+
+    _seed_customer_for_erasure(engine, phone)
+    second = client.post(
+        f"/admin/customers/{phone}/erase",
+        content="confirm=ERASE&notes=Second",
+        headers={"content-type": "application/x-www-form-urlencoded"},
+        follow_redirects=False,
+    )
+
+    assert second.status_code == 303
+    assert second.headers["location"] == "/admin/customers?lang=fr&erased=1"
+    with session_scope(engine) as session:
+        assert _customer_side_count(session, phone) == 0
+        assert session.scalar(
+            select(func.count()).select_from(BookingRow).where(BookingRow.customer_phone == phone)
+        ) == 0
+        audits = session.scalars(
+            select(DataErasureAuditRow).order_by(DataErasureAuditRow.performed_at)
+        ).all()
+        bookings = session.scalars(select(BookingRow)).all()
+    assert len(audits) == 2
+    assert len(bookings) == 2
+    for booking in bookings:
+        assert booking.customer_phone.startswith("DEL-")
+        assert booking.customer_name == "Anonyme"
+        assert booking.raw_booking_json == "{}"
+    _configured_engine.cache_clear()
+
+
 def test_admin_erase_requires_confirm(monkeypatch, tmp_path):
     phone = "212600000552"
     db_url = f"sqlite+pysqlite:///{tmp_path / 'admin-erase-confirm.db'}"
