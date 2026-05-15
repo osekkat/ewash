@@ -5,7 +5,7 @@ import logging
 
 import pytest
 
-from app.notifications import _normalize_phone_number, normalize_phone
+from app.notifications import InvalidPhone, _normalize_phone_number, normalize_phone
 
 
 def test_normalize_phone_identity_when_already_clean():
@@ -25,20 +25,39 @@ def test_normalize_phone_strips_dashes_and_parens():
     assert normalize_phone("+1 (212) 555-1234") == "12125551234"
 
 
-def test_normalize_phone_empty_input_returns_empty():
-    # Distinct from short-number rejection: empty/None falls through to "".
-    assert normalize_phone("") == ""
-    assert normalize_phone(None) == ""
+def test_normalize_phone_empty_input_raises_invalid_phone():
+    # Strict contract: empty input is not a valid phone — raise so callers
+    # can't silently persist a blank row.
+    with pytest.raises(InvalidPhone):
+        normalize_phone("")
+    with pytest.raises(InvalidPhone):
+        normalize_phone(None)
 
 
-def test_normalize_phone_too_short_raises():
-    with pytest.raises(ValueError, match="8-20 digits"):
+def test_normalize_phone_too_short_raises_invalid_phone():
+    with pytest.raises(InvalidPhone, match="8-20 digits"):
         normalize_phone("123")
 
 
-def test_normalize_phone_too_long_raises():
-    with pytest.raises(ValueError, match="8-20 digits"):
+def test_normalize_phone_too_long_raises_invalid_phone():
+    with pytest.raises(InvalidPhone, match="8-20 digits"):
         normalize_phone("1" * 25)
+
+
+def test_invalid_phone_has_stable_error_code():
+    # The API layer matches on this attribute, not the message string.
+    assert InvalidPhone.error_code == "invalid_phone"
+    try:
+        normalize_phone("123")
+    except InvalidPhone as exc:
+        assert exc.error_code == "invalid_phone"
+    else:
+        pytest.fail("expected InvalidPhone")
+
+
+def test_invalid_phone_is_value_error_subclass():
+    # Callers that catch ValueError keep working (back-compat with old contract).
+    assert issubclass(InvalidPhone, ValueError)
 
 
 def test_normalize_phone_boundary_8_digits_accepted():

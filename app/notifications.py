@@ -44,12 +44,27 @@ def _engine_or_configured(engine: Engine | None = None) -> Engine | None:
     return engine if engine is not None else _notification_engine()
 
 
-def normalize_phone(phone_number: str) -> str:
+class InvalidPhone(ValueError):
+    """Raised by :func:`normalize_phone` when the input can't be parsed as a
+    valid phone number.
+
+    Carries a stable ``error_code`` attribute so the API layer can map this
+    exception to a 400 response with a machine-readable code without
+    re-introspecting the message string. The API exception map in
+    ``app/api.py`` should include::
+
+        (notifications.InvalidPhone, 400, "invalid_phone")
+    """
+
+    error_code = "invalid_phone"
+
+
+def normalize_phone(phone_number: str | None) -> str:
     """Normalize a free-text phone number to digits-only (8-20 chars).
 
     Strips spaces, plus signs, dashes, parentheses, and any other non-digit
-    characters. Returns "" for empty/None input. Raises ``ValueError`` when
-    the cleaned result is 1-7 digits or 21+ digits.
+    characters. Raises :class:`InvalidPhone` when the cleaned result is empty,
+    1-7 digits, or 21+ digits.
 
     Used by both the WhatsApp path (via :func:`upsert_booking_notification_settings`)
     and the PWA path (`POST /api/v1/bookings`) so the same customer reaching
@@ -57,18 +72,19 @@ def normalize_phone(phone_number: str) -> str:
     """
     raw = phone_number or ""
     digits = re.sub(r"\D+", "", raw)
-    if not digits:
-        return ""
-    if len(digits) < 8 or len(digits) > 20:
-        raise ValueError("WhatsApp phone number must contain 8-20 digits")
+    if not (8 <= len(digits) <= 20):
+        raise InvalidPhone(
+            f"phone={raw!r} normalized to {digits!r} of length {len(digits)}, "
+            f"must be 8-20 digits"
+        )
     if digits != raw:
         log.debug("phone_normalized in=%r out=%r changed=True", raw, digits)
     return digits
 
 
-# Back-compat alias: existing call sites (`upsert_booking_notification_settings`)
-# import `_normalize_phone_number`. The leading underscore is preserved so
-# nothing breaks; new callers should prefer the public name.
+# Back-compat alias: existing call sites import `_normalize_phone_number`.
+# The leading underscore is preserved so nothing breaks; new callers should
+# prefer the public name.
 _normalize_phone_number = normalize_phone
 
 
@@ -116,7 +132,11 @@ def upsert_booking_notification_settings(
     template_language: str = "fr",
     engine: Engine | None = None,
 ) -> BookingNotificationSettings:
-    normalized_phone = _normalize_phone_number(phone_number)
+    # Admins may persist a disabled config with no phone yet, so only run
+    # the strict normalize_phone path when the field is non-empty. The if-empty
+    # check below still rejects "enabled with no phone" the same as before.
+    raw_phone = (phone_number or "").strip()
+    normalized_phone = normalize_phone(raw_phone) if raw_phone else ""
     normalized_template = _normalize_template_name(template_name)
     normalized_language = _normalize_template_language(template_language)
     if enabled and (not normalized_phone or not normalized_template):
