@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     # hour) and tight enough to throttle obvious abuse.
     rate_limit_bookings_per_phone: str = "5/hour"
     rate_limit_bookings_per_ip: str = "20/hour"
+    rate_limit_catalog_per_ip: str = "60/minute"
     rate_limit_promo_per_ip: str = "60/hour"
     rate_limit_bookings_list_per_token: str = "60/hour"
 

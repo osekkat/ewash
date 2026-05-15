@@ -6,10 +6,14 @@ from unittest import TestCase
 import pytest
 from fastapi import FastAPI, Request, Response
 from fastapi.testclient import TestClient
+from limits import parse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 from starlette.requests import Request as StarletteRequest
 
+from app import api as pwa_api
+from app.config import settings
 from app.main import app as main_app
 from app.rate_limit import (
     PerPhoneRateLimitExceeded,
@@ -52,6 +56,45 @@ def test_limiter_import_and_main_app_state():
     case.assertIs(main_app.state.limiter, limiter)
     case.assertTrue(hasattr(limiter, "limit"))
     case.assertTrue(hasattr(limiter, "reset"))
+
+
+def test_api_route_limits_match_documented_scope():
+    expected = {
+        "app.api.get_services": (settings.rate_limit_catalog_per_ip, get_remote_address),
+        "app.api.list_catalog_centers": (
+            settings.rate_limit_catalog_per_ip,
+            get_remote_address,
+        ),
+        "app.api.list_catalog_time_slots": (
+            settings.rate_limit_catalog_per_ip,
+            get_remote_address,
+        ),
+        "app.api.list_catalog_closed_dates": (
+            settings.rate_limit_catalog_per_ip,
+            get_remote_address,
+        ),
+        "app.api.get_bootstrap": (settings.rate_limit_catalog_per_ip, get_remote_address),
+        "app.api.validate_promo": (settings.rate_limit_promo_per_ip, get_remote_address),
+        "app.api.create_booking": (settings.rate_limit_bookings_per_ip, get_remote_address),
+        "app.api.list_bookings": (settings.rate_limit_bookings_list_per_token, _token_key_func),
+    }
+
+    for route_key, (limit_str, key_func) in expected.items():
+        route_limits = limiter._route_limits.get(route_key)
+        assert route_limits, f"{route_key} has no slowapi limit"
+        assert len(route_limits) == 1
+        assert route_limits[0].limit == parse(limit_str)
+        assert route_limits[0].key_func is key_func
+
+
+def test_catalog_categories_route_is_intentionally_unlimited():
+    assert "app.api.list_catalog_categories" not in limiter._route_limits
+    route = next(
+        route
+        for route in pwa_api.router.routes
+        if route.path == "/api/v1/catalog/categories"
+    )
+    assert route.endpoint.__name__ == "list_catalog_categories"
 
 
 def test_per_ip_decorator_blocks_second_request():

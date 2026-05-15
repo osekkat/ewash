@@ -41,6 +41,7 @@ def test_api_v1_defaults_are_permissive_for_local_dev(monkeypatch):
         "API_ENABLED",
         "RATE_LIMIT_BOOKINGS_PER_PHONE",
         "RATE_LIMIT_BOOKINGS_PER_IP",
+        "RATE_LIMIT_CATALOG_PER_IP",
         "RATE_LIMIT_PROMO_PER_IP",
         "RATE_LIMIT_BOOKINGS_LIST_PER_TOKEN",
     )
@@ -51,6 +52,7 @@ def test_api_v1_defaults_are_permissive_for_local_dev(monkeypatch):
     assert s.api_enabled
     assert s.rate_limit_bookings_per_phone == "5/hour"
     assert s.rate_limit_bookings_per_ip == "20/hour"
+    assert s.rate_limit_catalog_per_ip == "60/minute"
     assert s.rate_limit_promo_per_ip == "60/hour"
     assert s.rate_limit_bookings_list_per_token == "60/hour"
 

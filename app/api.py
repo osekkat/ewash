@@ -144,11 +144,15 @@ def _collect_services(
 
 
 @router.get("/catalog/services", response_model=dict[str, list[ServiceOut]])
+@limiter.limit(settings.rate_limit_catalog_per_ip, key_func=get_remote_address)
 async def get_services(
+    request: Request,
+    response: Response,
     category: Literal["A", "B", "C", "MOTO"] = Query(...),
     promo: str | None = Query(None, max_length=40),
 ) -> dict[str, list[ServiceOut]]:
     """List bookable services with server-computed catalog pricing."""
+    del request, response
     promo_code = catalog.normalize_promo_code(promo) if promo else None
     result = _collect_services(category=category, promo=promo)
 
@@ -654,8 +658,13 @@ def _collect_centers() -> list[CenterOut]:
 
 
 @router.get("/catalog/centers", response_model=list[CenterOut])
-async def list_catalog_centers() -> list[CenterOut]:
+@limiter.limit(settings.rate_limit_catalog_per_ip, key_func=get_remote_address)
+async def list_catalog_centers(
+    request: Request,
+    response: Response,
+) -> list[CenterOut]:
     """Active stand/center options for the location-picker step."""
+    del request, response
     centers = _collect_centers()
     logger.info("catalog.centers listed count=%d", len(centers))
     return centers
@@ -721,7 +730,10 @@ def _collect_time_slots(date_iso: str | None) -> list[TimeSlotOut]:
 
 
 @router.get("/catalog/time-slots", response_model=list[TimeSlotOut])
+@limiter.limit(settings.rate_limit_catalog_per_ip, key_func=get_remote_address)
 async def list_catalog_time_slots(
+    request: Request,
+    response: Response,
     date: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
 ) -> list[TimeSlotOut]:
     """Slot rows for the booking flow. Optional `date=YYYY-MM-DD` filters out
@@ -731,6 +743,7 @@ async def list_catalog_time_slots(
     tampered clock or wrong timezone could otherwise submit a slot in the
     past. This endpoint is the authoritative source.
     """
+    del request, response
     available, cutoff, total = _slots_with_lead_filter(date_iso=date)
     logger.info(
         "catalog.time_slots listed date=%s total=%d returned=%d cutoff=%s",
@@ -770,7 +783,12 @@ def _build_promo_discount_map(code: str, category: str) -> dict[str, int]:
 
 
 @router.post("/promos/validate", response_model=PromoValidateResponse)
-async def validate_promo(body: PromoValidateRequest) -> PromoValidateResponse:
+@limiter.limit(settings.rate_limit_promo_per_ip, key_func=get_remote_address)
+async def validate_promo(
+    request: Request,
+    response: Response,
+    body: PromoValidateRequest,
+) -> PromoValidateResponse:
     """Validate a promo code and surface its discounted prices for the
     customer's vehicle category.
 
@@ -778,6 +796,7 @@ async def validate_promo(body: PromoValidateRequest) -> PromoValidateResponse:
     rather than ``404``. A ``404`` here would let an attacker enumerate
     valid codes by probing the absence-of-404 channel.
     """
+    del request, response
     code = catalog.normalize_promo_code(body.code)
     if not code:
         logger.info(
@@ -808,13 +827,18 @@ async def validate_promo(body: PromoValidateRequest) -> PromoValidateResponse:
 
 
 @router.get("/catalog/closed-dates", response_model=list[str])
-async def list_catalog_closed_dates() -> list[str]:
+@limiter.limit(settings.rate_limit_catalog_per_ip, key_func=get_remote_address)
+async def list_catalog_closed_dates(
+    request: Request,
+    response: Response,
+) -> list[str]:
     """ISO-date strings the shop is closed (Eids, etc.), sorted ascending.
 
     The PWA calendar uses this to grey out the corresponding days. Static
     catalog entries and DB-persisted closures are merged by
     :func:`catalog.active_closed_dates`.
     """
+    del request, response
     closed = sorted(catalog.active_closed_dates())
     logger.info(
         "catalog.closed_dates listed count=%d first=%s last=%s",
@@ -852,7 +876,7 @@ def _etag_matches(if_none_match: str, etag: str) -> bool:
 
 
 @router.get("/bootstrap", response_model=BootstrapResponse)
-@limiter.limit("60/minute", key_func=get_remote_address)
+@limiter.limit(settings.rate_limit_catalog_per_ip, key_func=get_remote_address)
 async def get_bootstrap(
     request: Request,
     response: Response,

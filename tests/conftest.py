@@ -37,6 +37,7 @@ os.environ.setdefault("ALLOWED_ORIGIN_REGEX", "")
 # limiter. The rate-limit-specific tests override these with small values.
 os.environ.setdefault("RATE_LIMIT_BOOKINGS_PER_PHONE", "1000/hour")
 os.environ.setdefault("RATE_LIMIT_BOOKINGS_PER_IP", "1000/hour")
+os.environ.setdefault("RATE_LIMIT_CATALOG_PER_IP", "1000/hour")
 os.environ.setdefault("RATE_LIMIT_PROMO_PER_IP", "1000/hour")
 os.environ.setdefault("RATE_LIMIT_BOOKINGS_LIST_PER_" + "TOKEN", "1000/hour")
 
