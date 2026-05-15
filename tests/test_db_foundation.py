@@ -1,5 +1,8 @@
+import os
+import tempfile
 from datetime import datetime, timezone
 
+import pytest
 from sqlalchemy import inspect, select, text
 
 from app.db import init_db, make_engine, normalize_database_url, session_scope
@@ -260,3 +263,173 @@ def test_customer_vehicle_booking_status_and_reminder_rows_round_trip():
         assert booking.status == "confirmed"
         assert booking.status_events[0].to_status == "confirmed"
         assert booking.reminders[0].rule.name == "H-1"
+
+
+def _alembic_upgrade(db_url: str, revision: str = "head") -> None:
+    from alembic import command
+    from alembic.config import Config
+
+    cfg = Config(os.path.join(os.path.dirname(__file__), os.pardir, "alembic.ini"))
+    cfg.set_main_option("script_location", os.path.join(os.path.dirname(__file__), os.pardir, "migrations"))
+    prior = os.environ.get("DATABASE_URL")
+    os.environ["DATABASE_URL"] = db_url
+    try:
+        command.upgrade(cfg, revision)
+    finally:
+        if prior is None:
+            os.environ.pop("DATABASE_URL", None)
+        else:
+            os.environ["DATABASE_URL"] = prior
+
+
+def _alembic_downgrade(db_url: str, revision: str) -> None:
+    from alembic import command
+    from alembic.config import Config
+
+    cfg = Config(os.path.join(os.path.dirname(__file__), os.pardir, "alembic.ini"))
+    cfg.set_main_option("script_location", os.path.join(os.path.dirname(__file__), os.pardir, "migrations"))
+    prior = os.environ.get("DATABASE_URL")
+    os.environ["DATABASE_URL"] = db_url
+    try:
+        command.downgrade(cfg, revision)
+    finally:
+        if prior is None:
+            os.environ.pop("DATABASE_URL", None)
+        else:
+            os.environ["DATABASE_URL"] = prior
+
+
+def test_migration_0006_sqlite_roundtrip(tmp_path):
+    """Migration 0006 upgrades cleanly on SQLite, downgrades, and re-upgrades.
+
+    Postgres-only constructs (partial unique index, CHECK constraint, FK redefinition)
+    are skipped — the SQLite path only verifies columns, tables, and the indexes
+    that work portably.
+    """
+    db_path = tmp_path / "ewash_0006.db"
+    db_url = f"sqlite+pysqlite:///{db_path}"
+
+    _alembic_upgrade(db_url, "head")
+
+    engine = make_engine(db_url)
+    insp = inspect(engine)
+
+    bookings_columns = {c["name"] for c in insp.get_columns("bookings")}
+    assert "client_request_id" in bookings_columns
+    assert "source" in bookings_columns
+
+    tables = set(insp.get_table_names())
+    assert {"customer_tokens", "data_erasure_audit"}.issubset(tables)
+
+    bookings_indexes = {idx["name"] for idx in insp.get_indexes("bookings")}
+    assert "ix_bookings_source" in bookings_indexes
+    assert "ix_bookings_customer_phone_created_at" in bookings_indexes
+
+    token_indexes = {idx["name"] for idx in insp.get_indexes("customer_tokens")}
+    assert {"ix_customer_tokens_phone", "ix_customer_tokens_last_used"}.issubset(token_indexes)
+
+    erasure_indexes = {idx["name"] for idx in insp.get_indexes("data_erasure_audit")}
+    assert "ix_data_erasure_audit_performed_at" in erasure_indexes
+
+    token_uniques = {tuple(item["column_names"]) for item in insp.get_unique_constraints("customer_tokens")}
+    assert ("token_hash",) in token_uniques
+
+    # source DEFAULT applies to inserts that omit the column.
+    with session_scope(engine) as sess:
+        sess.add(Customer(phone="212600000000", display_name="Test"))
+        sess.flush()
+        sess.add(BookingRow(
+            customer_phone="212600000000",
+            status="draft",
+            ref="EW-2026-9999",
+            customer_name="Test",
+        ))
+    with engine.connect() as conn:
+        result = conn.execute(text("SELECT source FROM bookings WHERE ref='EW-2026-9999'")).scalar_one()
+        assert result == "whatsapp"
+
+    _alembic_downgrade(db_url, "20260506_0005")
+
+    engine2 = make_engine(db_url)
+    insp2 = inspect(engine2)
+
+    bookings_columns_after_down = {c["name"] for c in insp2.get_columns("bookings")}
+    assert "client_request_id" not in bookings_columns_after_down
+    assert "source" not in bookings_columns_after_down
+    tables_after_down = set(insp2.get_table_names())
+    assert "customer_tokens" not in tables_after_down
+    assert "data_erasure_audit" not in tables_after_down
+
+    _alembic_upgrade(db_url, "head")
+
+    engine3 = make_engine(db_url)
+    insp3 = inspect(engine3)
+    bookings_columns_redo = {c["name"] for c in insp3.get_columns("bookings")}
+    assert "client_request_id" in bookings_columns_redo
+    assert "source" in bookings_columns_redo
+
+
+def test_migration_0006_indexes_present():
+    """Postgres-only: confirm all indexes from migration 0006 exist after upgrade.
+
+    Skipped unless EWASH_TEST_POSTGRES_URL points at a fresh Postgres database.
+    """
+    pg_url = os.environ.get("EWASH_TEST_POSTGRES_URL")
+    if not pg_url:
+        pytest.skip("EWASH_TEST_POSTGRES_URL not set — Postgres-only check")
+
+    _alembic_upgrade(pg_url, "head")
+    engine = make_engine(pg_url)
+    with engine.connect() as conn:
+        result = conn.execute(text(
+            "SELECT indexname FROM pg_indexes "
+            "WHERE schemaname='public' AND tablename IN ('bookings','customer_tokens','data_erasure_audit')"
+        )).fetchall()
+        names = {r[0] for r in result}
+        for expected in (
+            "ix_bookings_client_request_id_partial",
+            "ix_bookings_source",
+            "ix_bookings_customer_phone_created_at",
+            "ix_customer_tokens_phone",
+            "ix_customer_tokens_last_used",
+            "ix_data_erasure_audit_performed_at",
+        ):
+            assert expected in names, f"missing index: {expected}"
+
+
+def test_migration_0006_on_update_cascade():
+    """Postgres-only: bookings → customers FK has ON UPDATE CASCADE after migration 0006."""
+    pg_url = os.environ.get("EWASH_TEST_POSTGRES_URL")
+    if not pg_url:
+        pytest.skip("EWASH_TEST_POSTGRES_URL not set — Postgres-only check")
+
+    _alembic_upgrade(pg_url, "head")
+    engine = make_engine(pg_url)
+    with engine.connect() as conn:
+        result = conn.execute(text(
+            "SELECT confupdtype FROM pg_constraint "
+            "WHERE conname = 'bookings_customer_phone_fkey'"
+        )).fetchone()
+        assert result is not None, "bookings_customer_phone_fkey constraint not found"
+        assert result[0] == "c", f"expected 'c' (CASCADE), got {result[0]!r}"
+
+
+def test_migration_0006_source_check_rejects_invalid():
+    """Postgres-only: CHECK on bookings.source rejects values outside the allow-list."""
+    pg_url = os.environ.get("EWASH_TEST_POSTGRES_URL")
+    if not pg_url:
+        pytest.skip("EWASH_TEST_POSTGRES_URL not set — Postgres-only check")
+
+    _alembic_upgrade(pg_url, "head")
+    engine = make_engine(pg_url)
+    with engine.connect() as conn:
+        with pytest.raises(Exception):
+            conn.execute(text(
+                "INSERT INTO customers (phone, display_name, booking_count) "
+                "VALUES ('212600000001','Test',0)"
+            ))
+            conn.execute(text(
+                "INSERT INTO bookings (customer_phone, status, ref, customer_name, source) "
+                "VALUES ('212600000001','draft','EW-2026-CHECK','Test','bogus')"
+            ))
+            conn.commit()
