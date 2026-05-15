@@ -182,6 +182,23 @@ def _next_booking_ref_counter(session, *, year: int) -> int:
         select(BookingRow.ref).where(BookingRow.ref.like(f"EW-{year}-%"))
     ).all()
     existing_floor = _max_ref_counter(refs, year=year)
+
+    dialect_name = session.get_bind().dialect.name
+    floor_expression = (
+        func.greatest(BookingRefCounterRow.last_counter, existing_floor)
+        if dialect_name == "postgresql"
+        else func.max(BookingRefCounterRow.last_counter, existing_floor)
+    )
+    next_counter = session.scalar(
+        update(BookingRefCounterRow)
+        .where(BookingRefCounterRow.year == year)
+        .values(last_counter=floor_expression + 1)
+        .returning(BookingRefCounterRow.last_counter)
+    )
+    if next_counter is not None:
+        session.flush()
+        return int(next_counter)
+
     counter = session.get(BookingRefCounterRow, year, with_for_update=True)
     if counter is None:
         counter = BookingRefCounterRow(year=year, last_counter=existing_floor)

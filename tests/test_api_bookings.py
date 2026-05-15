@@ -1,20 +1,25 @@
 """Tests for POST /api/v1/bookings."""
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 import logging
 from unittest import TestCase
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
-from app import api, catalog, notifications, persistence
+from app import api, catalog, main as main_module, notifications, persistence
 from app.config import settings
 from app.db import init_db, make_engine, session_scope
 from app.models import (
     BookingLineItemRow,
+    BookingRefCounterRow,
     BookingRow,
     BookingStatusEventRow,
     Customer,
@@ -27,9 +32,16 @@ from app.security import hash_token
 case = TestCase()
 
 
-def _client(*, raise_server_exceptions: bool = True) -> TestClient:
+def _client(
+    *,
+    raise_server_exceptions: bool = True,
+    access_logging: bool = False,
+) -> TestClient:
     app = FastAPI()
     app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+    if access_logging:
+        main_module._configure_access_logging(app)
     app.include_router(api.router)
     api.install_exception_handlers(app)
     return TestClient(app, raise_server_exceptions=raise_server_exceptions)
@@ -73,6 +85,22 @@ def _payload(**overrides) -> dict:
     }
     payload.update(overrides)
     return payload
+
+
+def _booking_count(engine) -> int:
+    with session_scope(engine) as session:
+        return session.scalar(select(func.count()).select_from(BookingRow)) or 0
+
+
+def _ref_counter_value(engine) -> int:
+    year = datetime.now(timezone.utc).year
+    with session_scope(engine) as session:
+        value = session.scalar(
+            select(BookingRefCounterRow.last_counter).where(
+                BookingRefCounterRow.year == year
+            )
+        )
+        return value or 0
 
 
 def test_create_booking_happy_path_persists_pending_api_booking(api_db, caplog):
@@ -138,7 +166,9 @@ def test_create_booking_happy_path_persists_pending_api_booking(api_db, caplog):
 
         event = session.scalars(select(BookingStatusEventRow)).one()
         assert event.booking_id == row.id
+        assert event.from_status == "awaiting_confirmation"
         assert event.to_status == "pending_ewash_confirmation"
+        assert event.actor == "customer"
         assert event.note == "Confirmation PWA"
 
     messages = "\n".join(record.getMessage() for record in caplog.records)
@@ -147,6 +177,82 @@ def test_create_booking_happy_path_persists_pending_api_booking(api_db, caplog):
     assert "source=api" in messages
     assert "phone_hash=" in messages
     assert "212611204502" not in messages
+
+
+def test_create_booking_refs_are_monotonic(api_db):
+    with _client() as client:
+        first = client.post(
+            "/api/v1/bookings",
+            json=_payload(client_request_id="booking-ref-1"),
+        )
+        second = client.post(
+            "/api/v1/bookings",
+            json=_payload(client_request_id="booking-ref-2"),
+        )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    first_ref = first.json()["ref"]
+    second_ref = second.json()["ref"]
+    assert first_ref.startswith(f"EW-{datetime.now(timezone.utc).year}-")
+    first_counter = int(first_ref.split("-")[-1])
+    second_counter = int(second_ref.split("-")[-1])
+    assert second_counter == first_counter + 1
+
+
+def test_create_booking_customer_names_history_updates(api_db):
+    with _client() as client:
+        first = client.post(
+            "/api/v1/bookings",
+            json=_payload(name="Foo", client_request_id="booking-name-foo"),
+        )
+        second = client.post(
+            "/api/v1/bookings",
+            json=_payload(name="Bar", client_request_id="booking-name-bar"),
+        )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    with session_scope(api_db) as session:
+        names = session.scalars(
+            select(CustomerName).where(CustomerName.customer_phone == "212611204502")
+        ).all()
+        labels = {name.display_name for name in names}
+        assert {"Foo", "Bar"}.issubset(labels)
+        customer = session.get(Customer, "212611204502")
+        assert customer is not None
+        assert customer.display_name == "Bar"
+
+
+def test_create_booking_pricing_matches_catalog_for_car_services(api_db):
+    with _client() as client:
+        for category in ("A", "B", "C"):
+            for service_id in ("svc_ext", "svc_cpl", "svc_sal"):
+                for promo_code in (None, "YS26"):
+                    response = client.post(
+                        "/api/v1/bookings",
+                        json=_payload(
+                            category=category,
+                            service_id=service_id,
+                            promo_code=promo_code,
+                            client_request_id=(
+                                "booking-price-"
+                                f"{category}-{service_id.replace('_', '-')}-{promo_code or 'none'}"
+                            ),
+                        ),
+                    )
+                    assert response.status_code == 200
+                    body = response.json()
+                    assert body["price_dh"] == catalog.service_price(
+                        service_id,
+                        category,
+                        promo_code=promo_code,
+                    )
+                    assert body["service_label"] == catalog.service_label(
+                        service_id,
+                        category,
+                        promo_code=promo_code,
+                    )
 
 
 def test_create_booking_reuses_existing_same_phone_token(api_db, caplog):
@@ -456,6 +562,25 @@ def test_create_booking_multiple_addons_appends_all_and_denormalizes_first(
     assert f"total_dh={body['total_dh']}" in messages
 
 
+def test_create_booking_invalid_input_does_not_advance_ref_counter(api_db):
+    before = _ref_counter_value(api_db)
+
+    with _client() as client:
+        response = client.post(
+            "/api/v1/bookings",
+            json=_payload(
+                service_id="svc_moto",
+                category="A",
+                client_request_id="booking-invalid-ref",
+            ),
+        )
+
+    assert response.status_code == 400
+    assert response.headers["X-Ewash-Error-Code"] == "service_category_mismatch"
+    assert _ref_counter_value(api_db) == before
+    assert _booking_count(api_db) == 0
+
+
 def test_create_booking_domain_rejection_returns_stable_error(api_db):
     with _client() as client:
         response = client.post(
@@ -502,6 +627,87 @@ def test_create_booking_returns_503_when_database_absent(monkeypatch):
     assert response.status_code == 503
     assert response.headers["X-Ewash-Error-Code"] == "db_unavailable"
     assert response.json()["error_code"] == "db_unavailable"
+
+
+def test_create_booking_access_log_includes_ref_and_phone_hash(api_db, caplog):
+    caplog.set_level(logging.INFO, logger="ewash.api")
+
+    with _client(access_logging=True) as client:
+        response = client.post(
+            "/api/v1/bookings",
+            json=_payload(client_request_id="booking-access-log"),
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    records = [
+        record
+        for record in caplog.records
+        if record.getMessage().startswith("ewash.api endpoint=/api/v1/bookings")
+    ]
+    assert len(records) == 1
+    message = records[0].getMessage()
+    assert "status=200" in message
+    assert "phone_hash=" in message
+    assert "phone_hash=-" not in message
+    assert f"ref={body['ref']}" in message
+    assert "212611204502" not in message
+
+
+def test_create_booking_rate_limited_per_phone(api_db, monkeypatch):
+    monkeypatch.setattr(settings, "rate_limit_bookings_per_phone", "3/hour")
+
+    with _client() as client:
+        for index in range(3):
+            response = client.post(
+                "/api/v1/bookings",
+                json=_payload(client_request_id=f"booking-phone-limit-{index}"),
+            )
+            assert response.status_code == 200
+        limited = client.post(
+            "/api/v1/bookings",
+            json=_payload(client_request_id="booking-phone-limit-3"),
+        )
+
+    assert limited.status_code == 429
+    assert limited.headers.get("Retry-After") is not None
+    assert limited.json()["detail"]["error_code"] == "rate_limit_exceeded"
+    assert _booking_count(api_db) == 3
+
+
+def test_create_booking_concurrent_writes_get_unique_refs(api_db, monkeypatch):
+    async def noop_staff_alert(booking, *, event_label):
+        return None
+
+    monkeypatch.setattr(notifications, "notify_booking_confirmation_safe", noop_staff_alert)
+
+    with _client() as client:
+        seed = client.post(
+            "/api/v1/bookings",
+            json=_payload(client_request_id="booking-concurrent-seed"),
+        )
+    assert seed.status_code == 200
+    seed_counter = int(seed.json()["ref"].split("-")[-1])
+
+    def hit(index: int) -> str:
+        with _client() as client:
+            response = client.post(
+                "/api/v1/bookings",
+                json=_payload(
+                    phone=f"+212 611-204-51{index}",
+                    client_request_id=f"booking-concurrent-{index}",
+                ),
+            )
+            assert response.status_code == 200
+            return response.json()["ref"]
+
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        refs = list(executor.map(hit, range(5)))
+
+    counters = sorted(int(ref.split("-")[-1]) for ref in refs)
+    assert len(set(refs)) == 5
+    assert counters == list(range(seed_counter + 1, seed_counter + 6))
+    assert _booking_count(api_db) == 6
 
 
 def test_create_booking_schedules_staff_alert_after_commit(api_db, monkeypatch):
