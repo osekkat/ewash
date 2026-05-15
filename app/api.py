@@ -14,6 +14,8 @@ from app.api_schemas import (
     CategoryOut,
     CenterOut,
     ErrorResponse,
+    PromoValidateRequest,
+    PromoValidateResponse,
     ServiceOut,
     TimeSlotOut,
 )
@@ -280,6 +282,71 @@ async def list_catalog_time_slots(
     return available
 
 
+# ── Promo validation ──────────────────────────────────────────────────────
+
+
+def _build_promo_discount_map(code: str, category: str) -> dict[str, int]:
+    """Return ``{service_id: discounted_price}`` for every service whose
+    discounted price under ``code`` is strictly less than the public price.
+
+    Services that aren't in the partner's discount grid (or whose discount
+    equals the public price) are omitted so the PWA only renders
+    strike-through pricing where there's actually a saving to show.
+    """
+    if category == catalog.MOTO_PRICE_CATEGORY:
+        services = catalog.SERVICES_MOTO
+    else:
+        services = catalog.SERVICES_CAR
+    prices: dict[str, int] = {}
+    for entry in services:
+        service_id = entry[0]
+        public = catalog.public_service_price(service_id, category)
+        discounted = catalog.service_price(service_id, category, promo_code=code)
+        if public is None or discounted is None:
+            continue
+        if discounted < public:
+            prices[service_id] = discounted
+    return prices
+
+
+@router.post("/promos/validate", response_model=PromoValidateResponse)
+async def validate_promo(body: PromoValidateRequest) -> PromoValidateResponse:
+    """Validate a promo code and surface its discounted prices for the
+    customer's vehicle category.
+
+    Always returns ``200`` — invalid / inactive codes get ``valid=false``
+    rather than ``404``. A ``404`` here would let an attacker enumerate
+    valid codes by probing the absence-of-404 channel.
+    """
+    code = catalog.normalize_promo_code(body.code)
+    if not code:
+        logger.info(
+            "promos.validate code=- category=%s valid=False discounts_count=0",
+            body.category,
+        )
+        return PromoValidateResponse(valid=False)
+
+    label = catalog.promo_label(code)
+    if not label:
+        # The code looks well-formed but is unknown / inactive at the catalog
+        # layer. Same 200/false response — no enumeration hint.
+        logger.info(
+            "promos.validate code=%s category=%s valid=False discounts_count=0",
+            code,
+            body.category,
+        )
+        return PromoValidateResponse(valid=False)
+
+    discounts = _build_promo_discount_map(code, body.category)
+    logger.info(
+        "promos.validate code=%s category=%s valid=True discounts_count=%d",
+        code,
+        body.category,
+        len(discounts),
+    )
+    return PromoValidateResponse(valid=True, label=label, discounted_prices=discounts)
+
+
 @router.get("/catalog/closed-dates", response_model=list[str])
 async def list_catalog_closed_dates() -> list[str]:
     """ISO-date strings the shop is closed (Eids, etc.), sorted ascending.
@@ -310,4 +377,5 @@ __all__ = [
     "list_catalog_closed_dates",
     "list_catalog_time_slots",
     "router",
+    "validate_promo",
 ]
