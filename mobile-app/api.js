@@ -114,6 +114,14 @@
     }
   }
 
+  function _setRetryAfter(err, resp, errBody) {
+    if (!err || typeof err !== "object") return;
+    const header = resp && resp.headers ? resp.headers.get("Retry-After") : null;
+    const raw = header || (errBody && (errBody.retry_after || errBody.retry_after_seconds));
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed > 0) err.retry_after = parsed;
+  }
+
   function _apiScope(path) {
     const cleanPath = path.split("?")[0].replace(/^\/api\/v1\/?/, "");
     const scope = cleanPath || "root";
@@ -165,6 +173,8 @@
         const err = new Error(errBody.message || errBody.detail || resp.statusText);
         err.error_code = errBody.error_code || "http_" + resp.status;
         err.status = resp.status;
+        err.field = errBody.field || errBody.loc || null;
+        _setRetryAfter(err, resp, errBody);
         _setDuration(err, duration);
         err._ewashLogged = true;
         const payload = {
@@ -192,6 +202,9 @@
       }
       return await resp.json();
     } catch (err) {
+      if (err && !err.error_code) {
+        err.error_code = err.name === "AbortError" ? "timeout" : "network_error";
+      }
       if (!err || !err._ewashLogged) {
         const failedDuration = _durationMs(startedAt);
         _setDuration(err, failedDuration);
@@ -200,7 +213,7 @@
           method: method,
           status: 0,
           duration_ms: +failedDuration,
-          error_code: (err && (err.name || err.message)) || "network_error",
+          error_code: (err && err.error_code) || "network_error",
           retry_count: retryCount,
         });
       }

@@ -8,6 +8,7 @@ const STEPS_CAR = ['category', 'vehicle', 'location', 'service', 'date', 'note']
 const STEPS_MOTO = ['category', 'location', 'service', 'date', 'note'];
 const MOTO_CATEGORY = 'MOTO';
 const DEFAULT_STAFF_CONTACT = { available: false, whatsapp_phone: '' };
+const FALLBACK_STAFF_WHATSAPP = '+212611204502';
 
 const CATEGORY_ICONS = {
   A: Icons.Car,
@@ -137,6 +138,108 @@ function _submitErrorMessage(t, err) {
   return t.submitBookingError || t.networkErrorTitle;
 }
 
+function _isBrowserOnline() {
+  return typeof navigator === 'undefined' ? true : navigator.onLine !== false;
+}
+
+function _bookingErrorCode(err) {
+  if (!_isBrowserOnline()) return 'offline';
+  const code = err && (err.error_code || err.name || err.message);
+  if (code === 'AbortError' || code === 'TimeoutError') return 'timeout';
+  if (code === 'TypeError' && !(err && err.status)) return 'network_error';
+  return code || 'network_error';
+}
+
+function _retryAfterSeconds(err) {
+  const raw = err && (err.retry_after || err.retryAfter || err.retry_after_seconds);
+  const parsed = Number(raw);
+  if (Number.isFinite(parsed) && parsed > 0) return Math.ceil(parsed);
+  return 60;
+}
+
+function _errorField(err) {
+  const field = err && (err.field || err.loc);
+  if (!field) return '';
+  if (Array.isArray(field)) return field.join('.');
+  return String(field);
+}
+
+function _replaceToken(template, key, value) {
+  return String(template || '').replace('{' + key + '}', value);
+}
+
+function _toastForError(t, code) {
+  const map = {
+    invalid_phone: t.invalidPhone,
+    service_category_mismatch: t.serviceUnavailable,
+    unknown_service: t.serviceReloading,
+    unknown_addon: t.addonUnavailable,
+    duplicate_addon: t.addonUnavailable,
+    not_a_detailing_service: t.addonUnavailable,
+    unknown_center: t.centerUnavailable,
+    missing_center_id: t.centerUnavailable,
+    center_id_not_allowed: t.centerUnavailable,
+    closed_date: t.closedDate,
+    invalid_date: t.invalidDate,
+    unknown_slot: t.slotTooSoon,
+    slot_too_soon: t.slotTooSoon,
+    validation_error: t.validationError,
+    timeout: t.networkError,
+    network_error: t.networkError,
+    offline: t.offlineTitle,
+    db_unavailable: t.serviceTemporarilyDown,
+    internal_error: t.serviceTemporarilyDown,
+  };
+  return map[code] || t.submitErrorRetry || t.submitBookingError || t.errorGeneric;
+}
+
+function _staffWhatsappDigits(staffContact) {
+  const raw = (staffContact && staffContact.whatsapp_phone) || FALLBACK_STAFF_WHATSAPP;
+  return String(raw).replace(/[^0-9]/g, '');
+}
+
+function _serviceLabelForFallback(data) {
+  if (!data) return '';
+  if (data.service && data.service.name) return data.service.name;
+  if (data.service && data.service.id) return data.service.id;
+  return data.service || '';
+}
+
+function _dateTextForFallback(t, data, slots) {
+  if (!data || !data.date) return '';
+  const date = data.date.label || [data.date.dow, data.date.d, t.months[data.date.m]].filter(Boolean).join(' ');
+  const slot = _slotLabel(slots, data.time);
+  return [date, slot].filter(Boolean).join(' · ');
+}
+
+function _vehicleTextForFallback(t, data) {
+  if (!data) return '';
+  if (_isMotoCategory(data.category)) return t.catMoto || 'Moto';
+  return [data.category, data.make, data.color].filter(Boolean).join(' - ');
+}
+
+function _fallbackMessage(t, data, slots) {
+  const lines = [
+    t.whatsAppFallbackIntro || "Bonjour, je n'arrive pas à finaliser ma réservation Ewash via l'application.",
+    data && data.name ? 'Nom: ' + data.name : '',
+    data && data.phone ? 'Téléphone: +212 ' + data.phone : '',
+    _vehicleTextForFallback(t, data) ? 'Véhicule: ' + _vehicleTextForFallback(t, data) : '',
+    _serviceLabelForFallback(data) ? 'Service: ' + _serviceLabelForFallback(data) : '',
+    _dateTextForFallback(t, data, slots) ? 'Date souhaitée: ' + _dateTextForFallback(t, data, slots) : '',
+    data && data.locationKind === 'home'
+      ? 'Adresse: ' + (data.pinAddress || 'à confirmer')
+      : data && data.locationKind === 'center' ? 'Au stand' : '',
+    data && data.note ? 'Note: ' + data.note : '',
+  ];
+  return lines.filter(Boolean).join('\n');
+}
+
+function _markHandled(err) {
+  if (err && typeof err === 'object') {
+    if (!Object.isExtensible || Object.isExtensible(err)) err._ewashHandled = true;
+  }
+}
+
 // ─────────────────────────────────────────────────────────────
 // BOOKING ROOT — state machine
 // ─────────────────────────────────────────────────────────────
@@ -168,6 +271,13 @@ function BookingFlow({ t, lang, theme, variant, onClose, onComplete, profile }) 
   const [bootstrapRetry, setBootstrapRetry] = useS_b(0);
   const [confirmedRef, setConfirmedRef] = useS_b('');
   const [confirmedTotal, setConfirmedTotal] = useS_b(null);
+  const [fieldErrors, setFieldErrors] = useS_b({});
+  const [stepError, setStepError] = useS_b(null);
+  const [consecutiveInfraFailures, setConsecutiveInfraFailures] = useS_b(0);
+  const [consecutiveTimeouts, setConsecutiveTimeouts] = useS_b(0);
+  const [submitDisabledUntil, setSubmitDisabledUntil] = useS_b(0);
+  const [clockTick, setClockTick] = useS_b(Date.now());
+  const [isOnline, setIsOnline] = useS_b(_isBrowserOnline());
 
   const kind = _isMotoCategory(data.category) ? 'moto' : 'car';
   const stepperSteps = kind === 'moto' ? STEPS_MOTO : STEPS_CAR;
@@ -184,6 +294,27 @@ function BookingFlow({ t, lang, theme, variant, onClose, onComplete, profile }) 
   );
   const slotsList = bootstrap?.time_slots || [];
   const staffContact = bootstrap?.staff_contact || DEFAULT_STAFF_CONTACT;
+  const rateLimitRemaining = Math.max(0, Math.ceil((submitDisabledUntil - clockTick) / 1000));
+
+  useE_b(() => {
+    const updateOnlineState = () => setIsOnline(_isBrowserOnline());
+    window.addEventListener('online', updateOnlineState);
+    window.addEventListener('offline', updateOnlineState);
+    return () => {
+      window.removeEventListener('online', updateOnlineState);
+      window.removeEventListener('offline', updateOnlineState);
+    };
+  }, []);
+
+  useE_b(() => {
+    if (submitDisabledUntil <= Date.now()) return undefined;
+    const id = setInterval(() => {
+      const now = Date.now();
+      setClockTick(now);
+      if (now >= submitDisabledUntil) clearInterval(id);
+    }, 250);
+    return () => clearInterval(id);
+  }, [submitDisabledUntil]);
 
   useE_b(() => {
     let alive = true;
@@ -280,6 +411,11 @@ function BookingFlow({ t, lang, theme, variant, onClose, onComplete, profile }) 
   };
   const patch = (p) => setData((d) => ({ ...d, ...p }));
 
+  const clearSubmitError = () => {
+    setStepError(null);
+    setFieldErrors({});
+  };
+
   const totalPrice = useM_b(() => {
     if (!data.service || !data.category) return 0;
     const base = data.service.price_dh || 0;
@@ -295,12 +431,147 @@ function BookingFlow({ t, lang, theme, variant, onClose, onComplete, profile }) 
     setBootstrapRetry((n) => n + 1);
   };
 
+  const handleBookingSubmitError = (err) => {
+    const code = _bookingErrorCode(err);
+    const status = err && err.status ? err.status : 0;
+    const field = _errorField(err);
+    const bounceMap = {
+      service_category_mismatch: 'service',
+      unknown_service: 'service',
+      unknown_addon: 'addons',
+      duplicate_addon: 'addons',
+      not_a_detailing_service: 'addons',
+      unknown_center: 'location',
+      missing_center_id: 'location',
+      center_id_not_allowed: 'location',
+      closed_date: 'date',
+      invalid_date: 'date',
+      unknown_slot: 'time',
+      slot_too_soon: 'time',
+    };
+    const nextInfraFailures = (status >= 500 || code === 'db_unavailable' || code === 'internal_error' || code === 'network_error')
+      ? consecutiveInfraFailures + 1
+      : 0;
+    const nextTimeouts = code === 'timeout' ? consecutiveTimeouts + 1 : 0;
+
+    if (window.EwashLog) {
+      window.EwashLog.warn('booking.error', {
+        step: step,
+        error_code: code,
+        http_status: status,
+        duration_ms: err && err.duration_ms,
+        consecutive: code === 'timeout' ? nextTimeouts : nextInfraFailures,
+      });
+    }
+
+    if (code !== 'timeout') setConsecutiveTimeouts(0);
+    if (!(status >= 500 || code === 'db_unavailable' || code === 'internal_error' || code === 'network_error')) {
+      setConsecutiveInfraFailures(0);
+    }
+
+    if (code === 'invalid_phone') {
+      setFieldErrors({ phone: t.invalidPhone });
+      setStep('recap');
+      setStepError({ message: t.invalidPhone, code: code });
+      setToastMsg(t.invalidPhone);
+      return;
+    }
+
+    if (bounceMap[code]) {
+      if (code === 'unknown_service') {
+        retryBootstrap();
+        patch({ service: null });
+      }
+      if (['unknown_addon', 'duplicate_addon', 'not_a_detailing_service'].includes(code)) {
+        patch({ addons: [] });
+      }
+      setStep(bounceMap[code]);
+      setStepError({ message: _toastForError(t, code), code: code });
+      setToastMsg(_toastForError(t, code));
+      return;
+    }
+
+    if (status === 429 || code === 'rate_limit_exceeded') {
+      const seconds = _retryAfterSeconds(err);
+      setSubmitDisabledUntil(Date.now() + seconds * 1000);
+      setClockTick(Date.now());
+      setStep('recap');
+      setStepError({
+        message: _replaceToken(t.rateLimited || t.submitRateLimited, 'seconds', seconds),
+        code: code,
+      });
+      setToastMsg(_replaceToken(t.rateLimited || t.submitRateLimited, 'seconds', seconds));
+      return;
+    }
+
+    if (status === 422 || code === 'validation_error') {
+      const message = field
+        ? _replaceToken(t.validationErrorWithField || t.validationError, 'field', field)
+        : (t.validationError || t.submitBookingError);
+      setStep('recap');
+      setStepError({ message: message, code: code });
+      setToastMsg(message);
+      return;
+    }
+
+    if (code === 'offline') {
+      setIsOnline(false);
+      setStepError({ message: t.offlineBody, code: code, showFallback: true });
+      setToastMsg(t.offlineTitle);
+      return;
+    }
+
+    if (code === 'timeout') {
+      setConsecutiveTimeouts(nextTimeouts);
+      setStepError({
+        message: t.networkError,
+        code: code,
+        showFallback: nextTimeouts >= 3,
+      });
+      setToastMsg(t.networkError);
+      return;
+    }
+
+    if (status >= 500 || code === 'db_unavailable' || code === 'internal_error' || code === 'network_error') {
+      setConsecutiveInfraFailures(nextInfraFailures);
+      setStep('recap');
+      setStepError({
+        message: t.serviceTemporarilyDown,
+        code: code,
+        showFallback: nextInfraFailures >= 2,
+      });
+      setToastMsg(t.serviceTemporarilyDown);
+      return;
+    }
+
+    setStep('recap');
+    setStepError({ message: _toastForError(t, code), code: code });
+    setToastMsg(_toastForError(t, code));
+  };
+
   const submitBooking = async () => {
     const payload = _payloadFromBookingData(data);
-    const response = await window.EwashAPI.submitBooking(payload);
-    setConfirmedRef(response.ref);
-    setConfirmedTotal(response.total_dh);
-    setStep('confirmed');
+    if (!_isBrowserOnline()) {
+      const err = new Error('offline');
+      err.error_code = 'offline';
+      handleBookingSubmitError(err);
+      _markHandled(err);
+      throw err;
+    }
+    try {
+      const response = await window.EwashAPI.submitBooking(payload);
+      setConfirmedRef(response.ref);
+      setConfirmedTotal(response.total_dh);
+      clearSubmitError();
+      setConsecutiveInfraFailures(0);
+      setConsecutiveTimeouts(0);
+      setSubmitDisabledUntil(0);
+      setStep('confirmed');
+    } catch (err) {
+      handleBookingSubmitError(err);
+      _markHandled(err);
+      throw err;
+    }
   };
 
   // ───── render
@@ -313,14 +584,35 @@ function BookingFlow({ t, lang, theme, variant, onClose, onComplete, profile }) 
       />
 
       <div className="app-scroll flex-1">
-        {bootstrapErr && !bootstrap && (
+        {!isOnline && (
+          <OfflineCard
+            t={t}
+            booking={data}
+            slots={slotsList}
+            staffContact={staffContact}
+          />
+        )}
+        {isOnline && bootstrapErr && !bootstrap && (
           <BookingBootstrapError t={t} onRetry={retryBootstrap} />
         )}
-        {!bootstrapErr && !bootstrap && (
+        {isOnline && !bootstrapErr && !bootstrap && (
           <BookingFlowSkeleton t={t} />
         )}
-        {bootstrap && (
+        {isOnline && bootstrap && (
           <>
+        {stepError && step !== 'recap' && (
+          <div className="px-16 mb-12">
+            <StepErrorBanner
+              t={t}
+              error={stepError}
+              booking={data}
+              slots={slotsList}
+              staffContact={staffContact}
+              showWhatsAppFallback={!!stepError.showFallback}
+              onRetry={stepError.code === 'unknown_service' ? retryBootstrap : null}
+            />
+          </div>
+        )}
         {step === 'category' && (
           <CategoryStep t={t} data={data} patch={patch} categories={categoriesList} onNext={() => {
             // moto skips vehicle details + promo step
@@ -375,9 +667,13 @@ function BookingFlow({ t, lang, theme, variant, onClose, onComplete, profile }) 
             slots={slotsList}
             staffContact={staffContact}
             totalPrice={totalPrice}
+            submitError={stepError}
+            fieldErrors={fieldErrors}
+            rateLimitRemaining={rateLimitRemaining}
             onEdit={() => setStep('category')}
             onCancel={onClose}
             onConfirm={submitBooking}
+            onClearError={clearSubmitError}
             showToast={setToastMsg}/>
         )}
         {step === 'confirmed' && (
@@ -482,6 +778,79 @@ function BookingBootstrapError({ t, onRetry }) {
           </div>
         </div>
         <Btn block style={{ marginTop: 16 }} onClick={onRetry}>{t.retry}</Btn>
+      </div>
+    </div>
+  );
+}
+
+function WhatsAppFallback({ t, booking, slots, staffContact }) {
+  const openWhatsApp = () => {
+    const phone = _staffWhatsappDigits(staffContact);
+    const message = _fallbackMessage(t, booking, slots);
+    const url = 'https://wa.me/' + phone + '?text=' + encodeURIComponent(message);
+    if (window.EwashLog) {
+      window.EwashLog.info('booking.whatsapp_fallback', {
+        ref_attempt: booking && booking.clientRequestId,
+        has_staff_contact: !!(staffContact && staffContact.whatsapp_phone),
+      });
+    }
+    window.open(url, '_blank', 'noopener,noreferrer');
+  };
+
+  return (
+    <Btn variant="soft" onClick={openWhatsApp} icon={<Icons.Message size={18}/>}>
+      {t.continueViaWhatsApp}
+    </Btn>
+  );
+}
+
+function StepErrorBanner({ t, error, booking, slots, staffContact, showWhatsAppFallback, onRetry }) {
+  if (!error) return null;
+  return (
+    <div className="step-error" role="alert">
+      <div className="step-error-icon">
+        <Icons.Close size={18}/>
+      </div>
+      <div className="col gap-8 flex-1" style={{ minWidth: 0 }}>
+        <div className="step-error-title">{error.message || t.errorGeneric}</div>
+        <div className="step-error-actions">
+          {onRetry && (
+            <Btn variant="ghost" onClick={onRetry} icon={<Icons.Refresh size={16}/>}>
+              {t.retry}
+            </Btn>
+          )}
+          {showWhatsAppFallback && (
+            <WhatsAppFallback
+              t={t}
+              booking={booking}
+              slots={slots}
+              staffContact={staffContact}
+            />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function OfflineCard({ t, booking, slots, staffContact }) {
+  return (
+    <div className="px-16" style={{ paddingTop: 24, paddingBottom: 100 }}>
+      <div className="offline-card" role="alert">
+        <div className="offline-icon">
+          <Icons.Refresh size={30}/>
+        </div>
+        <div className="col gap-8">
+          <div className="t-h1">{t.offlineTitle}</div>
+          <div className="t-muted">{t.offlineBody}</div>
+          <div className="t-muted">{t.offlineFallbackPrompt}</div>
+        </div>
+        <WhatsAppFallback
+          t={t}
+          booking={booking}
+          slots={slots}
+          staffContact={staffContact}
+        />
       </div>
     </div>
   );
@@ -1158,7 +1527,7 @@ function NoteStep({ t, data, patch, onNext }) {
 // ─────────────────────────────────────────────────────────────
 // STEP: Recap
 // ─────────────────────────────────────────────────────────────
-function RecapStep({ t, lang, data, patch, totalPrice, categories, centers, slots, staffContact, onEdit, onCancel, onConfirm, showToast }) {
+function RecapStep({ t, lang, data, patch, totalPrice, categories, centers, slots, staffContact, submitError, fieldErrors, rateLimitRemaining, onEdit, onCancel, onConfirm, onClearError, showToast }) {
   const category = _findById(categories, data.category);
   const catLabel = _categoryLabel(t, category, data.category);
   const centerLabel = _centerLabel(centers, data.centerId);
@@ -1167,8 +1536,9 @@ function RecapStep({ t, lang, data, patch, totalPrice, categories, centers, slot
   const phoneDigits = data.phone.replace(/\s/g, '').length;
   const phoneValid = phoneDigits >= 9;
   const [submitting, setSubmitting] = useS_b(false);
+  const submitBlocked = rateLimitRemaining > 0;
   const confirm = async () => {
-    if (submitting) return;
+    if (submitting || submitBlocked) return;
     if (window.EwashLog) {
       window.EwashLog.hash(data.phone).then((phone_hash) => {
         window.EwashLog.info('booking.confirm', {
@@ -1185,6 +1555,7 @@ function RecapStep({ t, lang, data, patch, totalPrice, categories, centers, slot
       });
     }
     setSubmitting(true);
+    if (onClearError) onClearError();
     try {
       await onConfirm();
     } catch (err) {
@@ -1195,7 +1566,7 @@ function RecapStep({ t, lang, data, patch, totalPrice, categories, centers, slot
           status: err && err.status,
         });
       }
-      if (showToast) showToast(_submitErrorMessage(t, err));
+      if (showToast && !(err && err._ewashHandled)) showToast(_submitErrorMessage(t, err));
     } finally {
       setSubmitting(false);
     }
@@ -1209,7 +1580,11 @@ function RecapStep({ t, lang, data, patch, totalPrice, categories, centers, slot
       <div className="px-16 col gap-12" style={{ paddingBottom: 100 }}>
         <div className="card card-elev" style={{ padding: 0, overflow: 'hidden' }}>
           <PhoneRecapRow t={t} value={data.phone}
-            onChange={(v) => patch({ phone: v.replace(/[^\d ]/g, '') })}/>
+            error={fieldErrors && fieldErrors.phone}
+            onChange={(v) => {
+              if (onClearError) onClearError();
+              patch({ phone: v.replace(/[^\d ]/g, '') });
+            }}/>
           <RecapRow icon={_isMotoCategory(data.category) ? <Icons.Moto size={18}/> : <Icons.Car size={18}/>}
             label={t.vehicle}
             value={_isMotoCategory(data.category) ? t.catMoto : `${catLabel}${data.make ? ' · ' + data.make : ''}${data.color ? ' · ' + data.color : ''}`}/>
@@ -1229,6 +1604,23 @@ function RecapStep({ t, lang, data, patch, totalPrice, categories, centers, slot
               value={<span style={{ color: 'var(--accent-soft-text)', fontWeight: 700 }}>{promoLabel}</span>}/>
           )}
         </div>
+
+        {submitError && (
+          <StepErrorBanner
+            t={t}
+            error={{
+              message: submitBlocked
+                ? _replaceToken(t.rateLimited || t.submitRateLimited, 'seconds', rateLimitRemaining)
+                : submitError.message,
+              code: submitError.code,
+            }}
+            booking={data}
+            slots={slots}
+            staffContact={staffContact}
+            showWhatsAppFallback={!!submitError.showFallback}
+            onRetry={!submitBlocked ? confirm : null}
+          />
+        )}
 
         {/* Total card */}
         <div className="card" style={{
@@ -1266,10 +1658,13 @@ function RecapStep({ t, lang, data, patch, totalPrice, categories, centers, slot
         </button>
       </div>
       <CtaDock hint={!phoneValid ? t.phoneRecapHint : undefined}>
-        <Btn block lg onClick={confirm} disabled={!phoneValid || submitting}
-          style={{ opacity: (phoneValid && !submitting) ? 1 : 0.4 }}
+        <Btn block lg onClick={confirm} disabled={!phoneValid || submitting || submitBlocked}
+          style={{ opacity: (phoneValid && !submitting && !submitBlocked) ? 1 : 0.4 }}
           icon={<Icons.Check size={20} stroke={2.5}/>}>
-          {submitting ? (t.submittingBooking || t.confirmBooking) : t.confirmBooking}
+          {submitting
+            ? (t.submittingBooking || t.confirmBooking)
+            : submitBlocked ? _replaceToken(t.retryIn || t.retry, 'seconds', rateLimitRemaining)
+              : t.confirmBooking}
         </Btn>
       </CtaDock>
     </>
@@ -1278,12 +1673,13 @@ function RecapStep({ t, lang, data, patch, totalPrice, categories, centers, slot
 
 // Phone-entry row inside the recap card. Replaces the old OTP login —
 // we collect the number here, at the moment it actually matters.
-function PhoneRecapRow({ t, value, onChange }) {
+function PhoneRecapRow({ t, value, onChange, error }) {
   return (
     <div style={{
       display: 'flex', gap: 12, padding: '14px 16px',
       borderBottom: '1px solid var(--border)',
       alignItems: 'center',
+      background: error ? 'color-mix(in srgb, var(--danger) 8%, transparent)' : 'transparent',
     }}>
       <div style={{
         width: 32, height: 32, borderRadius: 10,
@@ -1305,11 +1701,20 @@ function PhoneRecapRow({ t, value, onChange }) {
             style={{
               flex: 1, minWidth: 0,
               fontWeight: 600, fontSize: 14, letterSpacing: '0.3px',
-              background: 'transparent', border: 'none', outline: 'none', padding: 0,
+              background: 'transparent',
+              border: 'none',
+              borderBottom: error ? '1px solid var(--danger)' : '1px solid transparent',
+              outline: 'none',
+              padding: 0,
               color: 'var(--text)',
               fontFamily: 'var(--font-display)',
             }}/>
         </div>
+        {error && (
+          <div className="t-tiny" style={{ color: 'var(--danger)', fontWeight: 700 }}>
+            {error}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1340,7 +1745,7 @@ function RecapRow({ icon, label, value, multiline }) {
 // ─────────────────────────────────────────────────────────────
 function ConfirmedStep({ t, lang, data, totalPrice, confirmedRef, confirmedTotal, variant, centers, slots, addons, staffContact, onAddons, onDone }) {
   const ref = confirmedRef || '';
-  const displayedTotal = confirmedTotal == null ? totalPrice : confirmedTotal;
+  const displayedTotal = (confirmedTotal === null || confirmedTotal === undefined) ? totalPrice : confirmedTotal;
   const centerLabel = _centerLabel(centers, data.centerId);
   const slotLabel = _slotLabel(slots, data.time);
   useE_b(() => {
