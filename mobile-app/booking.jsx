@@ -92,6 +92,11 @@ function _slotLabel(slots, slotId) {
   return slot ? slot.label : '';
 }
 
+function _addonPreviewPrice(addon) {
+  if (!addon) return 0;
+  return Math.round((addon.price_dh || 0) * 0.9);
+}
+
 function _bookingDataSize(data) {
   try {
     return JSON.stringify(data).length;
@@ -280,7 +285,7 @@ function BookingFlow({ t, lang, theme, variant, onClose, onComplete, profile }) 
     const base = data.service.price_dh || 0;
     const addonsTotal = data.addons.reduce((s, id) => {
       const addon = _findById(addonsList, id);
-      return s + ((addon && addon.price_dh) || 0);
+      return s + _addonPreviewPrice(addon);
     }, 0);
     return base + addonsTotal;
   }, [data, addonsList]);
@@ -1540,7 +1545,10 @@ function OfferSheet({ t, variant, addons, onDecline, onAccept }) {
               <span style={{ fontSize: 13.5, fontWeight: 600 }}>{a.name}</span>
               <div className="row gap-6" style={{ alignItems: 'baseline' }}>
                 <span className="t-num" style={{ fontWeight: 800, fontSize: 15.5 }}>
-                  {a.price_dh} DH
+                  {_addonPreviewPrice(a)} DH
+                </span>
+                <span style={{ fontSize: 10.5, opacity: 0.7, textDecoration: 'line-through' }}>
+                  {a.price_dh}
                 </span>
               </div>
             </div>
@@ -1599,6 +1607,7 @@ function AddonsStep({ t, data, patch, addons, totalPrice, onDone }) {
       <div className="px-16 col gap-10" style={{ paddingBottom: 100 }}>
         {addons.map(a => {
           const sel = data.addons.includes(a.id);
+          const previewPrice = _addonPreviewPrice(a);
           return (
             <button key={a.id} onClick={() => toggle(a.id)}
               className={`svc-card ${sel ? 'selected' : ''}`}
@@ -1613,8 +1622,11 @@ function AddonsStep({ t, data, patch, addons, totalPrice, onDone }) {
                 <div style={{ fontWeight: 700, fontSize: 14.5 }}>{a.name}</div>
                 <div className="t-muted" style={{ fontSize: 12.5 }}>{a.desc}</div>
                 <div className="row gap-6 mt-4" style={{ alignItems: 'baseline' }}>
-                  <span className="t-num" style={{ fontWeight: 800, fontSize: 15, color: 'var(--accent-soft-text)' }}>{a.price_dh}</span>
+                  <span className="t-num" style={{ fontWeight: 800, fontSize: 15, color: 'var(--accent-soft-text)' }}>{previewPrice}</span>
                   <span className="t-tiny" style={{ color: 'var(--text-2)' }}>DH</span>
+                  <span style={{ fontSize: 10.5, color: 'var(--text-3)', textDecoration: 'line-through' }}>
+                    {a.price_dh}
+                  </span>
                 </div>
               </div>
               <div className="center" style={{ width: 28, alignSelf: 'center' }}>
