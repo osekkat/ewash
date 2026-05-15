@@ -1,0 +1,4 @@
+interface:
+  display_name: "Meta WhatsApp Allowlist"
+  short_description: "Fix WhatsApp test recipient allowlist errors"
+  default_prompt: "Use $meta-whatsapp-allowlist to help add a WhatsApp recipient number to Meta's allowed test recipients."
