@@ -157,6 +157,43 @@ def test_admin_bookings_page_renders_persisted_reservations(monkeypatch, tmp_pat
     _configured_engine.cache_clear()
 
 
+def test_admin_dashboard_recent_bookings_card_shows_source_badge(monkeypatch, tmp_path):
+    """The dashboard's recent-bookings card must include the source badge so
+    staff see at a glance which channel each recent booking arrived through."""
+    from sqlalchemy import update
+    from app.models import BookingRow
+
+    db_url = f"sqlite+pysqlite:///{tmp_path / 'admin-dashboard-recent.db'}"
+    engine = make_engine(db_url)
+    init_db(engine)
+    booking = _sample_booking()
+    persist_confirmed_booking(booking, engine=engine)
+    # Force the row to source="api" so we know we're seeing the PWA badge
+    # and not just the whatsapp default leaking through.
+    with session_scope(engine) as session:
+        session.execute(
+            update(BookingRow).where(BookingRow.ref == booking.ref).values(source="api")
+        )
+
+    monkeypatch.setattr(settings, "database_url", db_url)
+    _configured_engine.cache_clear()
+    monkeypatch.setattr(settings, "admin_password", "secret-pass")
+    client = TestClient(app)
+    client.post(
+        "/admin",
+        content="password=secret-pass",
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+
+    response = client.get("/admin")
+
+    assert response.status_code == 200
+    # Recent-bookings card name + badge appear together.
+    assert "Sekkat" in response.text
+    assert "badge src-pwa" in response.text
+    _configured_engine.cache_clear()
+
+
 def test_admin_bookings_page_shows_pwa_badge_for_api_sourced_bookings(monkeypatch, tmp_path):
     """A booking persisted with source="api" renders the PWA badge — needed so
     staff can tell at a glance which channel a booking arrived through."""

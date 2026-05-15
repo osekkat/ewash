@@ -267,7 +267,7 @@ def _dashboard(*, locale: str) -> HTMLResponse:
     if summary.recent_bookings:
         recent_rows = "".join(
             "<div class=\"table-row\">"
-            f"<span>{escape(item.customer_name)}</span>"
+            f'<span>{escape(item.customer_name)} {_source_badge(item.source, locale=locale)}</span>'
             f"<span>{escape(item.service_label)}</span>"
             f"<span>{escape(_status_label(item.status, locale))}</span>"
             "</div>"

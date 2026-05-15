@@ -54,6 +54,7 @@ class RecentBooking:
     customer_name: str
     service_label: str
     status: str
+    source: str = "whatsapp"
 
 
 @dataclass(frozen=True)
@@ -1203,6 +1204,7 @@ def admin_dashboard_summary(*, engine: Engine | None = None, recent_limit: int =
                     customer_name=row.customer_name or row.customer_phone,
                     service_label=row.service_label or row.service_id,
                     status=row.status,
+                    source=getattr(row, "source", None) or "whatsapp",
                 )
                 for row in rows
             )
@@ -1321,24 +1323,36 @@ def list_bookings_for_token(
             .order_by(BookingRow.created_at.desc(), BookingRow.id.desc())
             .limit(bounded_limit)
         ).all()
-        return [_to_customer_booking_view(row) for row in rows]
+        return [_to_customer_view(row) for row in rows]
 
 
-def _to_customer_booking_view(row: BookingRow) -> dict:
+def _to_customer_view(row: BookingRow) -> dict:
     """Project a booking row to fields safe for the customer API."""
+    slot_start_hour, slot_end_hour = _customer_booking_slot_hours(row.slot_id or "")
     return {
         "ref": row.ref,
         "status": row.status,
-        "status_label_fr": admin_t(f"status.{row.status}", "fr"),
-        "status_label_en": admin_t(f"status.{row.status}", "en"),
+        "status_label": admin_t(f"status.{row.status}", "fr"),
         "service_label": row.service_label or row.service_id or "",
+        "service_id": row.service_id or "",
         "vehicle_label": row.vehicle_type or "",
+        "date_iso": row.appointment_date.isoformat() if row.appointment_date else "",
         "date_label": row.date_label or "",
+        "slot_id": row.slot_id or "",
         "slot_label": row.slot or "",
+        "slot_start_hour": slot_start_hour,
+        "slot_end_hour": slot_end_hour,
         "location_label": _customer_booking_location_label(row),
-        "total_price_dh": row.total_price_dh or 0,
-        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "total_price_dh": row.total_price_dh or row.price_dh or 0,
+        "created_at": row.created_at.isoformat() if row.created_at else "",
     }
+
+
+def _customer_booking_slot_hours(slot_id: str) -> tuple[int, int]:
+    match = re.match(r"^slot_(\d+)_(\d+)$", slot_id or "")
+    if match is None:
+        return 0, 0
+    return int(match.group(1)), int(match.group(2))
 
 
 def _customer_booking_location_label(row: BookingRow) -> str:
