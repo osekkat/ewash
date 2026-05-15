@@ -650,34 +650,115 @@ function BookingDetailRow({ label, value }) {
 // ─────────────────────────────────────────────────────────────
 // SERVICES / TARIFFS
 // ─────────────────────────────────────────────────────────────
-const TARIFF_LAVAGE = [
-  { name: "L'Extérieur", durationMin: 25, prices: { A: 60, B: 65, C: 70 },
-    desc: 'Dégraissage carrosserie, vitres, jantes, cirage pneus + wax hydrophobe 1 semaine' },
-  { name: 'Le Complet', durationMin: 45, prices: { A: 115, B: 125, C: 135 },
-    desc: "L'Extérieur + rénovation intérieure, tableau de bord, aspiration tapis & sièges + anti-statique", popular: true },
-  { name: 'Le Salon', durationMin: 150, prices: { A: 490, B: 540, C: 590 },
-    desc: 'Le Complet + injection/extraction sièges, tissus, plafond, moquette + pinceau aérations' },
+const TARIFF_CATEGORIES = ['A', 'B', 'C'];
+const TARIFF_BUCKETS = [
+  ['lavage', 'wash'],
+  ['esthetique', 'detailing'],
 ];
-const TARIFF_ESTHETIQUE = [
-  { name: 'Le Polissage', durationMin: 180, prices: { A: 990, B: 1070, C: 1150 },
-    desc: 'Carrosserie comme neuve · élimine micro-rayures, traces, oxydation + lustrage & protection hydrophobe 4 semaines', popular: true },
-  { name: 'Céramique 6 mois', durationMin: 240, prices: { A: 800, B: 800, C: 800 },
-    desc: 'En complément du Polissage · protection hydrophobe, anti-UV, anti-poussière' },
-  { name: 'Céramique 6 semaines', durationMin: 90, prices: { A: 200, B: 200, C: 200 },
-    desc: 'Protection courte durée' },
-  { name: 'Lustrage', durationMin: 60, prices: { A: 600, B: 650, C: 700 },
-    desc: 'Brillance éclatante + protection légère' },
-  { name: 'Rénovation cuir', durationMin: 60, prices: { A: 250, B: 250, C: 250 },
-    desc: 'Sièges en cuir nettoyés et nourris' },
-  { name: 'Rénovation plastiques 6 mois', durationMin: 45, prices: { A: 150, B: 200, C: 250 },
-    desc: 'Pare-chocs, moulures, plastiques extérieurs · 6 mois' },
-  { name: 'Rénovation optiques', durationMin: 45, prices: { A: 150, B: 150, C: 150 },
-    desc: 'Phares retrouvent leur clarté' },
-];
+const TARIFF_SERVICE_DURATIONS = {
+  svc_ext: 25,
+  svc_cpl: 45,
+  svc_sal: 150,
+  svc_pol: 180,
+  svc_cer6m: 120,
+  svc_cer6w: 60,
+  svc_cuir: 70,
+  svc_plastq: 55,
+  svc_optq: 45,
+  svc_lustre: 90,
+};
+
+function _mergeTariffCatalog(results) {
+  const grouped = {
+    lavage: new Map(),
+    esthetique: new Map(),
+  };
+  (results || []).forEach(({ category, body }) => {
+    const services = (body && body.services) || {};
+    TARIFF_BUCKETS.forEach(([screenBucket, apiBucket]) => {
+      (services[apiBucket] || []).forEach((service) => {
+        if (!service || !service.id) return;
+        let row = grouped[screenBucket].get(service.id);
+        if (!row) {
+          row = {
+            id: service.id,
+            name: service.name,
+            desc: service.desc,
+            durationMin: TARIFF_SERVICE_DURATIONS[service.id] || 45,
+            prices: {},
+          };
+          grouped[screenBucket].set(service.id, row);
+        }
+        row.prices[category] = service.price_dh || 0;
+      });
+    });
+  });
+  return {
+    lavage: Array.from(grouped.lavage.values()),
+    esthetique: Array.from(grouped.esthetique.values()),
+  };
+}
 
 function ServicesScreen({ t, lang, openBooking, theme, staffContact }) {
   const [tab, setTab] = useS_h('lavage');
-  const items = tab === 'lavage' ? TARIFF_LAVAGE : TARIFF_ESTHETIQUE;
+  const [catalogState, setCatalogState] = useS_h({
+    loading: true,
+    error: '',
+    lavage: [],
+    esthetique: [],
+  });
+  const [reloadTick, setReloadTick] = useS_h(0);
+
+  useE_h(() => {
+    let alive = true;
+    if (!window.EwashAPI || !window.EwashAPI.getBootstrap) {
+      setCatalogState((prev) => Object.assign({}, prev, {
+        loading: false,
+        error: 'api_unavailable',
+      }));
+      return function () { alive = false; };
+    }
+
+    setCatalogState((prev) => Object.assign({}, prev, { loading: true, error: '' }));
+    Promise.all(
+      TARIFF_CATEGORIES.map((category) => (
+        window.EwashAPI.getBootstrap({ category }).then((body) => ({ category, body }))
+      ))
+    )
+      .then((results) => {
+        if (!alive) return;
+        const merged = _mergeTariffCatalog(results);
+        setCatalogState({
+          loading: false,
+          error: '',
+          lavage: merged.lavage,
+          esthetique: merged.esthetique,
+        });
+        if (window.EwashLog) {
+          window.EwashLog.info('tariffs.catalog_loaded', {
+            wash_count: merged.lavage.length,
+            detailing_count: merged.esthetique.length,
+          });
+        }
+      })
+      .catch((err) => {
+        if (!alive) return;
+        setCatalogState((prev) => Object.assign({}, prev, {
+          loading: false,
+          error: (err && err.error_code) || 'catalog_failed',
+        }));
+        if (window.EwashLog) {
+          window.EwashLog.warn('tariffs.catalog_error', {
+            error_code: (err && err.error_code) || 'catalog_failed',
+            status: err && err.status,
+          });
+        }
+      });
+
+    return function () { alive = false; };
+  }, [reloadTick]);
+
+  const items = tab === 'lavage' ? catalogState.lavage : catalogState.esthetique;
   return (
     <div className="app-scroll">
       <TopBar title={t.tariffs} t={t} staffContact={staffContact} currentScreen="services" />
@@ -709,8 +790,30 @@ function ServicesScreen({ t, lang, openBooking, theme, staffContact }) {
           </div>
         </div>
 
+        {catalogState.loading && (
+          <div className="card-soft" style={{ padding: 16, borderRadius: 18 }}>
+            <div className="row gap-10">
+              <Icons.Clock size={18} style={{ color: 'var(--primary)' }} />
+              <div className="t-muted">{t.loadingCatalog}</div>
+            </div>
+          </div>
+        )}
+
+        {catalogState.error && !catalogState.loading && (
+          <div className="card-soft" style={{ padding: 16, borderRadius: 18 }}>
+            <div className="col gap-12">
+              <div className="t-h3">{t.networkErrorTitle}</div>
+              <div className="t-muted">{t.networkErrorBody}</div>
+              <Btn variant="soft" onClick={() => setReloadTick((n) => n + 1)}>
+                {t.retry}
+              </Btn>
+            </div>
+          </div>
+        )}
+
         {items.map((s, i) => {
-          const flat = s.prices.A === s.prices.B && s.prices.B === s.prices.C;
+          const categoryPrices = TARIFF_CATEGORIES.map(c => s.prices[c]);
+          const flat = categoryPrices.every(price => price === categoryPrices[0]);
           return (
             <div key={i} className="card card-elev" style={{ padding: 16 }}>
               <div className="row between mb-8">
@@ -741,7 +844,7 @@ function ServicesScreen({ t, lang, openBooking, theme, staffContact }) {
                 </div>
               ) : (
                 <div className="row gap-8">
-                  {['A', 'B', 'C'].map(c => (
+                  {TARIFF_CATEGORIES.map(c => (
                     <div key={c} className="flex-1" style={{
                       background: 'var(--surface-2)',
                       borderRadius: 12, padding: '10px 8px',
