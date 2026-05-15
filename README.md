@@ -190,7 +190,7 @@ AGENTS.md                         Guidelines for AI coding agents — authoritat
 - [x] French booking flow — cars + moto, home or center, promos, post-confirmation detailing upsell
 - [x] Postgres persistence, admin portal, returning-customer recall, staff alerts
 - [ ] `/api/v1/*` router; PWA becomes a second client of the same domain core (see `plan.md`)
-- [ ] Reminder dispatcher — `BookingReminderRow` rows are already written at H-2; no worker reads them yet
+- [x] Reminder dispatcher — `POST /internal/reminders/dispatch` ships H-2 `BookingReminderRow` rows on a cron cadence (see `docs/runbooks/reminders.md`)
 - [ ] Production Meta number swap via Coexistence
 
 ## Documentation

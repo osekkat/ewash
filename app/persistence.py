@@ -1153,6 +1153,187 @@ def confirm_booking_by_ewash(
         return row
 
 
+@dataclass(frozen=True)
+class ReminderDispatchCandidate:
+    """Snapshot of a reminder row claimed for dispatch, decoupled from the ORM.
+
+    Built by :func:`claim_next_due_reminder` after the row is atomically claimed
+    (attempt_count incremented, sent_at stamped) and the session has closed, so
+    the caller can issue the Meta API call without holding a transaction open.
+    """
+    reminder_id: int
+    booking_ref: str
+    customer_phone: str
+    customer_name: str
+    vehicle_label: str
+    service_label: str
+    location_label: str
+    date_label: str
+    slot: str
+    template_name: str
+    template_language: str
+    kind: str
+    scheduled_for: datetime
+    attempt_count: int
+    max_sends: int
+
+
+def _reminder_vehicle_label(row: BookingRow) -> str:
+    parts = [str(row.car_model or "").strip(), str(row.color or "").strip()]
+    label = " — ".join(p for p in parts if p)
+    return label or str(row.vehicle_type or "").strip() or "Véhicule"
+
+
+def _reminder_location_label(row: BookingRow) -> str:
+    if row.location_mode == "center":
+        return str(row.center or row.location_name or "Stand Ewash").strip()
+    return str(row.address or row.location_address or row.geo or "").strip() or "-"
+
+
+def claim_next_due_reminder(
+    *,
+    now: datetime | None = None,
+    engine: Engine | None = None,
+    exclude_ids: Iterable[int] | None = None,
+) -> ReminderDispatchCandidate | None:
+    """Atomically claim the next pending reminder due for dispatch.
+
+    Picks the oldest eligible row (status in ``pending``/``failed``, booking
+    still ``confirmed``, ``scheduled_for <= now``) and stamps it with an
+    incremented ``attempt_count`` plus ``sent_at = now`` to act as an
+    in-flight marker. Concurrent dispatch invocations race safely:
+
+    - Postgres uses ``SELECT ... FOR UPDATE SKIP LOCKED`` so a second caller
+      reading at the same instant skips the row another worker just locked.
+    - Once committed, the row's ``sent_at`` is non-null. The next sweep's
+      predicate (``status='pending'`` filtered by the min_minutes cooldown,
+      and ``status='failed'`` only after the cooldown) keeps the same row
+      out of the eligible set until the caller transitions it through
+      :func:`mark_reminder_sent` or :func:`mark_reminder_failed`.
+
+    ``exclude_ids`` is the in-memory set of rows the caller has already
+    handled in the current dispatch loop — passed in so a single endpoint
+    invocation never retries a row it just failed (retries happen on the
+    *next* cron firing, per ewash-b8w).
+
+    Returns ``None`` when no rows are eligible. The caller is expected to
+    loop on this helper until it returns ``None`` (or it hits a batch cap).
+    """
+    current = _as_utc(now or _now())
+    db_engine = _engine_or_configured(engine)
+    if db_engine is None:
+        return None
+
+    skip_set = {int(rid) for rid in exclude_ids} if exclude_ids else set()
+    with session_scope(db_engine) as session:
+        stmt = (
+            select(BookingReminderRow)
+            .join(BookingRow, BookingReminderRow.booking_id == BookingRow.id)
+            .outerjoin(ReminderRuleRow, BookingReminderRow.rule_id == ReminderRuleRow.id)
+            .where(
+                BookingReminderRow.status.in_(("pending", "failed")),
+                BookingReminderRow.scheduled_for <= current,
+                BookingRow.status == "confirmed",
+            )
+            .order_by(BookingReminderRow.scheduled_for.asc(), BookingReminderRow.id.asc())
+            .limit(1)
+        )
+        if skip_set:
+            stmt = stmt.where(BookingReminderRow.id.notin_(skip_set))
+        if db_engine.dialect.name == "postgresql":
+            stmt = stmt.with_for_update(skip_locked=True)
+
+        row = session.scalars(stmt).first()
+        if row is None:
+            return None
+
+        rule = row.rule
+        max_sends = int(rule.max_sends) if rule is not None and rule.max_sends else 1
+        min_minutes = int(rule.min_minutes_between_sends) if rule is not None and rule.min_minutes_between_sends else 0
+
+        if (row.attempt_count or 0) >= max_sends:
+            row.status = "failed"
+            if not row.error:
+                row.error = "max_sends exhausted"
+            return None
+
+        if row.sent_at is not None and min_minutes > 0:
+            cooldown_end = _as_utc(row.sent_at) + timedelta(minutes=min_minutes)
+            if cooldown_end > current:
+                return None
+
+        booking = row.booking
+        row.attempt_count = (row.attempt_count or 0) + 1
+        row.sent_at = current
+        if row.status == "failed":
+            row.status = "pending"
+
+        template_name = (
+            rule.template_name.strip()
+            if rule is not None and rule.template_name and rule.template_name.strip()
+            else "booking_reminder_h2"
+        )
+        return ReminderDispatchCandidate(
+            reminder_id=int(row.id),
+            booking_ref=str(booking.ref or ""),
+            customer_phone=str(booking.customer_phone or ""),
+            customer_name=str(booking.customer_name or ""),
+            vehicle_label=_reminder_vehicle_label(booking),
+            service_label=str(booking.service_label or booking.service_id or "").strip(),
+            location_label=_reminder_location_label(booking),
+            date_label=str(booking.date_label or "").strip(),
+            slot=str(booking.slot or "").strip(),
+            template_name=template_name,
+            template_language="fr",
+            kind=str(row.kind or ""),
+            scheduled_for=_as_utc(row.scheduled_for),
+            attempt_count=int(row.attempt_count),
+            max_sends=max_sends,
+        )
+
+
+def mark_reminder_sent(
+    reminder_id: int,
+    *,
+    now: datetime | None = None,
+    engine: Engine | None = None,
+) -> None:
+    """Mark a previously-claimed reminder row as successfully delivered."""
+    current = _as_utc(now or _now())
+    db_engine = _engine_or_configured(engine)
+    if db_engine is None:
+        return
+    with session_scope(db_engine) as session:
+        row = session.get(BookingReminderRow, reminder_id)
+        if row is None:
+            return
+        row.status = "sent"
+        row.sent_at = current
+        row.error = ""
+
+
+def mark_reminder_failed(
+    reminder_id: int,
+    *,
+    error: str,
+    engine: Engine | None = None,
+) -> None:
+    """Mark a previously-claimed reminder row as failed.
+
+    Sets status='failed' unconditionally; the next dispatch sweep re-evaluates
+    eligibility based on ``attempt_count < rule.max_sends`` and the cooldown.
+    """
+    db_engine = _engine_or_configured(engine)
+    if db_engine is None:
+        return
+    with session_scope(db_engine) as session:
+        row = session.get(BookingReminderRow, reminder_id)
+        if row is None:
+            return
+        row.status = "failed"
+        row.error = (error or "")[:2000]
+
+
 def _booking_dict_to_admin_item(row: dict) -> AdminBookingListItem:
     vehicle_label = " — ".join(str(row.get(part, "")).strip() for part in ("car_model", "color") if str(row.get(part, "")).strip())
     if not vehicle_label:

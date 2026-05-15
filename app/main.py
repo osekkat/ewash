@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from slowapi.errors import RateLimitExceeded
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from . import admin, api as api_module, handlers, meta
+from . import admin, api as api_module, handlers, meta, reminders
 from .config import settings
 from .persistence import mark_abandoned_conversations
 from .rate_limit import (
@@ -124,6 +124,7 @@ _configure_access_logging(app)
 _configure_api(app)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.include_router(admin.router)
+app.include_router(reminders.router)
 
 
 @app.get("/health")
