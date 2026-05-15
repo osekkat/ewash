@@ -11,6 +11,7 @@ from typing import Literal
 from fastapi import APIRouter, BackgroundTasks, Body, FastAPI, Query, Request, Response
 from fastapi.responses import JSONResponse
 from slowapi.util import get_remote_address
+from sqlalchemy.exc import IntegrityError
 
 from app import api_validation, booking as booking_module, catalog, notifications, persistence
 from app.api_schemas import (
@@ -272,6 +273,122 @@ def _resolve_booking_addons(
     return resolved
 
 
+def _booking_location_label_from_row(row) -> str:
+    if row.location_mode == "home":
+        return "À domicile"
+    return row.center or row.location_name or "Au stand"
+
+
+def _regular_price_for_response(price: int, regular_price: int | None) -> int | None:
+    if regular_price is None or regular_price == price:
+        return None
+    return regular_price
+
+
+def _booking_create_response_from_row(
+    row,
+    *,
+    bookings_token: str,
+    is_idempotent_replay: bool,
+) -> BookingCreateResponse:
+    line_items = [
+        BookingLineItemOut(
+            kind=item.kind,
+            service_id=item.service_id,
+            label=item.label_snapshot or item.service_id,
+            price_dh=item.total_price_dh or item.unit_price_dh or 0,
+            regular_price_dh=_regular_price_for_response(
+                item.total_price_dh or item.unit_price_dh or 0,
+                item.regular_price_dh,
+            ),
+            sort_order=item.sort_order,
+        )
+        for item in row.line_items
+        if item.kind in {"main", "addon"}
+    ]
+    if not line_items:
+        line_items = [
+            BookingLineItemOut(
+                kind="main",
+                service_id=row.service_id or "",
+                label=row.service_label or row.service_id or "",
+                price_dh=row.price_dh or 0,
+                regular_price_dh=_regular_price_for_response(
+                    row.price_dh or 0,
+                    row.price_regular_dh,
+                ),
+                sort_order=0,
+            )
+        ]
+        if row.addon_service:
+            addon_price = row.addon_price_dh or 0
+            line_items.append(
+                BookingLineItemOut(
+                    kind="addon",
+                    service_id=row.addon_service,
+                    label=row.addon_service_label or row.addon_service,
+                    price_dh=addon_price,
+                    regular_price_dh=None,
+                    sort_order=10,
+                )
+            )
+
+    return BookingCreateResponse(
+        ref=row.ref,
+        status=row.status,
+        price_dh=row.price_dh or 0,
+        total_dh=row.total_price_dh or row.price_dh or 0,
+        vehicle_label=row.vehicle_type or "",
+        service_label=row.service_label or row.service_id or "",
+        date_label=row.date_label
+        or (row.appointment_date.isoformat() if row.appointment_date else ""),
+        slot_label=row.slot or row.slot_id or "",
+        location_label=_booking_location_label_from_row(row),
+        line_items=line_items,
+        bookings_token=bookings_token,
+        is_idempotent_replay=is_idempotent_replay,
+    )
+
+
+def _idempotent_booking_response(
+    client_request_id: str | None,
+    *,
+    engine,
+    request: Request,
+) -> BookingCreateResponse | None:
+    if not client_request_id:
+        return None
+
+    with persistence.session_scope(engine) as session:
+        row = persistence.find_booking_by_client_request_id(
+            client_request_id,
+            session=session,
+        )
+        if row is None:
+            return None
+        # Load relationship rows while the session is open so the replay body
+        # can be built without issuing more queries after the transaction ends.
+        _ = list(row.line_items)
+        response = _booking_create_response_from_row(
+            row,
+            bookings_token="",
+            is_idempotent_replay=True,
+        )
+        ref = row.ref
+        phone = row.customer_phone
+
+    response.bookings_token = persistence.mint_customer_token(phone, engine=engine)
+    request.state.booking_ref = ref
+    request.state.phone_normalized = phone
+    logger.info(
+        "ewash.api.idempotent_hit client_request_id=%s ref=%s phone_hash=%s",
+        client_request_id,
+        ref,
+        _hash_for_log(phone),
+    )
+    return response
+
+
 @router.post("/bookings", response_model=BookingCreateResponse)
 @limiter.limit(settings.rate_limit_bookings_per_ip, key_func=get_remote_address)
 async def create_booking(
@@ -283,6 +400,23 @@ async def create_booking(
     """Create a PWA booking in the same pending staff-confirmation state as WhatsApp."""
     del response  # SlowAPI requires the parameter so it can inject rate-limit headers.
     started = time.perf_counter()
+
+    engine = persistence._configured_engine()
+    if engine is None:
+        return _json_error(
+            503,
+            "db_unavailable",
+            "Database not configured",
+            details={"resource": "database"},
+        )
+
+    replay = _idempotent_booking_response(
+        body.client_request_id,
+        engine=engine,
+        request=request,
+    )
+    if replay is not None:
+        return replay
 
     try:
         phone = notifications.normalize_phone(body.phone)
@@ -351,34 +485,35 @@ async def create_booking(
         addon_price for _addon_id, _label, addon_price, _regular in addons_resolved
     )
 
-    engine = persistence._configured_engine()
-    if engine is None:
-        return _json_error(
-            503,
-            "db_unavailable",
-            "Database not configured",
-            details={"resource": "database"},
+    try:
+        with persistence.session_scope(engine) as session:
+            persistence.assign_booking_ref(booking, session=session)
+            request.state.booking_ref = booking.ref
+            booking.client_request_id = body.client_request_id
+            persistence.persist_confirmed_booking(booking, source="api", session=session)
+            for index, (addon_id, addon_label, addon_price, addon_regular_price) in enumerate(
+                addons_resolved
+            ):
+                persistence.persist_booking_addon(
+                    booking.ref,
+                    addon_service=addon_id,
+                    addon_service_label=addon_label,
+                    addon_price_dh=addon_price,
+                    regular_price_dh=addon_regular_price,
+                    discount_label="-10% Esthétique",
+                    denormalize_to_legacy=index == 0,
+                    session=session,
+                )
+            persistence.persist_customer_name(phone, booking.name, session=session)
+    except IntegrityError:
+        replay = _idempotent_booking_response(
+            body.client_request_id,
+            engine=engine,
+            request=request,
         )
-
-    with persistence.session_scope(engine) as session:
-        persistence.assign_booking_ref(booking, session=session)
-        request.state.booking_ref = booking.ref
-        booking.client_request_id = body.client_request_id
-        persistence.persist_confirmed_booking(booking, source="api", session=session)
-        for index, (addon_id, addon_label, addon_price, addon_regular_price) in enumerate(
-            addons_resolved
-        ):
-            persistence.persist_booking_addon(
-                booking.ref,
-                addon_service=addon_id,
-                addon_service_label=addon_label,
-                addon_price_dh=addon_price,
-                regular_price_dh=addon_regular_price,
-                discount_label="-10% Esthétique",
-                denormalize_to_legacy=index == 0,
-                session=session,
-            )
-        persistence.persist_customer_name(phone, booking.name, session=session)
+        if replay is not None:
+            return replay
+        raise
 
     if addons_resolved:
         logger.info(
@@ -397,6 +532,7 @@ async def create_booking(
         matched_phone = persistence.verify_customer_token(
             body.bookings_token,
             expected_phone=phone,
+            engine=engine,
         )
         if matched_phone == phone:
             returned_token = body.bookings_token
@@ -406,7 +542,7 @@ async def create_booking(
                 _hash_for_log(phone),
             )
     if not returned_token:
-        returned_token = persistence.mint_customer_token(phone)
+        returned_token = persistence.mint_customer_token(phone, engine=engine)
         logger.info(
             "bookings.token minted ref=%s phone_hash=%s",
             booking.ref,

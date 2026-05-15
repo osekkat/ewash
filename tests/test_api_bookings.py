@@ -8,6 +8,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app import api, catalog, notifications, persistence
 from app.config import settings
@@ -238,6 +239,136 @@ def test_create_booking_mints_fresh_token_for_other_phone_token(api_db, caplog):
     messages = "\n".join(record.getMessage() for record in caplog.records)
     assert "bookings.token minted ref=" in messages
     assert other_phone not in messages
+
+
+def test_create_booking_replays_existing_client_request_id_before_validation(
+    api_db,
+    caplog,
+):
+    caplog.set_level(logging.INFO, logger="ewash.api")
+
+    with _client() as client:
+        first = client.post(
+            "/api/v1/bookings",
+            json=_payload(client_request_id="booking-idempotent-1"),
+        ).json()
+        same_response = client.post(
+            "/api/v1/bookings",
+            json=_payload(client_request_id="booking-idempotent-1"),
+        )
+        replay_response = client.post(
+            "/api/v1/bookings",
+            json=_payload(
+                phone="definitely-not-a-phone",
+                service_id="not-a-real-service",
+                client_request_id="booking-idempotent-1",
+            ),
+        )
+
+    assert same_response.status_code == 200
+    same = same_response.json()
+    assert same["ref"] == first["ref"]
+    assert same["line_items"] == first["line_items"]
+    assert same["is_idempotent_replay"] is True
+    assert same["bookings_token"]
+    assert same["bookings_token"] != first["bookings_token"]
+
+    assert replay_response.status_code == 200
+    replay = replay_response.json()
+    assert replay["ref"] == first["ref"]
+    assert replay["status"] == "pending_ewash_confirmation"
+    assert replay["service_label"] == first["service_label"]
+    assert replay["line_items"] == first["line_items"]
+    assert replay["is_idempotent_replay"] is True
+    assert replay["bookings_token"]
+    assert replay["bookings_token"] != first["bookings_token"]
+    assert replay["bookings_token"] != same["bookings_token"]
+
+    with session_scope(api_db) as session:
+        rows = session.scalars(select(BookingRow)).all()
+        assert len(rows) == 1
+        assert rows[0].client_request_id == "booking-idempotent-1"
+        tokens = session.scalars(select(CustomerTokenRow)).all()
+        assert len(tokens) == 3
+
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert "ewash.api.bookings.create ref=" in messages
+    assert "ewash.api.idempotent_hit client_request_id=booking-idempotent-1" in messages
+    assert "definitely-not-a-phone" not in messages
+
+
+def test_create_booking_without_client_request_id_creates_distinct_bookings(api_db):
+    with _client() as client:
+        first = client.post(
+            "/api/v1/bookings",
+            json=_payload(client_request_id=None),
+        )
+        second = client.post(
+            "/api/v1/bookings",
+            json=_payload(client_request_id=None),
+        )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["ref"] != second.json()["ref"]
+    assert first.json()["is_idempotent_replay"] is False
+    assert second.json()["is_idempotent_replay"] is False
+
+    with session_scope(api_db) as session:
+        rows = session.scalars(select(BookingRow)).all()
+        assert len(rows) == 2
+        assert [row.client_request_id for row in rows] == [None, None]
+
+
+def test_create_booking_integrity_error_replays_existing_client_request_id(
+    api_db,
+    monkeypatch,
+):
+    with _client() as client:
+        first_response = client.post(
+            "/api/v1/bookings",
+            json=_payload(client_request_id="booking-race-1"),
+        )
+        first = first_response.json()
+
+        real_find = persistence.find_booking_by_client_request_id
+        calls = {"find": 0}
+
+        def flaky_find(client_request_id, *, session=None, engine=None):
+            calls["find"] += 1
+            if calls["find"] == 1:
+                return None
+            return real_find(client_request_id, session=session, engine=engine)
+
+        def duplicate_write(*args, **kwargs):
+            raise IntegrityError(
+                "INSERT INTO bookings",
+                {},
+                Exception("duplicate client_request_id"),
+            )
+
+        monkeypatch.setattr(persistence, "find_booking_by_client_request_id", flaky_find)
+        monkeypatch.setattr(persistence, "persist_confirmed_booking", duplicate_write)
+
+        replay_response = client.post(
+            "/api/v1/bookings",
+            json=_payload(client_request_id="booking-race-1"),
+        )
+
+    assert replay_response.status_code == 200
+    replay = replay_response.json()
+    assert replay["ref"] == first["ref"]
+    assert replay["is_idempotent_replay"] is True
+    assert replay["bookings_token"]
+    assert replay["bookings_token"] != first["bookings_token"]
+    assert calls["find"] == 2
+
+    with session_scope(api_db) as session:
+        rows = session.scalars(select(BookingRow)).all()
+        assert len(rows) == 1
+        assert rows[0].client_request_id == "booking-race-1"
+        tokens = session.scalars(select(CustomerTokenRow)).all()
+        assert len(tokens) == 2
 
 
 def test_create_booking_single_addon_persists_legacy_and_line_item(api_db):
