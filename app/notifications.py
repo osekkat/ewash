@@ -44,13 +44,32 @@ def _engine_or_configured(engine: Engine | None = None) -> Engine | None:
     return engine if engine is not None else _notification_engine()
 
 
-def _normalize_phone_number(phone_number: str) -> str:
-    digits = re.sub(r"\D+", "", phone_number or "")
+def normalize_phone(phone_number: str) -> str:
+    """Normalize a free-text phone number to digits-only (8-20 chars).
+
+    Strips spaces, plus signs, dashes, parentheses, and any other non-digit
+    characters. Returns "" for empty/None input. Raises ``ValueError`` when
+    the cleaned result is 1-7 digits or 21+ digits.
+
+    Used by both the WhatsApp path (via :func:`upsert_booking_notification_settings`)
+    and the PWA path (`POST /api/v1/bookings`) so the same customer reaching
+    Ewash through either channel dedupes to the same `customers.phone` row.
+    """
+    raw = phone_number or ""
+    digits = re.sub(r"\D+", "", raw)
     if not digits:
         return ""
     if len(digits) < 8 or len(digits) > 20:
         raise ValueError("WhatsApp phone number must contain 8-20 digits")
+    if digits != raw:
+        log.debug("phone_normalized in=%r out=%r changed=True", raw, digits)
     return digits
+
+
+# Back-compat alias: existing call sites (`upsert_booking_notification_settings`)
+# import `_normalize_phone_number`. The leading underscore is preserved so
+# nothing breaks; new callers should prefer the public name.
+_normalize_phone_number = normalize_phone
 
 
 def _normalize_template_name(template_name: str) -> str:
