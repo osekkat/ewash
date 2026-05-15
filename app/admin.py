@@ -6,6 +6,7 @@ configured, so deploying the implementation slice does not expose booking ops.
 from __future__ import annotations
 
 import hmac
+import logging
 import secrets
 import time
 from hashlib import sha256
@@ -20,15 +21,24 @@ from .admin_i18n import SUPPORTED_LOCALES, normalize_locale, t
 from .catalog import SERVICES_DETAILING, SERVICES_MOTO, SERVICES_WASH
 from .config import settings
 from .notifications import get_booking_notification_settings, upsert_booking_notification_settings
-from .persistence import admin_booking_list, admin_customer_list, admin_dashboard_summary, confirm_booking_by_ewash
+from .persistence import (
+    admin_booking_list,
+    admin_customer_list,
+    admin_dashboard_summary,
+    anonymize_customer,
+    confirm_booking_by_ewash,
+    recent_erasures,
+)
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+log = logging.getLogger("ewash.admin")
 _ADMIN_VERSION = "v0.3.0-alpha17"
 _SESSION_COOKIE = "ewash_admin_session"
 _NAV_ITEMS = (
     ("dashboard", "nav.dashboard", "/admin"),
     ("bookings", "nav.bookings", "/admin/bookings"),
     ("customers", "nav.customers", "/admin/customers"),
+    ("erasures", "nav.erasures", "/admin/erasures"),
     ("prices", "nav.prices", "/admin/prices"),
     ("promos", "nav.promos", "/admin/promos"),
     ("reminders", "nav.reminders", "/admin/reminders"),
@@ -148,6 +158,7 @@ def _layout(*, locale: str, title: str, body: str, active_path: str = "/admin") 
       --accent-bg: #5e6ad2;
       --good: #10b981;
       --warn: #f59e0b;
+      --danger: #ef4444;
     }}
     * {{ box-sizing: border-box; }}
     body {{
@@ -195,7 +206,8 @@ def _layout(*, locale: str, title: str, body: str, active_path: str = "/admin") 
     .table-shell {{ margin-top: 18px; border: 1px solid var(--border-soft); border-radius: 12px; overflow: hidden; }}
     .table-row {{ display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; padding: 13px 14px; border-bottom: 1px solid var(--border-soft); color: var(--muted); font-size: 13px; }}
     .booking-row {{ grid-template-columns: .8fr 1.1fr 1fr 1.3fr .9fr .9fr .7fr .85fr; align-items: center; }}
-    .customer-row {{ grid-template-columns: 1.1fr .95fr 1.25fr .75fr 1.15fr; align-items: center; }}
+    .customer-row {{ grid-template-columns: 1.1fr .95fr 1.25fr .75fr 1.15fr 1.25fr; align-items: center; }}
+    .erasure-row {{ grid-template-columns: 1fr .95fr .75fr .95fr 1.2fr 1.35fr; align-items: center; }}
     .price-row {{ grid-template-columns: .9fr 1.15fr 2fr .55fr .55fr .55fr; align-items: center; }}
     .table-row:last-child {{ border-bottom: 0; }}
     .table-head {{ color: var(--soft); background: rgba(255,255,255,0.03); font-weight: 510; }}
@@ -215,6 +227,9 @@ def _layout(*, locale: str, title: str, body: str, active_path: str = "/admin") 
     .admin-form {{ max-width: none; }}
     .inline-form {{ max-width: none; margin: 0; padding: 0; border: 0; border-radius: 0; background: transparent; }}
     .inline-form button {{ padding: 8px 10px; font-size: 12px; white-space: nowrap; }}
+    .erase-form {{ display: grid; gap: 8px; }}
+    .erase-form input, .erase-form textarea {{ margin: 0; padding: 8px 9px; font-size: 12px; }}
+    .erase-form textarea {{ min-height: 54px; }}
     .price-input {{ margin: 0; padding: 9px 10px; min-width: 70px; }}
     .form-grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }}
     .notice {{ padding: 12px 14px; border-radius: 12px; margin: 14px 0; border: 1px solid var(--border); }}
@@ -222,6 +237,7 @@ def _layout(*, locale: str, title: str, body: str, active_path: str = "/admin") 
     .notice.error {{ color: #fecaca; background: rgba(239,68,68,0.08); }}
     .muted {{ color: var(--muted); }}
     button {{ border: 0; border-radius: 10px; padding: 11px 16px; color: #fff; background: var(--accent-bg); font-weight: 590; cursor: pointer; }}
+    button.danger {{ background: var(--danger); }}
     [role="alert"] {{ color: #fecaca; }}
     @media (max-width: 860px) {{
       .shell {{ grid-template-columns: 1fr; }}
@@ -770,7 +786,18 @@ def _bookings_page(*, locale: str, message: str = "", error: str = "") -> HTMLRe
     )
 
 
-def _customers_page(*, locale: str) -> HTMLResponse:
+def _customer_erase_form(*, phone: str, locale: str) -> str:
+    return f"""
+<form class="inline-form erase-form" method="post" action="/admin/customers/{escape(phone)}/erase?lang={escape(locale)}">
+  <strong>{escape(t('admin.customers.danger_zone', locale))}</strong>
+  <small class="muted">{escape(t('admin.customers.erase_body', locale))}</small>
+  <input name="confirm" placeholder="{escape(t('admin.customers.erase_confirm_prompt', locale))}" autocomplete="off" required>
+  <textarea name="notes" placeholder="{escape(t('admin.customers.erase_notes', locale))}"></textarea>
+  <button class="danger" type="submit">{escape(t('admin.customers.erase_button', locale))}</button>
+</form>"""
+
+
+def _customers_page(*, locale: str, message: str = "", error: str = "") -> HTMLResponse:
     title = t("nav.customers", locale)
     customers = admin_customer_list()
     if customers:
@@ -781,17 +808,19 @@ def _customers_page(*, locale: str) -> HTMLResponse:
             f"<span>{escape(', '.join(item.vehicle_labels) or '—')}</span>"
             f"<span>{item.booking_count} réservation{'s' if item.booking_count != 1 else ''}</span>"
             f"<span>{escape(item.last_bot_stage_label or '—')}<br><small>{escape(item.last_bot_stage or '')}</small></span>"
+            f"<span>{_customer_erase_form(phone=item.phone, locale=locale)}</span>"
             "</div>"
             for item in customers
         )
     else:
-        rows = '<div class="table-row customer-row"><span>—</span><span>—</span><span>—</span><span>—</span><span>—</span></div>'
+        rows = '<div class="table-row customer-row"><span>—</span><span>—</span><span>—</span><span>—</span><span>—</span><span>—</span></div>'
     if not settings.database_url:
         intro = "Mode temporaire : Railway Postgres / DATABASE_URL n'est pas configuré. Les clients affichés ici viennent de la mémoire live et disparaissent au redéploiement."
     elif customers:
         intro = f"{len(customers)} client(s) persisté(s) en base."
     else:
         intro = "Aucun client persisté pour le moment. Les clients apparaissent ici dès qu'ils entrent dans le parcours WhatsApp."
+    notice = _notice_html(message=message, error=error)
 
     body = f"""
 <section class="hero">
@@ -805,14 +834,63 @@ def _customers_page(*, locale: str) -> HTMLResponse:
 </section>
 <section class="empty-panel">
   <h2>{escape(title)}</h2>
+  {notice}
   <div class="table-shell" aria-label="Clients persistés">
-    <div class="table-row table-head customer-row"><span>Client</span><span>Téléphone</span><span>Véhicules</span><span>Réservations</span><span>Étape WhatsApp</span></div>
+    <div class="table-row table-head customer-row"><span>Client</span><span>Téléphone</span><span>Véhicules</span><span>Réservations</span><span>Étape WhatsApp</span><span>{escape(t('admin.customers.danger_zone', locale))}</span></div>
     {rows}
   </div>
 </section>
 """
     return HTMLResponse(
         content=_layout(locale=locale, title=title, body=body, active_path="/admin/customers"),
+        status_code=200,
+    )
+
+
+def _erasures_page(*, locale: str, actor: str = "") -> HTMLResponse:
+    title = t("admin.erasures.title", locale)
+    rows_data = recent_erasures(limit=100, actor=actor or None)
+    if rows_data:
+        rows = "".join(
+            "<div class=\"table-row erasure-row\">"
+            f"<span>{escape(row['phone_hash'])}</span>"
+            f"<span>{escape(row['actor'])}</span>"
+            f"<span>{row['deleted_count']}</span>"
+            f"<span>{row['anonymized_bookings']}</span>"
+            f"<span>{escape(row['performed_at'])}</span>"
+            f"<span>{escape(row['notes'] or '—')}</span>"
+            "</div>"
+            for row in rows_data
+        )
+    else:
+        rows = '<div class="table-row erasure-row"><span>—</span><span>—</span><span>—</span><span>—</span><span>—</span><span>—</span></div>'
+    filter_input = escape(actor)
+    body = f"""
+<section class="hero">
+  <div>
+    <div class="eyebrow">Ewash Ops</div>
+    <h1>{escape(title)}</h1>
+    <p>{escape(t('admin.erasures.intro', locale))}</p>
+  </div>
+  <div class="version-pill"><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> {_ADMIN_VERSION}</div>
+
+</section>
+<section class="empty-panel">
+  <h2>{escape(title)}</h2>
+  <form class="inline-form" method="get" action="/admin/erasures">
+    <input type="hidden" name="lang" value="{escape(locale)}">
+    <label for="actor">{escape(t('admin.erasures.actor', locale))}</label>
+    <input id="actor" name="actor" value="{filter_input}" placeholder="customer_self_serve">
+    <button type="submit">{escape(t('action.save', locale))}</button>
+  </form>
+  <div class="table-shell" aria-label="{escape(title)}">
+    <div class="table-row table-head erasure-row"><span>{escape(t('admin.erasures.phone_hash', locale))}</span><span>{escape(t('admin.erasures.actor', locale))}</span><span>{escape(t('admin.erasures.deleted_count', locale))}</span><span>{escape(t('admin.erasures.anonymized_bookings', locale))}</span><span>{escape(t('admin.erasures.performed_at', locale))}</span><span>{escape(t('admin.erasures.notes', locale))}</span></div>
+    {rows}
+  </div>
+</section>
+"""
+    return HTMLResponse(
+        content=_layout(locale=locale, title=title, body=body, active_path="/admin/erasures"),
         status_code=200,
     )
 
@@ -958,6 +1036,36 @@ async def admin_booking_confirm_submit(request: Request, lang: str | None = Quer
     return RedirectResponse(url=f"/admin/bookings?lang={locale}&confirmed=1", status_code=status.HTTP_303_SEE_OTHER)
 
 
+@router.post("/customers/{phone}/erase", response_class=HTMLResponse)
+async def admin_customer_erase_submit(request: Request, phone: str, lang: str | None = Query(default=None)):
+    locale = normalize_locale(lang or settings.admin_default_locale)
+    if response := _auth_or_none(request, locale):
+        return response
+    form = await _admin_form(request)
+    confirm = (form.get("confirm", [""])[0] or "").strip()
+    notes = form.get("notes", [""])[0]
+    if confirm != "ERASE":
+        return RedirectResponse(
+            url=f"/admin/customers?lang={locale}&error=confirm_required",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    actor = "admin:unknown"
+    result = anonymize_customer(phone, actor=actor, notes=notes)
+    phone_hash = sha256(phone.encode("utf-8")).hexdigest()[:12]
+    log.info(
+        "admin.erase phone_hash=%s actor=%s deleted_count=%d anonymized_bookings=%d",
+        phone_hash,
+        actor,
+        result["deleted_count"],
+        result["anonymized_bookings"],
+    )
+    return RedirectResponse(
+        url=f"/admin/customers?lang={locale}&erased={result['anonymized_bookings']}",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
 async def _admin_form(request: Request) -> dict[str, list[str]]:
     return parse_qs((await request.body()).decode("utf-8"))
 
@@ -1100,7 +1208,17 @@ async def admin_section(request: Request, page_slug: str, lang: str | None = Que
         message = t("admin.bookings.confirmed", locale) if request.query_params.get("confirmed") == "1" else ""
         return _bookings_page(locale=locale, message=message)
     if page_id == "customers":
-        return _customers_page(locale=locale)
+        error = ""
+        message = ""
+        if request.query_params.get("error") == "confirm_required":
+            error = t("admin.customers.erase_confirm_required", locale)
+        erased = request.query_params.get("erased")
+        if erased is not None:
+            message = t("admin.customers.erased", locale).format(count=erased)
+        return _customers_page(locale=locale, message=message, error=error)
+    if page_id == "erasures":
+        actor = (request.query_params.get("actor") or "").strip()
+        return _erasures_page(locale=locale, actor=actor)
     if page_id == "prices":
         message = t("admin.prices.saved", locale) if request.query_params.get("saved") == "1" else ""
         return _prices_page(locale=locale, message=message)

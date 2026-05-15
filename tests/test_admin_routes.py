@@ -1,16 +1,30 @@
+import hashlib
+import logging
 from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.booking import Booking
 import app.booking as booking_store
 from app.config import settings
 from app.db import init_db, make_engine, session_scope
 from app.main import app
-from app.models import ConversationSessionRow
+from app.models import (
+    BookingRow,
+    ConversationSessionRow,
+    CustomerName,
+    CustomerTokenRow,
+    CustomerVehicle,
+    DataErasureAuditRow,
+)
 from app.notifications import get_booking_notification_settings, notification_cache_clear
-from app.persistence import _configured_engine, persist_confirmed_booking, persist_customer_bot_stage
+from app.persistence import (
+    _configured_engine,
+    mint_customer_token,
+    persist_confirmed_booking,
+    persist_customer_bot_stage,
+)
 
 
 def test_admin_entrypoint_defaults_to_french_when_not_configured(monkeypatch):
@@ -100,6 +114,7 @@ def test_admin_entrypoint_accepts_configured_password_without_username(monkeypat
     assert "class=\"empty-panel\"" in dashboard.text
     assert 'href="/admin/bookings"' in dashboard.text
     assert 'href="/admin/customers"' in dashboard.text
+    assert 'href="/admin/erasures"' in dashboard.text
     assert 'href="/admin/prices"' in dashboard.text
 
 
@@ -121,6 +136,37 @@ def _sample_booking() -> Booking:
     booking.slot = "09h – 11h"
     booking.assign_ref()
     return booking
+
+
+def _logged_in_admin_client(monkeypatch, db_url: str) -> TestClient:
+    monkeypatch.setattr(settings, "database_url", db_url)
+    _configured_engine.cache_clear()
+    monkeypatch.setattr(settings, "admin_password", "secret-pass")
+    client = TestClient(app)
+    client.post(
+        "/admin",
+        content="password=secret-pass",
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+    return client
+
+
+def _seed_customer_for_erasure(engine, phone: str = "212600000551") -> Booking:
+    booking = _sample_booking()
+    booking.phone = phone
+    persist_confirmed_booking(booking, engine=engine)
+    persist_customer_bot_stage(phone, "BOOK_SERVICE", engine=engine)
+    mint_customer_token(phone, engine=engine)
+    return booking
+
+
+def _customer_side_count(session, phone: str) -> int:
+    total = 0
+    for model in (CustomerTokenRow, CustomerName, CustomerVehicle, ConversationSessionRow):
+        total += session.scalar(
+            select(func.count()).select_from(model).where(model.customer_phone == phone)
+        ) or 0
+    return int(total)
 
 
 def test_admin_bookings_page_renders_persisted_reservations(monkeypatch, tmp_path):
@@ -412,6 +458,170 @@ def test_admin_customers_page_falls_back_to_live_memory_when_database_is_missing
     assert "Porsche — Gris" in response.text
     assert "1 réservation" in response.text
     booking_store._bookings.clear()
+    _configured_engine.cache_clear()
+
+
+def test_admin_erase_customer_happy_path(monkeypatch, tmp_path):
+    phone = "212600000551"
+    db_url = f"sqlite+pysqlite:///{tmp_path / 'admin-erase.db'}"
+    engine = make_engine(db_url)
+    init_db(engine)
+    _seed_customer_for_erasure(engine, phone)
+    client = _logged_in_admin_client(monkeypatch, db_url)
+
+    response = client.post(
+        f"/admin/customers/{phone}/erase",
+        content="confirm=ERASE&notes=Ticket+123",
+        headers={"content-type": "application/x-www-form-urlencoded"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/admin/customers?lang=fr&erased=1"
+    with session_scope(engine) as session:
+        booking = session.scalars(select(BookingRow)).one()
+        audit = session.scalars(select(DataErasureAuditRow)).one()
+        assert booking.customer_name == "Anonyme"
+        assert booking.customer_phone.startswith("DEL-")
+        assert booking.car_model == ""
+        assert booking.raw_booking_json == "{}"
+        assert audit.actor == "admin:unknown"
+        assert audit.notes == "Ticket 123"
+        assert audit.anonymized_bookings == 1
+
+    bookings_page = client.get("/admin/bookings")
+    assert bookings_page.status_code == 200
+    assert "Anonyme" in bookings_page.text
+    assert phone not in bookings_page.text
+    _configured_engine.cache_clear()
+
+
+def test_admin_erase_requires_confirm(monkeypatch, tmp_path):
+    phone = "212600000552"
+    db_url = f"sqlite+pysqlite:///{tmp_path / 'admin-erase-confirm.db'}"
+    engine = make_engine(db_url)
+    init_db(engine)
+    _seed_customer_for_erasure(engine, phone)
+    client = _logged_in_admin_client(monkeypatch, db_url)
+
+    response = client.post(
+        f"/admin/customers/{phone}/erase",
+        content="confirm=WRONG",
+        headers={"content-type": "application/x-www-form-urlencoded"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/admin/customers?lang=fr&error=confirm_required"
+    with session_scope(engine) as session:
+        assert session.scalar(select(func.count()).select_from(DataErasureAuditRow)) == 0
+        booking = session.scalars(select(BookingRow)).one()
+        assert booking.customer_phone == phone
+    _configured_engine.cache_clear()
+
+
+def test_admin_erasures_page_lists_rows(monkeypatch, tmp_path):
+    db_url = f"sqlite+pysqlite:///{tmp_path / 'admin-erasures.db'}"
+    engine = make_engine(db_url)
+    init_db(engine)
+    with session_scope(engine) as session:
+        session.add(DataErasureAuditRow(
+            phone_hash="a" * 64,
+            actor="admin:unknown",
+            deleted_count=4,
+            anonymized_bookings=2,
+            notes="Ticket 456",
+        ))
+    client = _logged_in_admin_client(monkeypatch, db_url)
+
+    response = client.get("/admin/erasures")
+
+    assert response.status_code == 200
+    assert "Effacements de données" in response.text
+    assert "aaaaaaaaaaaa" in response.text
+    assert "admin:unknown" in response.text
+    assert "Ticket 456" in response.text
+    assert "Réservations anonymisées" in response.text
+    _configured_engine.cache_clear()
+
+
+def test_admin_erasures_page_filters_by_actor(monkeypatch, tmp_path):
+    db_url = f"sqlite+pysqlite:///{tmp_path / 'admin-erasures-filter.db'}"
+    engine = make_engine(db_url)
+    init_db(engine)
+    with session_scope(engine) as session:
+        session.add_all([
+            DataErasureAuditRow(
+                phone_hash="b" * 64,
+                actor="customer_self_serve",
+                deleted_count=1,
+                anonymized_bookings=1,
+                notes="self serve row",
+            ),
+            DataErasureAuditRow(
+                phone_hash="c" * 64,
+                actor="admin:unknown",
+                deleted_count=2,
+                anonymized_bookings=1,
+                notes="admin row",
+            ),
+        ])
+    client = _logged_in_admin_client(monkeypatch, db_url)
+
+    response = client.get("/admin/erasures?actor=customer_self_serve")
+
+    assert response.status_code == 200
+    assert "self serve row" in response.text
+    assert "admin row" not in response.text
+    _configured_engine.cache_clear()
+
+
+def test_admin_erase_emits_audit_log(monkeypatch, tmp_path, caplog):
+    phone = "212600000553"
+    db_url = f"sqlite+pysqlite:///{tmp_path / 'admin-erase-log.db'}"
+    engine = make_engine(db_url)
+    init_db(engine)
+    _seed_customer_for_erasure(engine, phone)
+    client = _logged_in_admin_client(monkeypatch, db_url)
+    caplog.set_level(logging.INFO, logger="ewash.admin")
+
+    client.post(
+        f"/admin/customers/{phone}/erase",
+        content="confirm=ERASE",
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+
+    prefix = hashlib.sha256(phone.encode("utf-8")).hexdigest()[:12]
+    lines = [rec.getMessage() for rec in caplog.records if "admin.erase" in rec.getMessage()]
+    assert lines
+    assert f"phone_hash={prefix}" in lines[0]
+    assert phone not in lines[0]
+    _configured_engine.cache_clear()
+
+
+def test_admin_erase_recorded_count_matches_actual(monkeypatch, tmp_path):
+    phone = "212600000554"
+    db_url = f"sqlite+pysqlite:///{tmp_path / 'admin-erase-count.db'}"
+    engine = make_engine(db_url)
+    init_db(engine)
+    _seed_customer_for_erasure(engine, phone)
+    client = _logged_in_admin_client(monkeypatch, db_url)
+    with session_scope(engine) as session:
+        expected_deleted = _customer_side_count(session, phone)
+        expected_bookings = session.scalar(
+            select(func.count()).select_from(BookingRow).where(BookingRow.customer_phone == phone)
+        )
+
+    client.post(
+        f"/admin/customers/{phone}/erase",
+        content="confirm=ERASE",
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+
+    with session_scope(engine) as session:
+        audit = session.scalars(select(DataErasureAuditRow)).one()
+    assert audit.deleted_count == expected_deleted
+    assert audit.anonymized_bookings == expected_bookings
     _configured_engine.cache_clear()
 
 

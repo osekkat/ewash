@@ -1606,6 +1606,7 @@ def anonymize_customer(
     customer_phone: str,
     *,
     actor: str = "customer_self_serve",
+    notes: str = "",
     engine: Engine | None = None,
 ) -> dict:
     """Self-serve data erasure (Loi 09-08 / GDPR right-to-erasure).
@@ -1705,7 +1706,42 @@ def anonymize_customer(
                 actor=(actor or "")[:64],
                 deleted_count=deleted,
                 anonymized_bookings=anonymized,
+                notes=(notes or "").strip() or None,
             )
         )
 
         return {"deleted_count": deleted, "anonymized_bookings": anonymized}
+
+
+def recent_erasures(
+    *,
+    limit: int = 100,
+    actor: str | None = None,
+    engine: Engine | None = None,
+) -> list[dict]:
+    """Return recent data-erasure audit rows for the admin portal.
+
+    The audit table intentionally stores only a phone hash. This display helper
+    keeps that privacy boundary by returning a truncated hash prefix rather than
+    rehydrating customer PII.
+    """
+    db_engine = _engine_or_configured(engine)
+    if db_engine is None:
+        return []
+    safe_limit = max(1, min(int(limit or 100), 500))
+    with session_scope(db_engine) as session:
+        stmt = select(DataErasureAuditRow).order_by(DataErasureAuditRow.performed_at.desc())
+        if actor:
+            stmt = stmt.where(DataErasureAuditRow.actor == actor)
+        rows = session.scalars(stmt.limit(safe_limit)).all()
+        return [
+            {
+                "phone_hash": row.phone_hash[:12],
+                "actor": row.actor,
+                "deleted_count": row.deleted_count,
+                "anonymized_bookings": row.anonymized_bookings,
+                "performed_at": row.performed_at.isoformat() if row.performed_at else "",
+                "notes": row.notes or "",
+            }
+            for row in rows
+        ]
