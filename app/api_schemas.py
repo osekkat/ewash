@@ -158,12 +158,18 @@ class TimeSlotOut(BaseModel):
     period: str
 
 
+class StaffContactOut(BaseModel):
+    whatsapp_phone: str
+    available: bool
+
+
 class BootstrapResponse(BaseModel):
     categories: list[CategoryOut]
     services: dict[str, list[ServiceOut]]  # keys: 'wash'+'detailing' (cars) OR 'moto'
     centers: list[CenterOut]
     time_slots: list[TimeSlotOut]
     closed_dates: list[str]
+    staff_contact: StaffContactOut
     # Echoes the ETag seed so PWA logs include the catalog revision.
     catalog_version: str
 
@@ -217,6 +223,7 @@ __all__ = [
     "CategoryOut",
     "CenterOut",
     "TimeSlotOut",
+    "StaffContactOut",
     "BootstrapResponse",
     "BookingListItemOut",
     "BookingsListResponse",

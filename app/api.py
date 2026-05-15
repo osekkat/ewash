@@ -1,25 +1,31 @@
 """PWA-facing /api/v1 router skeleton and shared error handling."""
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
+import time
 from datetime import datetime, timedelta
 from typing import Literal
 
-from fastapi import APIRouter, FastAPI, Query, Request
+from fastapi import APIRouter, FastAPI, Query, Request, Response
 from fastapi.responses import JSONResponse
+from slowapi.util import get_remote_address
 
-from app import api_validation, catalog
+from app import api_validation, catalog, notifications
 from app.api_schemas import (
+    BootstrapResponse,
     CategoryOut,
     CenterOut,
     ErrorResponse,
     PromoValidateRequest,
     PromoValidateResponse,
     ServiceOut,
+    StaffContactOut,
     TimeSlotOut,
 )
 from app.notifications import InvalidPhone
+from app.rate_limit import limiter
 
 logger = logging.getLogger("ewash.api")
 
@@ -27,6 +33,8 @@ router = APIRouter(
     prefix="/api/v1",
     tags=["pwa-api"],
 )
+
+_BOOTSTRAP_CACHE_CONTROL = "public, max-age=60, stale-while-revalidate=300"
 
 _DOMAIN_EXC_MAP: dict[type[Exception], tuple[int, str]] = {
     api_validation.ClosedDate: (400, api_validation.ClosedDate.error_code),
@@ -74,30 +82,21 @@ def _service_out(
     )
 
 
-@router.get("/catalog/services", response_model=dict[str, list[ServiceOut]])
-async def get_services(
-    category: Literal["A", "B", "C", "MOTO"] = Query(...),
-    promo: str | None = Query(None, max_length=40),
+def _collect_services(
+    *,
+    category: Literal["A", "B", "C", "MOTO"],
+    promo: str | None,
 ) -> dict[str, list[ServiceOut]]:
-    """List bookable services with server-computed catalog pricing."""
     promo_code = catalog.normalize_promo_code(promo) if promo else None
 
     if category == "MOTO":
-        result = {
+        return {
             "moto": [
                 _service_out(service, bucket="moto", category=category, promo_code=promo_code)
                 for service in catalog.SERVICES_MOTO
             ]
         }
-        logger.info(
-            "catalog.services listed category=%s promo=%s count_moto=%d",
-            category,
-            promo_code or "-",
-            len(result["moto"]),
-        )
-        return result
-
-    result = {
+    return {
         "wash": [
             _service_out(service, bucket="wash", category=category, promo_code=promo_code)
             for service in catalog.SERVICES_WASH
@@ -112,6 +111,26 @@ async def get_services(
             for service in catalog.SERVICES_DETAILING
         ],
     }
+
+
+@router.get("/catalog/services", response_model=dict[str, list[ServiceOut]])
+async def get_services(
+    category: Literal["A", "B", "C", "MOTO"] = Query(...),
+    promo: str | None = Query(None, max_length=40),
+) -> dict[str, list[ServiceOut]]:
+    """List bookable services with server-computed catalog pricing."""
+    promo_code = catalog.normalize_promo_code(promo) if promo else None
+    result = _collect_services(category=category, promo=promo)
+
+    if category == "MOTO":
+        logger.info(
+            "catalog.services listed category=%s promo=%s count_moto=%d",
+            category,
+            promo_code or "-",
+            len(result["moto"]),
+        )
+        return result
+
     logger.info(
         "catalog.services listed category=%s promo=%s count_wash=%d count_detailing=%d",
         category,
@@ -187,21 +206,29 @@ def _build_category_payload() -> list[CategoryOut]:
     return payload
 
 
+def _collect_categories() -> list[CategoryOut]:
+    return _build_category_payload()
+
+
 @router.get("/catalog/categories", response_model=list[CategoryOut])
 async def list_catalog_categories() -> list[CategoryOut]:
     """Vehicle categories: 3 car tiers + Moto/Scooter."""
-    categories = _build_category_payload()
+    categories = _collect_categories()
     logger.info("catalog.categories listed count=%d", len(categories))
     return categories
+
+
+def _collect_centers() -> list[CenterOut]:
+    return [
+        CenterOut(id=center_id, name=name, details=details or "")
+        for center_id, name, details in catalog.active_centers()
+    ]
 
 
 @router.get("/catalog/centers", response_model=list[CenterOut])
 async def list_catalog_centers() -> list[CenterOut]:
     """Active stand/center options for the location-picker step."""
-    centers = [
-        CenterOut(id=center_id, name=name, details=details or "")
-        for center_id, name, details in catalog.active_centers()
-    ]
+    centers = _collect_centers()
     logger.info("catalog.centers listed count=%d", len(centers))
     return centers
 
@@ -258,6 +285,11 @@ def _slots_with_lead_filter(
         if candidate >= cutoff:
             available.append(TimeSlotOut(id=slot_id, label=label, period=period))
     return available, cutoff, len(all_slots)
+
+
+def _collect_time_slots(date_iso: str | None) -> list[TimeSlotOut]:
+    available, _cutoff, _total = _slots_with_lead_filter(date_iso=date_iso)
+    return available
 
 
 @router.get("/catalog/time-slots", response_model=list[TimeSlotOut])
@@ -365,11 +397,100 @@ async def list_catalog_closed_dates() -> list[str]:
     return closed
 
 
+def _collect_closed_dates() -> list[str]:
+    return sorted(catalog.active_closed_dates())
+
+
+def _collect_staff_contact() -> StaffContactOut:
+    config = notifications.get_booking_notification_settings()
+    if config.phone_number:
+        return StaffContactOut(whatsapp_phone=f"+{config.phone_number}", available=True)
+    return StaffContactOut(whatsapp_phone="", available=False)
+
+
+def _bootstrap_etag(
+    *,
+    catalog_version: str,
+    category: str | None,
+    promo_code: str | None,
+) -> str:
+    etag_input = f"{catalog_version}|{category or '-'}|{promo_code or '-'}"
+    digest = hashlib.sha256(etag_input.encode("utf-8")).hexdigest()[:16]
+    return f'W/"{digest}"'
+
+
+def _etag_matches(if_none_match: str, etag: str) -> bool:
+    return any(part.strip() == etag for part in if_none_match.split(","))
+
+
+@router.get("/bootstrap", response_model=BootstrapResponse)
+@limiter.limit("60/minute", key_func=get_remote_address)
+async def get_bootstrap(
+    request: Request,
+    response: Response,
+    category: Literal["A", "B", "C", "MOTO"] | None = Query(None),
+    promo: str | None = Query(None, max_length=40),
+) -> BootstrapResponse | Response:
+    """Single round-trip catalog hydration for the booking flow."""
+    started = time.perf_counter()
+    promo_code = catalog.normalize_promo_code(promo) if promo else None
+    catalog_version = catalog.compute_catalog_etag_seed()
+    etag = _bootstrap_etag(
+        catalog_version=catalog_version,
+        category=category,
+        promo_code=promo_code,
+    )
+
+    if _etag_matches(request.headers.get("If-None-Match", ""), etag):
+        duration_ms = (time.perf_counter() - started) * 1000
+        logger.info(
+            "catalog.bootstrap category=%s promo=%s etag=%s has_services=%s cache_hit=%d duration_ms=%.1f",
+            category or "-",
+            promo_code or "-",
+            etag,
+            str(bool(category)).lower(),
+            304,
+            duration_ms,
+        )
+        return Response(
+            status_code=304,
+            headers={
+                "ETag": etag,
+                "Cache-Control": _BOOTSTRAP_CACHE_CONTROL,
+            },
+        )
+
+    services = _collect_services(category=category, promo=promo) if category else {}
+    body = BootstrapResponse(
+        categories=_collect_categories(),
+        services=services,
+        centers=_collect_centers(),
+        time_slots=_collect_time_slots(date_iso=None),
+        closed_dates=_collect_closed_dates(),
+        staff_contact=_collect_staff_contact(),
+        catalog_version=catalog_version,
+    )
+    response.headers["ETag"] = etag
+    response.headers["Cache-Control"] = _BOOTSTRAP_CACHE_CONTROL
+    duration_ms = (time.perf_counter() - started) * 1000
+    logger.info(
+        "catalog.bootstrap category=%s promo=%s etag=%s has_services=%s cache_hit=%d duration_ms=%.1f",
+        category or "-",
+        promo_code or "-",
+        etag,
+        str(bool(services)).lower(),
+        200,
+        duration_ms,
+    )
+    return body
+
+
 __all__ = [
     "_DOMAIN_EXC_MAP",
     "_slots_with_lead_filter",
     "api_exception_handler",
     "domain_error_response",
+    "get_bootstrap",
     "get_services",
     "install_exception_handlers",
     "list_catalog_categories",

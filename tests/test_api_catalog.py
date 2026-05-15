@@ -2,18 +2,178 @@
 from __future__ import annotations
 
 import logging
+from unittest import TestCase
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app import api, catalog
+from app.rate_limit import limiter
 
 
 def _client() -> TestClient:
     app = FastAPI()
+    app.state.limiter = limiter
     app.include_router(api.router)
     api.install_exception_handlers(app)
     return TestClient(app)
+
+
+# ── /bootstrap ────────────────────────────────────────────────────────────
+
+
+def test_bootstrap_without_category_returns_shell_shape():
+    with _client() as client:
+        response = client.get("/api/v1/bootstrap")
+
+    case = TestCase()
+    assert response.status_code == 200
+    assert response.headers["ETag"].startswith('W/"')
+    assert response.headers["Cache-Control"] == "public, max-age=60, stale-while-revalidate=300"
+    body = response.json()
+    assert body["services"] == {}
+    assert body["categories"]
+    assert body["centers"]
+    assert body["time_slots"]
+    assert "closed_dates" in body
+    case.assertEqual(body["staff_contact"], {"whatsapp_phone": "", "available": False})
+    assert body["catalog_version"] == catalog.compute_catalog_etag_seed()
+
+
+def test_bootstrap_with_category_populates_services_for_that_category():
+    with _client() as client:
+        response = client.get("/api/v1/bootstrap?category=A")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body["services"]) == {"wash", "detailing"}
+    assert len(body["services"]["wash"]) == len(catalog.SERVICES_WASH)
+    assert body["services"]["wash"][0]["price_dh"] == catalog.service_price("svc_ext", "A")
+
+
+def test_bootstrap_etag_304_round_trip_without_category():
+    with _client() as client:
+        first = client.get("/api/v1/bootstrap")
+        second = client.get("/api/v1/bootstrap", headers={"If-None-Match": first.headers["ETag"]})
+
+    assert first.status_code == 200
+    assert second.status_code == 304
+    assert second.content == b""
+    assert second.headers["ETag"] == first.headers["ETag"]
+    assert second.headers["Cache-Control"] == "public, max-age=60, stale-while-revalidate=300"
+
+
+def test_bootstrap_etag_304_round_trip_with_category_and_promo():
+    with _client() as client:
+        first = client.get("/api/v1/bootstrap?category=B&promo=ys26")
+        second = client.get(
+            "/api/v1/bootstrap?category=B&promo=YS26",
+            headers={"If-None-Match": first.headers["ETag"]},
+        )
+
+    assert first.status_code == 200
+    assert second.status_code == 304
+    assert second.headers["ETag"] == first.headers["ETag"]
+
+
+def test_bootstrap_etag_differs_without_and_with_category():
+    with _client() as client:
+        no_category = client.get("/api/v1/bootstrap")
+        category_a = client.get("/api/v1/bootstrap?category=A")
+
+    assert no_category.headers["ETag"] != category_a.headers["ETag"]
+
+
+def test_bootstrap_etag_differs_per_category():
+    with _client() as client:
+        category_a = client.get("/api/v1/bootstrap?category=A")
+        category_b = client.get("/api/v1/bootstrap?category=B")
+
+    assert category_a.headers["ETag"] != category_b.headers["ETag"]
+
+
+def test_bootstrap_etag_differs_per_promo():
+    with _client() as client:
+        no_promo = client.get("/api/v1/bootstrap?category=B")
+        promo = client.get("/api/v1/bootstrap?category=B&promo=YS26")
+
+    assert no_promo.headers["ETag"] != promo.headers["ETag"]
+
+
+def test_bootstrap_catalog_edit_invalidates_etag(monkeypatch, tmp_path):
+    from app import catalog as catalog_module
+    from app.config import settings
+    from app.db import init_db, make_engine
+
+    db_url = f"sqlite+pysqlite:///{tmp_path / 'api-bootstrap-catalog.db'}"
+    engine = make_engine(db_url)
+    init_db(engine)
+    monkeypatch.setattr(settings, "database_url", db_url)
+    catalog_module.catalog_cache_clear()
+    try:
+        with _client() as client:
+            before = client.get("/api/v1/bootstrap?category=A").headers["ETag"]
+        catalog_module.upsert_public_prices({("svc_ext", "A"): 91}, engine=engine)
+        catalog_module.catalog_cache_clear()
+        with _client() as client:
+            after = client.get("/api/v1/bootstrap?category=A").headers["ETag"]
+    finally:
+        catalog_module.catalog_cache_clear()
+
+    assert before != after
+
+
+def test_bootstrap_staff_contact_reads_notification_settings(monkeypatch, tmp_path):
+    from app.config import settings
+    from app.db import init_db, make_engine
+    from app.notifications import notification_cache_clear, upsert_booking_notification_settings
+
+    db_url = f"sqlite+pysqlite:///{tmp_path / 'api-bootstrap-notifications.db'}"
+    engine = make_engine(db_url)
+    init_db(engine)
+    monkeypatch.setattr(settings, "database_url", db_url)
+    notification_cache_clear()
+    upsert_booking_notification_settings(
+        enabled=True,
+        phone_number="+212 611 204 502",
+        template_name="booking_alert",
+        template_language="fr",
+        engine=engine,
+    )
+    try:
+        with _client() as client:
+            body = client.get("/api/v1/bootstrap").json()
+    finally:
+        notification_cache_clear()
+
+    TestCase().assertEqual(
+        body["staff_contact"],
+        {"whatsapp_phone": "+212611204502", "available": True},
+    )
+
+
+def test_bootstrap_logs_cache_status_for_200_and_304(caplog):
+    caplog.set_level(logging.INFO, logger="ewash.api")
+    with _client() as client:
+        first = client.get("/api/v1/bootstrap?category=A&promo=YS26")
+        client.get(
+            "/api/v1/bootstrap?category=A&promo=YS26",
+            headers={"If-None-Match": first.headers["ETag"]},
+        )
+
+    messages = [rec.message for rec in caplog.records]
+    assert any(
+        "catalog.bootstrap category=A promo=YS26" in line
+        and "has_services=true" in line
+        and "cache_hit=200" in line
+        and "duration_ms=" in line
+        for line in messages
+    )
+    assert any(
+        "catalog.bootstrap category=A promo=YS26" in line
+        and "cache_hit=304" in line
+        for line in messages
+    )
 
 
 def test_services_car_category_returns_wash_and_detailing_groups() -> None:
