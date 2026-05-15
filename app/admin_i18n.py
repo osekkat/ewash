@@ -132,6 +132,9 @@ _TRANSLATIONS: dict[str, dict[str, str]] = {
         "status.completed": "Voiture nettoyée",
         "status.completed_with_issue": "Terminée avec incident",
         "status.refunded": "Remboursée",
+        "admin.source.whatsapp": "WhatsApp",
+        "admin.source.api": "PWA",
+        "admin.source.admin": "Admin",
     },
     "en": {
         "nav.dashboard": "Dashboard",
@@ -255,6 +258,9 @@ _TRANSLATIONS: dict[str, dict[str, str]] = {
         "status.completed": "Completed",
         "status.completed_with_issue": "Completed with issue",
         "status.refunded": "Refunded",
+        "admin.source.whatsapp": "WhatsApp",
+        "admin.source.api": "PWA",
+        "admin.source.admin": "Admin",
     },
 }
 

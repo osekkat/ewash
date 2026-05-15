@@ -72,6 +72,43 @@ def _status_label(status_value: str, locale: str) -> str:
     return status_value if label == key else label
 
 
+# Source → (emoji, fallback English label, CSS class). The displayed label is
+# resolved via t("admin.source.<source>", locale); the tuple's middle slot is
+# only used when the i18n lookup misses (defensive — admin_i18n.py declares
+# all three keys today).
+_SOURCE_BADGES: dict[str, tuple[str, str, str]] = {
+    "whatsapp": ("📱", "WhatsApp", "src-wa"),
+    "api":      ("🌐", "PWA",      "src-pwa"),
+    "admin":    ("👤", "Admin",    "src-admin"),
+}
+
+
+def _source_badge(source: str | None, *, locale: str = "fr") -> str:
+    """Return an inline-HTML badge for a booking's `source` value.
+
+    ``source`` may be ``None`` or an unknown string — both fall back to the
+    WhatsApp badge so legacy rows persisted before the column existed render
+    consistently. The label is i18n'd via ``admin.source.<source>``; the
+    badge ``title`` attribute carries the raw source value for hover-debug.
+
+    The returned HTML is safe for direct insertion into the admin template:
+    ``source`` is escaped before being placed in attribute context, and the
+    localized label is escaped before being placed in text context.
+    """
+    src = source or "whatsapp"
+    icon, fallback_label, css = _SOURCE_BADGES.get(src, _SOURCE_BADGES["whatsapp"])
+    if src in _SOURCE_BADGES:
+        key = f"admin.source.{src}"
+        localized = t(key, locale)
+        label = fallback_label if localized == key else localized
+    else:
+        label = fallback_label
+    return (
+        f'<span class="badge {css}" title="{escape(src)}">'
+        f'{icon} {escape(label)}</span>'
+    )
+
+
 def _language_switch(locale: str) -> str:
     links = []
     for supported in SUPPORTED_LOCALES:
@@ -165,6 +202,10 @@ def _layout(*, locale: str, title: str, body: str, active_path: str = "/admin") 
     .status-list {{ display: grid; gap: 10px; margin-top: 18px; }}
     .status-item {{ display: flex; justify-content: space-between; align-items: center; padding: 12px; border-radius: 12px; background: rgba(255,255,255,0.03); border: 1px solid var(--border-soft); color: var(--soft); }}
     .dot {{ width: 8px; height: 8px; border-radius: 999px; background: var(--good); display: inline-block; margin-right: 8px; }}
+    .badge {{ display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 999px; font-size: 12px; font-weight: 510; line-height: 1; }}
+    .badge.src-wa {{ background: #25D366; color: #fff; }}
+    .badge.src-pwa {{ background: #7170ff; color: #fff; }}
+    .badge.src-admin {{ background: #888; color: #fff; }}
     .soon {{ color: var(--muted); font-size: 13px; }}
     form {{ max-width: 420px; margin-top: 24px; padding: 22px; border: 1px solid var(--border); border-radius: 16px; background: rgba(255,255,255,0.035); }}
     label {{ color: var(--soft); font-size: 14px; }}
