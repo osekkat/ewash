@@ -20,6 +20,7 @@ from sqlalchemy import Engine, func, select, or_
 from sqlalchemy.exc import IntegrityError
 
 from .booking import Booking, all_bookings
+from .admin_i18n import t as admin_t
 from .config import settings
 from .db import init_db, make_engine, session_scope
 from .models import (
@@ -1291,6 +1292,59 @@ def verify_customer_token(
             return None
         row.last_used_at = datetime.now(timezone.utc)
         return row.customer_phone
+
+
+_CUSTOMER_BOOKING_LIST_LIMIT_MAX = 100
+
+
+def list_bookings_for_token(
+    token_plaintext: str | None,
+    *,
+    limit: int = 20,
+    engine: Engine | None = None,
+) -> list[dict]:
+    """Return the customer-safe recent-booking view for a PWA token bearer."""
+    if not token_plaintext:
+        return []
+    db_engine = _engine_or_configured(engine)
+    if db_engine is None:
+        return []
+    phone = verify_customer_token(token_plaintext, engine=db_engine)
+    if phone is None:
+        return []
+
+    bounded_limit = max(0, min(int(limit), _CUSTOMER_BOOKING_LIST_LIMIT_MAX))
+    with session_scope(db_engine) as session:
+        rows = session.scalars(
+            select(BookingRow)
+            .where(BookingRow.customer_phone == phone)
+            .order_by(BookingRow.created_at.desc(), BookingRow.id.desc())
+            .limit(bounded_limit)
+        ).all()
+        return [_to_customer_booking_view(row) for row in rows]
+
+
+def _to_customer_booking_view(row: BookingRow) -> dict:
+    """Project a booking row to fields safe for the customer API."""
+    return {
+        "ref": row.ref,
+        "status": row.status,
+        "status_label_fr": admin_t(f"status.{row.status}", "fr"),
+        "status_label_en": admin_t(f"status.{row.status}", "en"),
+        "service_label": row.service_label or row.service_id or "",
+        "vehicle_label": row.vehicle_type or "",
+        "date_label": row.date_label or "",
+        "slot_label": row.slot or "",
+        "location_label": _customer_booking_location_label(row),
+        "total_price_dh": row.total_price_dh or 0,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+    }
+
+
+def _customer_booking_location_label(row: BookingRow) -> str:
+    if row.location_mode == "home":
+        return "À domicile"
+    return row.center or row.location_name or "Au stand"
 
 
 def find_booking_by_client_request_id(

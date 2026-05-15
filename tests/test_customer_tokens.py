@@ -11,14 +11,14 @@ configure.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import select
 
 from app.db import init_db, make_engine, session_scope
-from app.models import Customer, CustomerTokenRow
-from app.persistence import mint_customer_token, verify_customer_token
+from app.models import BookingRow, Customer, CustomerTokenRow
+from app.persistence import list_bookings_for_token, mint_customer_token, verify_customer_token
 from app.security import hash_token
 
 
@@ -28,6 +28,43 @@ def _engine_with_customer(phone: str = "212600000100"):
     with session_scope(engine) as session:
         session.add(Customer(phone=phone, display_name="Test"))
     return engine, phone
+
+
+def _add_booking(
+    session,
+    *,
+    phone: str,
+    ref: str,
+    created_at: datetime,
+    location_mode: str = "center",
+) -> None:
+    session.add(
+        BookingRow(
+            ref=ref,
+            customer_phone=phone,
+            status="pending_ewash_confirmation",
+            customer_name="Test Customer",
+            vehicle_type="Citadine",
+            car_model="Clio",
+            color="Bleu",
+            service_id="svc_ext",
+            service_label="Lavage extérieur",
+            location_mode=location_mode,
+            center="Ewash Bouskoura",
+            location_name="Ewash Bouskoura",
+            address="Rue privée 123",
+            address_text="Rue privée 123",
+            location_address="Rue privée 123, Bouskoura",
+            latitude=33.4,
+            longitude=-7.6,
+            date_label="Aujourd'hui",
+            slot="10:00-12:00",
+            note="Sonnez au portail",
+            total_price_dh=90,
+            raw_booking_json='{"address":"Rue privée 123"}',
+            created_at=created_at,
+        )
+    )
 
 
 def test_mint_customer_token_returns_plaintext_and_stores_hash() -> None:
@@ -161,3 +198,72 @@ def test_token_hash_is_64_hex_chars() -> None:
         row = session.scalar(select(CustomerTokenRow))
         assert len(row.token_hash) == 64
         assert all(ch in "0123456789abcdef" for ch in row.token_hash)
+
+
+def test_list_bookings_for_token_returns_empty_for_unknown_or_missing_token() -> None:
+    engine, _ = _engine_with_customer()
+
+    assert list_bookings_for_token(None, engine=engine) == []
+    assert list_bookings_for_token("", engine=engine) == []
+    assert list_bookings_for_token("not-a-real-token", engine=engine) == []
+    assert list_bookings_for_token("not-a-real-token", engine=None) == []
+
+
+def test_list_bookings_for_token_limits_and_sorts_recent_first() -> None:
+    engine, phone = _engine_with_customer()
+    other_phone = "212600000999"
+    now = datetime.now(timezone.utc)
+    with session_scope(engine) as session:
+        session.add(Customer(phone=other_phone, display_name="Other"))
+        _add_booking(session, phone=phone, ref="EW-2026-0001", created_at=now - timedelta(days=2))
+        _add_booking(session, phone=phone, ref="EW-2026-0002", created_at=now)
+        _add_booking(session, phone=phone, ref="EW-2026-0003", created_at=now - timedelta(days=1))
+        _add_booking(session, phone=other_phone, ref="EW-2026-9999", created_at=now + timedelta(days=1))
+    token = mint_customer_token(phone, engine=engine)
+
+    items = list_bookings_for_token(token, limit=2, engine=engine)
+
+    assert [item["ref"] for item in items] == ["EW-2026-0002", "EW-2026-0003"]
+
+
+def test_list_bookings_for_token_projects_safe_field_whitelist() -> None:
+    engine, phone = _engine_with_customer()
+    with session_scope(engine) as session:
+        _add_booking(
+            session,
+            phone=phone,
+            ref="EW-2026-0001",
+            created_at=datetime.now(timezone.utc),
+            location_mode="home",
+        )
+    token = mint_customer_token(phone, engine=engine)
+
+    item = list_bookings_for_token(token, engine=engine)[0]
+
+    assert set(item) == {
+        "ref",
+        "status",
+        "status_label_fr",
+        "status_label_en",
+        "service_label",
+        "vehicle_label",
+        "date_label",
+        "slot_label",
+        "location_label",
+        "total_price_dh",
+        "created_at",
+    }
+    assert item["status_label_fr"] == "À confirmer par eWash"
+    assert item["status_label_en"] == "Pending eWash confirmation"
+    assert item["location_label"] == "À domicile"
+    assert item["total_price_dh"] == 90
+    for forbidden in (
+        "address",
+        "address_text",
+        "location_address",
+        "latitude",
+        "longitude",
+        "note",
+        "raw_booking_json",
+    ):
+        assert forbidden not in item
