@@ -32,12 +32,14 @@ from .models import (
     ConversationSessionRow,
     Customer,
     CustomerName,
+    CustomerTokenRow,
     CustomerVehicle,
     ReminderRuleRow,
     WhatsappMessageRow,
     VehicleColor,
     VehicleModel,
 )
+from .security import generate_token, hash_token
 
 log = logging.getLogger(__name__)
 H2_REMINDER_KIND = "H-2"
@@ -1201,3 +1203,75 @@ def admin_dashboard_summary(*, engine: Engine | None = None, recent_limit: int =
     except Exception:
         log.exception("admin_dashboard_summary failed")
         return DashboardSummary()
+
+
+# ── Customer tokens (PWA opaque session auth) ───────────────────────────────
+
+
+def mint_customer_token(
+    customer_phone: str,
+    *,
+    engine: Engine | None = None,
+) -> str:
+    """Mint a fresh opaque token for the customer and persist its SHA-256.
+
+    Returns the plaintext exactly once. The PWA stores it in localStorage;
+    subsequent `GET /api/v1/bookings` calls submit it via `X-Ewash-Token`.
+    A DB dump never yields an active token because only the hash is stored.
+
+    Multiple tokens per phone are allowed by design — every fresh booking
+    that doesn't carry an existing token mints a new one (the design accepts
+    that an idempotent-replay scenario where the original response was lost
+    leaves the old token orphaned but still valid).
+
+    If no engine is configured (DB-absent test paths), the plaintext is
+    still returned so the API response shape stays valid; the PWA's
+    follow-up read will then 401 since nothing was persisted.
+    """
+    plaintext, digest = generate_token()
+    db_engine = _engine_or_configured(engine)
+    if db_engine is None:
+        return plaintext
+    with session_scope(db_engine) as session:
+        session.add(CustomerTokenRow(
+            token_hash=digest,
+            customer_phone=customer_phone,
+        ))
+    return plaintext
+
+
+def verify_customer_token(
+    plaintext: str | None,
+    *,
+    expected_phone: str | None = None,
+    engine: Engine | None = None,
+) -> str | None:
+    """Look up the customer phone owning `plaintext`, or None.
+
+    Hashes the input and queries `customer_tokens.token_hash` (indexed,
+    unique). If `expected_phone` is provided, the row's `customer_phone`
+    must match — an attacker who stole a token cannot use it to attribute
+    new bookings to someone else's phone.
+
+    Side effect on a successful match: `last_used_at` is bumped to now, so
+    a future admin revocation pass can identify stale tokens.
+
+    Timing-attack note: SQL `=` against an indexed column is O(1) and
+    doesn't leak byte-by-byte timing the way a Python string compare can.
+    """
+    if not plaintext:
+        return None
+    digest = hash_token(plaintext)
+    db_engine = _engine_or_configured(engine)
+    if db_engine is None:
+        return None
+    with session_scope(db_engine) as session:
+        row = session.scalar(
+            select(CustomerTokenRow).where(CustomerTokenRow.token_hash == digest)
+        )
+        if row is None:
+            return None
+        if expected_phone is not None and row.customer_phone != expected_phone:
+            return None
+        row.last_used_at = datetime.now(timezone.utc)
+        return row.customer_phone
