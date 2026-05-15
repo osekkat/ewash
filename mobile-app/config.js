@@ -1,3 +1,4 @@
+// Production default: web-production-1a800.up.railway.app (Railway "web" service).
 // Sets window.EWASH_API_BASE for the PWA. Resolved in order:
 //   1. ?api=<url> query param (dev only — handy when pointing the PWA at a
 //      local FastAPI on http://localhost:8000 or an ngrok tunnel).
