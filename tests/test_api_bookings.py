@@ -12,8 +12,16 @@ from sqlalchemy import select
 from app import api, catalog, notifications, persistence
 from app.config import settings
 from app.db import init_db, make_engine, session_scope
-from app.models import BookingLineItemRow, BookingRow, BookingStatusEventRow, Customer, CustomerName
+from app.models import (
+    BookingLineItemRow,
+    BookingRow,
+    BookingStatusEventRow,
+    Customer,
+    CustomerName,
+    CustomerTokenRow,
+)
 from app.rate_limit import limiter
+from app.security import hash_token
 
 case = TestCase()
 
@@ -78,7 +86,7 @@ def test_create_booking_happy_path_persists_pending_api_booking(api_db, caplog):
     assert body["ref"].startswith("EW-")
     assert body["price_dh"] == catalog.service_price("svc_cpl", "A", promo_code="YS26")
     assert body["total_dh"] == body["price_dh"]
-    assert body["bookings_token"] == ""
+    assert body["bookings_token"]
     case.assertEqual(
         body["line_items"],
         [
@@ -117,6 +125,9 @@ def test_create_booking_happy_path_persists_pending_api_booking(api_db, caplog):
         assert customer.display_name == "Oussama Test"
         name = session.scalars(select(CustomerName)).one()
         assert name.display_name == "Oussama Test"
+        token = session.scalars(select(CustomerTokenRow)).one()
+        assert token.customer_phone == "212611204502"
+        assert token.token_hash == hash_token(body["bookings_token"])
 
         line_item = session.scalars(select(BookingLineItemRow)).one()
         assert line_item.booking_id == row.id
@@ -131,9 +142,102 @@ def test_create_booking_happy_path_persists_pending_api_booking(api_db, caplog):
 
     messages = "\n".join(record.getMessage() for record in caplog.records)
     assert "ewash.api.bookings.create ref=" in messages
+    assert "bookings.token minted ref=" in messages
     assert "source=api" in messages
     assert "phone_hash=" in messages
     assert "212611204502" not in messages
+
+
+def test_create_booking_reuses_existing_same_phone_token(api_db, caplog):
+    caplog.set_level(logging.INFO, logger="ewash.api")
+
+    with _client() as client:
+        first = client.post(
+            "/api/v1/bookings",
+            json=_payload(client_request_id="booking-token-1"),
+        ).json()
+        second_response = client.post(
+            "/api/v1/bookings",
+            json=_payload(
+                bookings_token=first["bookings_token"],
+                client_request_id="booking-token-2",
+            ),
+        )
+
+    assert second_response.status_code == 200
+    assert second_response.json()["bookings_token"] == first["bookings_token"]
+
+    with session_scope(api_db) as session:
+        rows = session.scalars(select(CustomerTokenRow)).all()
+        assert len(rows) == 1
+        assert rows[0].customer_phone == "212611204502"
+
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert "bookings.token reused ref=" in messages
+    assert "212611204502" not in messages
+
+
+def test_create_booking_mints_fresh_token_for_bogus_request_token(api_db, caplog):
+    caplog.set_level(logging.INFO, logger="ewash.api")
+    bogus = "not-a-real-token-12345"
+
+    with _client() as client:
+        response = client.post(
+            "/api/v1/bookings",
+            json=_payload(
+                bookings_token=bogus,
+                client_request_id="booking-token-bogus",
+            ),
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["bookings_token"]
+    assert body["bookings_token"] != bogus
+
+    with session_scope(api_db) as session:
+        rows = session.scalars(select(CustomerTokenRow)).all()
+        assert len(rows) == 1
+        assert rows[0].token_hash == hash_token(body["bookings_token"])
+        assert rows[0].customer_phone == "212611204502"
+
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert "bookings.token minted ref=" in messages
+    assert bogus not in messages
+
+
+def test_create_booking_mints_fresh_token_for_other_phone_token(api_db, caplog):
+    other_phone = "212699999999"
+    with session_scope(api_db) as session:
+        session.add(Customer(phone=other_phone, display_name="Other"))
+    other_token = persistence.mint_customer_token(other_phone, engine=api_db)
+    caplog.set_level(logging.INFO, logger="ewash.api")
+
+    with _client() as client:
+        response = client.post(
+            "/api/v1/bookings",
+            json=_payload(
+                bookings_token=other_token,
+                client_request_id="booking-token-other-phone",
+            ),
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["bookings_token"]
+    assert body["bookings_token"] != other_token
+
+    with session_scope(api_db) as session:
+        rows = session.scalars(
+            select(CustomerTokenRow).order_by(CustomerTokenRow.customer_phone)
+        ).all()
+        assert [row.customer_phone for row in rows] == ["212611204502", other_phone]
+        assert any(row.token_hash == hash_token(body["bookings_token"]) for row in rows)
+        assert any(row.token_hash == hash_token(other_token) for row in rows)
+
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert "bookings.token minted ref=" in messages
+    assert other_phone not in messages
 
 
 def test_create_booking_single_addon_persists_legacy_and_line_item(api_db):
