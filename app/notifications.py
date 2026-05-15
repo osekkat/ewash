@@ -67,12 +67,25 @@ def normalize_phone(phone_number: str | None) -> str:
     characters. Raises :class:`InvalidPhone` when the cleaned result is empty,
     1-7 digits, or 21+ digits.
 
+    Moroccan local-format inputs are promoted to the 212-prefixed canonical:
+      * 10 digits starting with ``0`` (``0611204502``) → ``212611204502``
+      * 9 digits with no leading 0 (``611204502``) → ``212611204502``
+        — this is what the PWA submits, since its recap UI shows ``+212`` as
+        a visual prefix and the user only types the local part.
+
+    Inputs that already begin with ``212`` or carry a different country code
+    pass through unchanged.
+
     Used by both the WhatsApp path (via :func:`upsert_booking_notification_settings`)
     and the PWA path (`POST /api/v1/bookings`) so the same customer reaching
     Ewash through either channel dedupes to the same `customers.phone` row.
     """
     raw = phone_number or ""
     digits = re.sub(r"\D+", "", raw)
+    if len(digits) == 10 and digits.startswith("0"):
+        digits = "212" + digits[1:]
+    elif len(digits) == 9:
+        digits = "212" + digits
     if not (8 <= len(digits) <= 20):
         raise InvalidPhone(
             f"phone={raw!r} normalized to {digits!r} of length {len(digits)}, "

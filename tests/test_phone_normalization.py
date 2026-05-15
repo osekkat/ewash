@@ -8,17 +8,34 @@ import pytest
 from app.notifications import InvalidPhone, _normalize_phone_number, normalize_phone
 
 
-def test_normalize_phone_identity_when_already_clean():
+def test_normalize_phone_identity_when_already_canonical():
+    # 212-prefixed input is already canonical and passes through unchanged.
     assert normalize_phone("212611204502") == "212611204502"
-    assert normalize_phone("0611204502") == "0611204502"
 
 
 def test_normalize_phone_strips_internal_whitespace():
-    assert normalize_phone("06 11 20 45 02") == "0611204502"
+    # Whitespace strip composes with the canonical-passthrough path.
+    assert normalize_phone("212 611 204 502") == "212611204502"
 
 
 def test_normalize_phone_strips_plus_and_whitespace():
     assert normalize_phone("+212 6 11 20 45 02") == "212611204502"
+
+
+def test_normalize_phone_moroccan_local_with_leading_zero():
+    # 10-digit Moroccan local format (0XXXXXXXXX) → drop the leading 0 and
+    # prepend 212. Matches the dedup invariant in ewash-6pa.8.13:
+    # "+212 6 11 20 45 02" and "212611204502" must hit one customers row.
+    assert normalize_phone("0611204502") == "212611204502"
+    assert normalize_phone("06 11 20 45 02") == "212611204502"
+
+
+def test_normalize_phone_moroccan_local_no_leading_zero():
+    # 9-digit local format (no leading 0) → prepend 212. This is what the
+    # PWA submits because mobile-app/booking.jsx renders "+212" as a visual
+    # prefix and only sends the user-typed local digits in the payload.
+    assert normalize_phone("611204502") == "212611204502"
+    assert normalize_phone("665883062") == "212665883062"
 
 
 def test_normalize_phone_strips_dashes_and_parens():
@@ -107,4 +124,4 @@ def test_back_compat_alias_still_works():
     # `_normalize_phone_number` is the historical private name; existing callers
     # in app/notifications.py still import it.
     assert _normalize_phone_number is normalize_phone
-    assert _normalize_phone_number("06 11 20 45 02") == "0611204502"
+    assert _normalize_phone_number("06 11 20 45 02") == "212611204502"

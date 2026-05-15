@@ -119,6 +119,24 @@ def _source_badge(source: str | None, *, locale: str = "fr") -> str:
     )
 
 
+def _phone_display(phone: str | None) -> str:
+    """Render a stored phone with a leading ``+`` for the admin UI.
+
+    Phones are stored digits-only (canonicalized via
+    :func:`app.notifications.normalize_phone`), so a Moroccan number sits as
+    ``212665883062`` in Postgres. The UI re-adds the ``+`` prefix so it reads
+    as ``+212665883062``. Anonymized phones (``DEL-…``) and empty values pass
+    through untouched — only inputs whose first char is a digit get prefixed.
+
+    Returns HTML-escaped text safe for direct insertion into a template; call
+    sites should not wrap the result in ``escape()``.
+    """
+    raw = phone or ""
+    if raw and raw[0].isdigit():
+        return escape("+" + raw)
+    return escape(raw)
+
+
 def _language_switch(locale: str) -> str:
     links = []
     for supported in SUPPORTED_LOCALES:
@@ -614,7 +632,7 @@ def _notifications_page(*, locale: str, message: str = "", error: str = "") -> H
 <section class="hero"><div><div class="eyebrow">Ewash Ops</div><h1>{escape(title)}</h1><p>{escape(t('admin.notifications.intro', locale))}</p></div><div class="version-pill"><strong>{escape(t('admin.dashboard.version_label', locale))}</strong> {_ADMIN_VERSION}</div></section>
 
 <section class="dashboard-grid">
-  <article class="empty-panel"><h2>{escape(t('admin.notifications.current', locale))}</h2>{_notice_html(message=message, error=error)}<div class="table-shell"><div class="table-row table-head"><span>{escape(t('admin.notifications.enabled', locale))}</span><span>{escape(t('admin.notifications.phone', locale))}</span><span>{escape(t('admin.notifications.template', locale))}</span></div><div class="table-row"><span>{escape(status_label)}</span><span>{phone_value or '—'}</span><span>{template_value or '—'}<br><small>{language_value}</small></span></div></div><h2 style="margin-top:18px">{escape(t('admin.notifications.template_contract', locale))}</h2><p>{escape(t('admin.notifications.template_contract_body', locale))}</p></article>
+  <article class="empty-panel"><h2>{escape(t('admin.notifications.current', locale))}</h2>{_notice_html(message=message, error=error)}<div class="table-shell"><div class="table-row table-head"><span>{escape(t('admin.notifications.enabled', locale))}</span><span>{escape(t('admin.notifications.phone', locale))}</span><span>{escape(t('admin.notifications.template', locale))}</span></div><div class="table-row"><span>{escape(status_label)}</span><span>{_phone_display(config.phone_number) or '—'}</span><span>{template_value or '—'}<br><small>{language_value}</small></span></div></div><h2 style="margin-top:18px">{escape(t('admin.notifications.template_contract', locale))}</h2><p>{escape(t('admin.notifications.template_contract_body', locale))}</p></article>
   <aside class="empty-panel"><h2>{escape(t('admin.notifications.form_title', locale))}</h2><form class="admin-form" method="post" action="/admin/notifications?lang={escape(locale)}"><label><input type="checkbox" name="enabled"{checked}>{escape(t('admin.notifications.enabled', locale))}</label><label>{escape(t('admin.notifications.phone', locale))}<input name="phone_number" inputmode="tel" placeholder="+212665883062" value="{phone_value}"></label><label>{escape(t('admin.notifications.template', locale))}<input name="template_name" placeholder="new_booking_alert" value="{template_value}"></label><label>{escape(t('admin.notifications.language', locale))}<input name="template_language" placeholder="fr" value="{language_value}"></label><p><button type="submit">{escape(t('action.save', locale))}</button></p></form></aside>
 </section>"""
     return HTMLResponse(
@@ -742,7 +760,7 @@ def _bookings_page(*, locale: str, message: str = "", error: str = "") -> HTMLRe
         rows = "".join(
             "<div class=\"table-row booking-row\">"
             f'<span>{escape(item.ref)}<br>{_source_badge(item.source, locale=locale)}</span>'
-            f"<span>{escape(item.customer_name)}<br><small>{escape(item.customer_phone)}</small></span>"
+            f"<span>{escape(item.customer_name)}<br><small>{_phone_display(item.customer_phone)}</small></span>"
             f"<span>{escape(item.vehicle_label)}</span>"
             f"<span>{_booking_service_cell(item)}</span>"
             f"<span>{escape(item.date_label)}<br><small>{escape(item.slot)}</small></span>"
@@ -804,7 +822,7 @@ def _customers_page(*, locale: str, message: str = "", error: str = "") -> HTMLR
         rows = "".join(
             "<div class=\"table-row customer-row\">"
             f"<span>{escape(item.display_name)}</span>"
-            f"<span>{escape(item.phone)}</span>"
+            f"<span>{_phone_display(item.phone)}</span>"
             f"<span>{escape(', '.join(item.vehicle_labels) or '—')}</span>"
             f"<span>{item.booking_count} réservation{'s' if item.booking_count != 1 else ''}</span>"
             f"<span>{escape(item.last_bot_stage_label or '—')}<br><small>{escape(item.last_bot_stage or '')}</small></span>"
