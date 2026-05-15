@@ -359,8 +359,35 @@ def _idempotent_booking_response(
     *,
     engine,
     request: Request,
+    caller_phone_raw: str,
 ) -> BookingCreateResponse | None:
+    """Replay a cached booking response only when the caller owns the booking.
+
+    The lookup key is the customer-supplied ``client_request_id`` (UUIDv4 in
+    the PWA). Pre-bug ewash-416 fix this function returned the cached row to
+    anyone who knew the id, *minting a fresh bookings_token bound to the
+    original customer's phone* — which turned `client_request_id` into a
+    session takeover key whenever it leaked (server logs at line 388, DB
+    column on bookings, etc).
+
+    The fix: before any replay, normalize the caller's ``body.phone`` and
+    require it to match the booking's stored ``customer_phone``. On mismatch
+    (or malformed phone) return ``None`` so the fresh-create path runs — that
+    path then either succeeds for an unrelated client_request_id (impossible
+    by definition because the id was just observed in the DB) or fails
+    through the normal validation envelope, never confirming whether the id
+    existed.
+    """
     if not client_request_id:
+        return None
+
+    try:
+        caller_phone = notifications.normalize_phone(caller_phone_raw)
+    except notifications.InvalidPhone:
+        # Malformed phone — let the fresh-create path emit the canonical
+        # 400 invalid_phone error envelope. Returning None here also closes
+        # the side-channel where "is this client_request_id known?" could be
+        # answered by comparing 4xx error codes.
         return None
 
     with persistence.session_scope(engine) as session:
@@ -369,6 +396,19 @@ def _idempotent_booking_response(
             session=session,
         )
         if row is None:
+            return None
+        if row.customer_phone != caller_phone:
+            # Replay attempt from a caller who doesn't own this booking.
+            # Don't return the cached row, don't mint a token, don't emit
+            # the idempotent_hit log (which would tell an attacker their
+            # id-guess landed). Fall through to the fresh-create path.
+            logger.warning(
+                "ewash.api.idempotent_mismatch client_request_id_hash=%s "
+                "caller_phone_hash=%s row_phone_hash=%s",
+                _hash_for_log(client_request_id),
+                _hash_for_log(caller_phone),
+                _hash_for_log(row.customer_phone),
+            )
             return None
         # Load relationship rows while the session is open so the replay body
         # can be built without issuing more queries after the transaction ends.
@@ -418,6 +458,7 @@ async def create_booking(
         body.client_request_id,
         engine=engine,
         request=request,
+        caller_phone_raw=body.phone,
     )
     if replay is not None:
         return replay
@@ -510,10 +551,14 @@ async def create_booking(
                 )
             persistence.persist_customer_name(phone, booking.name, session=session)
     except IntegrityError:
+        # Concurrent INSERT with the same client_request_id (Postgres partial
+        # unique index). Fall back to the replay path — same caller-phone
+        # guard applies so a racing attacker can't piggyback on a victim's id.
         replay = _idempotent_booking_response(
             body.client_request_id,
             engine=engine,
             request=request,
+            caller_phone_raw=body.phone,
         )
         if replay is not None:
             return replay

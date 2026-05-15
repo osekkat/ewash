@@ -350,10 +350,14 @@ def test_create_booking_mints_fresh_token_for_other_phone_token(api_db, caplog):
     assert other_phone not in messages
 
 
-def test_create_booking_replays_existing_client_request_id_before_validation(
+def test_create_booking_replays_same_client_request_id_for_same_caller(
     api_db,
     caplog,
 ):
+    """The legitimate retry case: same phone + same client_request_id within
+    the same device hits the replay path and gets back the original ref.
+    Each replay mints a fresh bookings_token so the PWA's localStorage stays
+    in sync after a retry that lost the prior response."""
     caplog.set_level(logging.INFO, logger="ewash.api")
 
     with _client() as client:
@@ -365,14 +369,6 @@ def test_create_booking_replays_existing_client_request_id_before_validation(
             "/api/v1/bookings",
             json=_payload(client_request_id="booking-idempotent-1"),
         )
-        replay_response = client.post(
-            "/api/v1/bookings",
-            json=_payload(
-                phone="definitely-not-a-phone",
-                service_id="not-a-real-service",
-                client_request_id="booking-idempotent-1",
-            ),
-        )
 
     assert same_response.status_code == 200
     same = same_response.json()
@@ -382,28 +378,100 @@ def test_create_booking_replays_existing_client_request_id_before_validation(
     assert same["bookings_token"]
     assert same["bookings_token"] != first["bookings_token"]
 
-    assert replay_response.status_code == 200
-    replay = replay_response.json()
-    assert replay["ref"] == first["ref"]
-    assert replay["status"] == "pending_ewash_confirmation"
-    assert replay["service_label"] == first["service_label"]
-    assert replay["line_items"] == first["line_items"]
-    assert replay["is_idempotent_replay"] is True
-    assert replay["bookings_token"]
-    assert replay["bookings_token"] != first["bookings_token"]
-    assert replay["bookings_token"] != same["bookings_token"]
-
     with session_scope(api_db) as session:
         rows = session.scalars(select(BookingRow)).all()
         assert len(rows) == 1
         assert rows[0].client_request_id == "booking-idempotent-1"
         tokens = session.scalars(select(CustomerTokenRow)).all()
-        assert len(tokens) == 3
+        assert len(tokens) == 2  # original + replay
 
     messages = "\n".join(record.getMessage() for record in caplog.records)
     assert "ewash.api.bookings.create ref=" in messages
     assert "ewash.api.idempotent_hit client_request_id=booking-idempotent-1" in messages
-    assert "definitely-not-a-phone" not in messages
+
+
+def test_create_booking_rejects_replay_from_different_caller_phone(api_db, caplog):
+    """Security regression for ewash-416. A caller who learns a victim's
+    ``client_request_id`` (e.g. from leaked logs) must NOT be able to replay
+    the booking with a different ``body.phone`` and walk away with a fresh
+    bookings_token bound to the victim's phone. The replay path now compares
+    ``notifications.normalize_phone(body.phone)`` to ``row.customer_phone``
+    and falls through on mismatch — the attacker hits the normal validation
+    envelope without learning whether the ``client_request_id`` existed."""
+    caplog.set_level(logging.INFO, logger="ewash.api")
+
+    victim_phone = "+212 611-204-502"
+    victim_phone_normalized = notifications.normalize_phone(victim_phone)
+    other_phone = "+212 600-000-700"
+
+    with _client() as client:
+        first = client.post(
+            "/api/v1/bookings",
+            json=_payload(
+                phone=victim_phone,
+                client_request_id="booking-idempotent-attack-1",
+            ),
+        ).json()
+
+        # Attacker knows the client_request_id but submits a different phone.
+        # The replay path must reject; the fresh-create path then runs and
+        # succeeds with a separate ref (different request from the server's
+        # point of view), bound to the attacker's own phone.
+        attack_response = client.post(
+            "/api/v1/bookings",
+            json=_payload(
+                phone=other_phone,
+                client_request_id="booking-idempotent-attack-1",
+            ),
+        )
+
+        # And the same defense applies when the attacker submits a malformed
+        # phone — no information is leaked about the existence of the id.
+        malformed_response = client.post(
+            "/api/v1/bookings",
+            json=_payload(
+                phone="definitely-not-a-phone",
+                client_request_id="booking-idempotent-attack-1",
+            ),
+        )
+
+    # The legitimate booking is untouched.
+    assert first["ref"]
+    assert first["bookings_token"]
+
+    # The attacker's payload created a *fresh* booking under their own phone,
+    # OR returned an integrity error from the partial unique index on
+    # client_request_id (production Postgres). On SQLite (test path) the
+    # column is not uniquely constrained at create_all time, so the request
+    # succeeds with a new ref. Either way, the response MUST NOT contain the
+    # victim's ref or a token bound to the victim's phone.
+    assert attack_response.status_code in (200, 409, 422, 500)
+    if attack_response.status_code == 200:
+        attack = attack_response.json()
+        assert attack["ref"] != first["ref"]
+        assert attack["is_idempotent_replay"] is False
+        # The minted token is bound to the attacker's phone, not the victim's.
+        attack_token_phone = persistence.verify_customer_token(
+            attack["bookings_token"], engine=api_db
+        )
+        assert attack_token_phone == notifications.normalize_phone(other_phone)
+        assert attack_token_phone != victim_phone_normalized
+
+    # Malformed phone returns the normal validation envelope (no special
+    # treatment that would leak the id's existence).
+    assert malformed_response.status_code == 400
+    assert malformed_response.json()["error_code"] == "invalid_phone"
+
+    # Neither attacker request should have produced an "idempotent_hit" log
+    # line for the victim's id (that would tell an attacker their id-guess
+    # landed). The "idempotent_mismatch" line is fine — it's hashed.
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    hit_lines = [
+        line for line in messages.splitlines()
+        if "ewash.api.idempotent_hit" in line
+        and "booking-idempotent-attack-1" in line
+    ]
+    assert hit_lines == [], f"replay leaked via idempotent_hit log: {hit_lines}"
 
 
 def test_create_booking_without_client_request_id_creates_distinct_bookings(api_db):
