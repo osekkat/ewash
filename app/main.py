@@ -6,9 +6,11 @@ Endpoints:
   POST /webhook   → Inbound customer messages (signature-verified)
 """
 import logging
+import secrets
 from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -25,7 +27,32 @@ logging.basicConfig(
 )
 log = logging.getLogger("ewash")
 
+
+def _configure_cors(target_app: FastAPI) -> None:
+    """Wire browser CORS for the planned /api/v1 PWA surface."""
+    if not settings.api_enabled:
+        return
+
+    origins = settings.allowed_origins_list()
+    if not origins and not settings.allowed_origin_regex:
+        log.warning(
+            "API is enabled but CORS is not configured. "
+            "Browsers will reject PWA requests. "
+            "Set ALLOWED_ORIGINS and/or ALLOWED_ORIGIN_REGEX."
+        )
+    target_app.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins,
+        allow_origin_regex=settings.allowed_origin_regex or None,
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Content-Type", "X-Ewash-Token", "If-None-Match"],
+        max_age=600,
+    )
+
+
 app = FastAPI(title="Ewash WhatsApp Agent", version=APP_VERSION.removeprefix("v"))
+_configure_cors(app)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.include_router(admin.router)
 
@@ -42,7 +69,7 @@ async def abandon_stale_conversations(
     """Protected maintenance hook for marking inactive conversation sessions abandoned."""
     if not settings.internal_cron_secret:
         raise HTTPException(status_code=503, detail="Internal cron is not configured")
-    if x_internal_cron_secret != settings.internal_cron_secret:
+    if not secrets.compare_digest(x_internal_cron_secret or "", settings.internal_cron_secret):
         raise HTTPException(status_code=403, detail="Forbidden")
     count = mark_abandoned_conversations()
     return {"abandoned": count}
@@ -51,8 +78,9 @@ async def abandon_stale_conversations(
 @app.get("/webhook", response_class=PlainTextResponse)
 async def verify_webhook(request: Request):
     params = request.query_params
+    verify_token = params.get("hub.verify_token") or ""
     if (params.get("hub.mode") == "subscribe"
-            and params.get("hub.verify_token") == settings.meta_verify_token):
+            and secrets.compare_digest(verify_token, settings.meta_verify_token)):
         log.info("webhook verified OK")
         return PlainTextResponse(content=params.get("hub.challenge") or "", status_code=200)
     log.warning("webhook verification failed mode=%s", params.get("hub.mode"))
