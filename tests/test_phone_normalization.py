@@ -50,19 +50,38 @@ def test_normalize_phone_boundary_20_digits_accepted():
     assert normalize_phone(twenty) == twenty
 
 
-def test_normalize_phone_logs_at_debug_when_input_changed(caplog):
-    caplog.set_level(logging.DEBUG, logger="app.notifications")
-    normalize_phone("+212 6 11 20 45 02")
-    assert any(
-        "phone_normalized" in record.message and "changed=True" in record.message
-        for record in caplog.records
+def test_normalize_phone_logs_at_debug_when_input_changed(monkeypatch):
+    # Patch the module-level logger directly so the test doesn't depend on
+    # pytest caplog, the root logger's effective level, or fileConfig's
+    # disable_existing_loggers (alembic.ini sets that, and earlier tests
+    # in the suite that exercise migrations end up clobbering the
+    # `app.notifications` logger).
+    from app import notifications as notifications_module
+
+    debug_calls: list[tuple[str, tuple, dict]] = []
+    monkeypatch.setattr(
+        notifications_module.log,
+        "debug",
+        lambda *args, **kwargs: debug_calls.append((args[0], args[1:], kwargs)),
     )
+    normalize_phone("+212 6 11 20 45 02")
+    rendered = [fmt % args for fmt, args, _kwargs in debug_calls]
+    assert any(
+        "phone_normalized" in line and "changed=True" in line for line in rendered
+    ), f"no matching log call; saw {rendered}"
 
 
-def test_normalize_phone_no_log_when_input_unchanged(caplog):
-    caplog.set_level(logging.DEBUG, logger="app.notifications")
+def test_normalize_phone_no_log_when_input_unchanged(monkeypatch):
+    from app import notifications as notifications_module
+
+    debug_calls: list[str] = []
+    monkeypatch.setattr(
+        notifications_module.log,
+        "debug",
+        lambda fmt, *args, **kwargs: debug_calls.append(fmt % args),
+    )
     normalize_phone("212611204502")
-    assert not any("phone_normalized" in record.message for record in caplog.records)
+    assert not any("phone_normalized" in line for line in debug_calls)
 
 
 def test_back_compat_alias_still_works():
