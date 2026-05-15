@@ -16,7 +16,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app import api as pwa_api
+from app import api as pwa_api, catalog, notifications, persistence
 from app.api_validation import (
     APIValidationError,
     CASABLANCA_TZ,
@@ -37,7 +37,10 @@ from app.api_validation import (
     validate_service_for_category,
     validate_slot_and_date,
 )
+from app.config import settings
+from app.db import init_db, make_engine
 from app.notifications import InvalidPhone
+from app.rate_limit import limiter
 
 
 def test_closed_date_raises_closed_date() -> None:
@@ -431,3 +434,300 @@ def test_api_unhandled_exception_returns_generic_500() -> None:
         "field": None,
         "details": {},
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# HTTP-level rejection tests via POST /api/v1/bookings
+#
+# The unit tests above isolate each validator function. The integration tests
+# below exercise the full validation contract end-to-end — the PWA sends the
+# request, FastAPI parses the body, the route invokes the validators, the
+# exception handlers in `app.api` translate domain exceptions into the stable
+# envelope. Every documented rejection is asserted at both the status-code and
+# error_code level.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def api_db(monkeypatch, tmp_path):
+    db_url = f"sqlite+pysqlite:///{tmp_path / 'api-validation.db'}"
+    engine = make_engine(db_url)
+    init_db(engine)
+    monkeypatch.setattr(settings, "database_url", db_url)
+    persistence._configured_engine.cache_clear()
+    catalog.catalog_cache_clear()
+    notifications.notification_cache_clear()
+    try:
+        yield engine
+    finally:
+        persistence._configured_engine.cache_clear()
+        catalog.catalog_cache_clear()
+        notifications.notification_cache_clear()
+
+
+def _pwa_client() -> TestClient:
+    app = FastAPI()
+    app.state.limiter = limiter
+    app.include_router(pwa_api.router)
+    pwa_api.install_exception_handlers(app)
+    return TestClient(app)
+
+
+def _booking_payload(**overrides) -> dict:
+    payload = {
+        "phone": "+212 611-204-502",
+        "name": "Oussama Test",
+        "category": "A",
+        "vehicle": {"make": "Dacia Logan", "color": "Blanc"},
+        "location": {"kind": "home", "pin_address": "Villa X"},
+        "service_id": "svc_cpl",
+        "date": "2026-06-15",
+        "slot": "slot_9_11",
+        "addon_ids": [],
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _pin_validator_now(monkeypatch, fixed_now: datetime) -> None:
+    """Pin ``datetime.now`` inside ``app.api_validation`` to a fixed instant.
+
+    Used by the two slot-freshness boundary tests below. The route calls
+    ``validate_slot_and_date`` without an explicit ``now=`` so the validator
+    reads ``datetime.now(tz=CASABLANCA_TZ)`` — monkeypatching the module-level
+    ``datetime`` symbol lets us control that read deterministically without
+    pulling in ``freezegun``.
+    """
+    import app.api_validation as _av
+
+    real_datetime = _av.datetime
+
+    class _FakeDateTime(real_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is None:
+                return fixed_now.replace(tzinfo=None)
+            return fixed_now.astimezone(tz)
+
+    monkeypatch.setattr(_av, "datetime", _FakeDateTime)
+
+
+def test_http_unknown_service_for_category(api_db):
+    with _pwa_client() as client:
+        response = client.post(
+            "/api/v1/bookings",
+            json=_booking_payload(service_id="svc_moto", category="A"),
+        )
+
+    assert response.status_code == 400
+    assert response.headers["X-Ewash-Error-Code"] == "service_category_mismatch"
+    body = response.json()
+    assert body["error_code"] == "service_category_mismatch"
+    assert body["field"] == "service_id"
+
+
+def test_http_unknown_addon_id(api_db):
+    with _pwa_client() as client:
+        response = client.post(
+            "/api/v1/bookings",
+            json=_booking_payload(addon_ids=["svc_nope"]),
+        )
+
+    assert response.status_code == 400
+    body = response.json()
+    assert body["error_code"] == "unknown_addon"
+    assert body["field"] == "addon_ids"
+
+
+def test_http_duplicate_addon(api_db):
+    with _pwa_client() as client:
+        response = client.post(
+            "/api/v1/bookings",
+            json=_booking_payload(addon_ids=["svc_cuir", "svc_cuir"]),
+        )
+
+    assert response.status_code == 400
+    assert response.json()["error_code"] == "duplicate_addon"
+
+
+def test_http_addon_must_be_detailing(api_db):
+    # svc_cpl is a wash-bucket service; it has its own pricing per category and
+    # would be confusing as a free-form upsell add-on.
+    with _pwa_client() as client:
+        response = client.post(
+            "/api/v1/bookings",
+            json=_booking_payload(addon_ids=["svc_cpl"]),
+        )
+
+    assert response.status_code == 400
+    assert response.json()["error_code"] == "not_a_detailing_service"
+
+
+def test_http_unknown_center_id(api_db):
+    with _pwa_client() as client:
+        response = client.post(
+            "/api/v1/bookings",
+            json=_booking_payload(location={"kind": "center", "center_id": "ctr_bogus"}),
+        )
+
+    assert response.status_code == 400
+    body = response.json()
+    assert body["error_code"] == "unknown_center"
+    assert body["field"] == "location.center_id"
+
+
+def test_http_center_id_required_when_kind_center(api_db):
+    with _pwa_client() as client:
+        response = client.post(
+            "/api/v1/bookings",
+            json=_booking_payload(location={"kind": "center"}),
+        )
+
+    assert response.status_code == 400
+    assert response.json()["error_code"] == "missing_center_id"
+
+
+def test_http_center_id_not_allowed_for_home(api_db):
+    with _pwa_client() as client:
+        response = client.post(
+            "/api/v1/bookings",
+            json=_booking_payload(
+                location={"kind": "home", "pin_address": "Villa X", "center_id": "ctr_casa"},
+            ),
+        )
+
+    assert response.status_code == 400
+    assert response.json()["error_code"] == "center_id_not_allowed"
+
+
+def test_http_closed_date_rejected(api_db):
+    # 2026-05-27 is Eid al-Adha day 1, a static CLOSED_DATES entry.
+    with _pwa_client() as client:
+        response = client.post(
+            "/api/v1/bookings",
+            json=_booking_payload(date="2026-05-27"),
+        )
+
+    assert response.status_code == 400
+    body = response.json()
+    assert body["error_code"] == "closed_date"
+    assert body["field"] == "date"
+
+
+def test_http_unknown_slot(api_db):
+    with _pwa_client() as client:
+        response = client.post(
+            "/api/v1/bookings",
+            json=_booking_payload(slot="slot_99_99"),
+        )
+
+    assert response.status_code == 400
+    body = response.json()
+    assert body["error_code"] == "unknown_slot"
+    assert body["field"] == "slot"
+
+
+def test_http_slot_too_soon(api_db, monkeypatch):
+    # now = 08:30 CSB, slot_9_11 starts at 09:00 → lead 30min < 2h → reject.
+    _pin_validator_now(
+        monkeypatch,
+        datetime(2026, 6, 15, 8, 30, tzinfo=CASABLANCA_TZ),
+    )
+
+    with _pwa_client() as client:
+        response = client.post(
+            "/api/v1/bookings",
+            json=_booking_payload(date="2026-06-15", slot="slot_9_11"),
+        )
+
+    assert response.status_code == 400
+    assert response.json()["error_code"] == "slot_too_soon"
+
+
+def test_http_slot_exactly_2h_ahead_accepted(api_db, monkeypatch):
+    # Boundary: now=07:00 CSB and slot_9_11 starts at 09:00 → lead=exactly 2h.
+    # The validator uses strict `<`, so exactly 2h is OK and the booking lands.
+    _pin_validator_now(
+        monkeypatch,
+        datetime(2026, 6, 15, 7, 0, tzinfo=CASABLANCA_TZ),
+    )
+
+    with _pwa_client() as client:
+        response = client.post(
+            "/api/v1/bookings",
+            json=_booking_payload(date="2026-06-15", slot="slot_9_11"),
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "pending_ewash_confirmation"
+    assert body["ref"].startswith("EW-")
+
+
+def test_http_oversize_note_rejected(api_db):
+    # BookingCreateRequest.note has max_length=500. 600 chars trips Pydantic
+    # validation (422) before the route's domain validators run.
+    with _pwa_client() as client:
+        response = client.post(
+            "/api/v1/bookings",
+            json=_booking_payload(note="a" * 600),
+        )
+
+    assert response.status_code == 422
+
+
+def test_http_invalid_date_format(api_db):
+    # The Pydantic pattern r"^\d{4}-\d{2}-\d{2}$" rejects slashes before the
+    # `validate_slot_and_date` domain validator ever runs.
+    with _pwa_client() as client:
+        response = client.post(
+            "/api/v1/bookings",
+            json=_booking_payload(date="2026/06/15"),
+        )
+
+    assert response.status_code == 422
+
+
+def test_http_missing_phone(api_db):
+    # Empty phone trips Pydantic Field(min_length=8) → 422.
+    with _pwa_client() as client:
+        response = client.post(
+            "/api/v1/bookings",
+            json=_booking_payload(phone=""),
+        )
+
+    assert response.status_code == 422
+
+
+def test_http_unparseable_phone(api_db):
+    # 8-char phone passes Pydantic length but fails normalize_phone → 400 with
+    # the typed InvalidPhone error_code.
+    with _pwa_client() as client:
+        response = client.post(
+            "/api/v1/bookings",
+            json=_booking_payload(phone="abcdefgh"),
+        )
+
+    assert response.status_code == 400
+    body = response.json()
+    assert body["error_code"] == "invalid_phone"
+    assert body["field"] == "phone"
+
+
+def test_http_error_response_has_stable_shape(api_db):
+    # The cross-rejection shape contract: every 400 from a domain validator
+    # produces an ErrorResponse envelope with exactly these four keys, with
+    # `error_code` and `message` as non-empty strings. This is what the PWA
+    # parses to render localized error messages.
+    with _pwa_client() as client:
+        response = client.post(
+            "/api/v1/bookings",
+            json=_booking_payload(service_id="svc_moto"),
+        )
+
+    assert response.status_code == 400
+    body = response.json()
+    assert set(body.keys()) == {"error_code", "message", "field", "details"}
+    assert isinstance(body["error_code"], str) and body["error_code"]
+    assert isinstance(body["message"], str)
+    assert isinstance(body["details"], dict)
