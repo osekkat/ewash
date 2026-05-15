@@ -251,6 +251,25 @@ def _clean_booking_text_fields(booking: booking_module.Booking) -> None:
     booking.name = api_validation.clean_text(booking.name, max_len=120) or ""
 
 
+def _resolve_booking_addons(
+    addon_ids: list[str],
+    *,
+    category: str,
+    promo_code: str | None,
+) -> list[tuple[str, str, int, int]]:
+    resolved: list[tuple[str, str, int, int]] = []
+    for addon_id in addon_ids:
+        base_price = catalog.service_price(addon_id, category, promo_code=promo_code)
+        if base_price is None:
+            raise api_validation.UnknownAddon(
+                f"addon_id={addon_id} has no price for category={category}"
+            )
+        addon_price = round(base_price * 0.9)
+        label = f"{catalog.service_name(addon_id)} — {addon_price} DH (-10%)"
+        resolved.append((addon_id, label, addon_price, base_price))
+    return resolved
+
+
 @router.post("/bookings", response_model=BookingCreateResponse)
 @limiter.limit(settings.rate_limit_bookings_per_ip, key_func=get_remote_address)
 async def create_booking(
@@ -284,6 +303,11 @@ async def create_booking(
             raise api_validation.UnknownService(
                 f"service_id={body.service_id} has no price for category={body.category}"
             )
+        addons_resolved = _resolve_booking_addons(
+            body.addon_ids,
+            category=body.category,
+            promo_code=promo_code,
+        )
     except tuple(_DOMAIN_EXC_MAP) as exc:
         return domain_error_response(exc)
 
@@ -314,6 +338,16 @@ async def create_booking(
         promo_label=promo_label,
     )
     _clean_booking_text_fields(booking)
+    if addons_resolved:
+        first_addon_id, first_addon_label, first_addon_price, _first_regular_price = (
+            addons_resolved[0]
+        )
+        booking.addon_service = first_addon_id
+        booking.addon_service_label = first_addon_label
+        booking.addon_price_dh = first_addon_price
+    total_dh = booking.price_dh + sum(
+        addon_price for _addon_id, _label, addon_price, _regular in addons_resolved
+    )
 
     engine = persistence._configured_engine()
     if engine is None:
@@ -329,7 +363,32 @@ async def create_booking(
         request.state.booking_ref = booking.ref
         booking.client_request_id = body.client_request_id
         persistence.persist_confirmed_booking(booking, source="api", session=session)
+        for index, (addon_id, addon_label, addon_price, addon_regular_price) in enumerate(
+            addons_resolved
+        ):
+            persistence.persist_booking_addon(
+                booking.ref,
+                addon_service=addon_id,
+                addon_service_label=addon_label,
+                addon_price_dh=addon_price,
+                regular_price_dh=addon_regular_price,
+                discount_label="-10% Esthétique",
+                denormalize_to_legacy=index == 0,
+                session=session,
+            )
         persistence.persist_customer_name(phone, booking.name, session=session)
+
+    if addons_resolved:
+        logger.info(
+            "bookings.addons added ref=%s count=%d addon_ids=%s total_dh=%d",
+            booking.ref,
+            len(addons_resolved),
+            ",".join(
+                addon_id
+                for addon_id, _label, _addon_price, _regular in addons_resolved
+            ),
+            total_dh,
+        )
 
     background_tasks.add_task(
         notifications.notify_booking_confirmation_safe,
@@ -346,7 +405,7 @@ async def create_booking(
         booking.category,
         booking.service,
         booking.price_dh,
-        booking.price_dh,
+        total_dh,
         promo_code or "-",
         duration_ms,
     )
@@ -355,7 +414,7 @@ async def create_booking(
         ref=booking.ref,
         status="pending_ewash_confirmation",
         price_dh=booking.price_dh,
-        total_dh=booking.price_dh,
+        total_dh=total_dh,
         vehicle_label=vehicle_label,
         service_label=service_label,
         date_label=booking.date_label,
@@ -370,6 +429,22 @@ async def create_booking(
                 regular_price_dh=server_regular if promo_code else None,
                 sort_order=0,
             )
+        ]
+        + [
+            BookingLineItemOut(
+                kind="addon",
+                service_id=addon_id,
+                label=addon_label,
+                price_dh=addon_price,
+                regular_price_dh=addon_regular_price,
+                sort_order=(index + 1) * 10,
+            )
+            for index, (
+                addon_id,
+                addon_label,
+                addon_price,
+                addon_regular_price,
+            ) in enumerate(addons_resolved)
         ],
         bookings_token="",
         is_idempotent_replay=False,

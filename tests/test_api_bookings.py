@@ -136,6 +136,91 @@ def test_create_booking_happy_path_persists_pending_api_booking(api_db, caplog):
     assert "212611204502" not in messages
 
 
+def test_create_booking_single_addon_persists_legacy_and_line_item(api_db):
+    addon_id = "svc_cuir"
+    addon_regular = catalog.service_price(addon_id, "A", promo_code="YS26")
+    expected_addon_price = round(addon_regular * 0.9)
+
+    with _client() as client:
+        response = client.post("/api/v1/bookings", json=_payload(addon_ids=[addon_id]))
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total_dh"] == body["price_dh"] + expected_addon_price
+    case.assertEqual(
+        body["line_items"][1],
+        {
+            "kind": "addon",
+            "service_id": addon_id,
+            "label": f"{catalog.service_name(addon_id)} — {expected_addon_price} DH (-10%)",
+            "price_dh": expected_addon_price,
+            "regular_price_dh": addon_regular,
+            "sort_order": 10,
+        },
+    )
+
+    with session_scope(api_db) as session:
+        row = session.scalars(select(BookingRow)).one()
+        assert row.addon_service == addon_id
+        assert row.addon_service_label == body["line_items"][1]["label"]
+        assert row.addon_price_dh == expected_addon_price
+        assert row.total_price_dh == body["total_dh"]
+
+        line_items = session.scalars(
+            select(BookingLineItemRow).order_by(BookingLineItemRow.sort_order)
+        ).all()
+        assert [(item.kind, item.service_id, item.total_price_dh) for item in line_items] == [
+            ("main", "svc_cpl", body["price_dh"]),
+            ("addon", addon_id, expected_addon_price),
+        ]
+        assert line_items[1].regular_price_dh == addon_regular
+        assert line_items[1].discount_label == "-10% Esthétique"
+
+
+def test_create_booking_multiple_addons_appends_all_and_denormalizes_first(
+    api_db,
+    caplog,
+):
+    addon_ids = ["svc_cuir", "svc_plastq", "svc_cer6m"]
+    addon_prices = [
+        round(catalog.service_price(addon_id, "A", promo_code="YS26") * 0.9)
+        for addon_id in addon_ids
+    ]
+    caplog.set_level(logging.INFO, logger="ewash.api")
+
+    with _client() as client:
+        response = client.post("/api/v1/bookings", json=_payload(addon_ids=addon_ids))
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total_dh"] == body["price_dh"] + sum(addon_prices)
+    assert [item["service_id"] for item in body["line_items"]] == ["svc_cpl"] + addon_ids
+    assert [item["price_dh"] for item in body["line_items"][1:]] == addon_prices
+    assert [item["sort_order"] for item in body["line_items"]] == [0, 10, 20, 30]
+
+    with session_scope(api_db) as session:
+        row = session.scalars(select(BookingRow)).one()
+        assert row.addon_service == addon_ids[0]
+        assert row.addon_price_dh == addon_prices[0]
+        assert row.total_price_dh == body["total_dh"]
+
+        line_items = session.scalars(
+            select(BookingLineItemRow).order_by(BookingLineItemRow.sort_order)
+        ).all()
+        assert [(item.kind, item.service_id, item.total_price_dh) for item in line_items] == [
+            ("main", "svc_cpl", body["price_dh"]),
+            ("addon", addon_ids[0], addon_prices[0]),
+            ("addon", addon_ids[1], addon_prices[1]),
+            ("addon", addon_ids[2], addon_prices[2]),
+        ]
+
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert "bookings.addons added ref=" in messages
+    assert "count=3" in messages
+    assert "addon_ids=svc_cuir,svc_plastq,svc_cer6m" in messages
+    assert f"total_dh={body['total_dh']}" in messages
+
+
 def test_create_booking_domain_rejection_returns_stable_error(api_db):
     with _client() as client:
         response = client.post(

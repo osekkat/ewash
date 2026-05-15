@@ -873,6 +873,8 @@ def persist_booking_addon(
     addon_service: str,
     addon_service_label: str,
     addon_price_dh: int,
+    regular_price_dh: int | None = None,
+    discount_label: str = "-10%",
     denormalize_to_legacy: bool = True,
     engine: Engine | None = None,
     session: Session | None = None,
@@ -896,6 +898,9 @@ def persist_booking_addon(
     """
     if not ref:
         return
+    addon_regular_price_dh = (
+        regular_price_dh if regular_price_dh is not None else addon_price_dh
+    )
     if session is not None:
         row = session.scalars(select(BookingRow).where(BookingRow.ref == ref)).first()
         if row is None:
@@ -922,9 +927,9 @@ def persist_booking_addon(
                         label_snapshot=addon_service_label,
                         quantity=1,
                         unit_price_dh=addon_price_dh,
-                        regular_price_dh=addon_price_dh,
+                        regular_price_dh=addon_regular_price_dh,
                         total_price_dh=addon_price_dh,
-                        discount_label="-10%",
+                        discount_label=discount_label,
                         sort_order=10,
                     )
                 )
@@ -932,8 +937,9 @@ def persist_booking_addon(
                 existing.service_id = addon_service
                 existing.label_snapshot = addon_service_label
                 existing.unit_price_dh = addon_price_dh
-                existing.regular_price_dh = addon_price_dh
+                existing.regular_price_dh = addon_regular_price_dh
                 existing.total_price_dh = addon_price_dh
+                existing.discount_label = discount_label
             return
         # Multi-addon append path: leave legacy columns + first line item
         # untouched and accumulate total + a new line item per call.
@@ -953,9 +959,9 @@ def persist_booking_addon(
                 label_snapshot=addon_service_label,
                 quantity=1,
                 unit_price_dh=addon_price_dh,
-                regular_price_dh=addon_price_dh,
+                regular_price_dh=addon_regular_price_dh,
                 total_price_dh=addon_price_dh,
-                discount_label="-10%",
+                discount_label=discount_label,
                 sort_order=next_sort,
             )
         )
@@ -970,6 +976,8 @@ def persist_booking_addon(
             addon_service=addon_service,
             addon_service_label=addon_service_label,
             addon_price_dh=addon_price_dh,
+            regular_price_dh=regular_price_dh,
+            discount_label=discount_label,
             denormalize_to_legacy=denormalize_to_legacy,
             session=db_session,
         )
