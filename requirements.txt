@@ -1,4 +1,6 @@
 fastapi==0.115.5
+# Starlette/FastAPI-native rate limiting for public API endpoints.
+slowapi==0.1.9
 uvicorn[standard]==0.32.1
 httpx==0.27.2
 pydantic-settings==2.6.1
