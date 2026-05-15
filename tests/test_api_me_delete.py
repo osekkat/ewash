@@ -25,9 +25,11 @@ from app.config import settings
 from app.db import init_db, make_engine, session_scope
 from app.models import (
     BookingRow,
+    ConversationSessionRow,
     Customer,
     CustomerName,
     CustomerTokenRow,
+    CustomerVehicle,
     DataErasureAuditRow,
 )
 from app.persistence import mint_customer_token, persist_confirmed_booking
@@ -270,3 +272,197 @@ def test_delete_me_emits_structured_log_line(api_db, caplog):
     line = success_lines[0]
     case.assertNotIn(phone, line)
     case.assertIn("anonymized_bookings=", line)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Compliance-grade per-table purge + cross-customer isolation + rate limit.
+# These extend the smoke-test set above to cover every customer-side table the
+# erasure helper touches, plus the contracts that matter for Loi 09-08 / GDPR
+# regression testing.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_delete_me_purges_customer_vehicles_for_phone(api_db):
+    """``persist_confirmed_booking`` auto-creates a ``customer_vehicles`` row.
+    The erasure path must remove it so the make/color/plate combination can no
+    longer be linked to the customer."""
+    phone = "212600000510"
+    _seed_customer(api_db, phone)
+    _seed_booking(api_db, phone=phone, ref="EW-2026-7100")
+    token = mint_customer_token(phone, engine=api_db)
+
+    with session_scope(api_db) as session:
+        vehicles_before = session.scalars(
+            select(CustomerVehicle).where(CustomerVehicle.customer_phone == phone)
+        ).all()
+    case.assertGreater(
+        len(vehicles_before),
+        0,
+        msg="setup precondition: persist_confirmed_booking should have created a customer_vehicles row",
+    )
+
+    with _client() as client:
+        response = client.request(
+            "DELETE",
+            "/api/v1/me",
+            json={"confirm": CONFIRM_PHRASE},
+            headers={"X-Ewash-Token": token},
+        )
+    case.assertEqual(response.status_code, 200)
+
+    with session_scope(api_db) as session:
+        vehicles_after = session.scalars(
+            select(CustomerVehicle).where(CustomerVehicle.customer_phone == phone)
+        ).all()
+    case.assertEqual(vehicles_after, [])
+
+
+def test_delete_me_purges_conversation_sessions_for_phone(api_db):
+    """Conversation sessions (and any FK-chained events) must be deleted so the
+    customer's WhatsApp state trail is also erased."""
+    phone = "212600000511"
+    _seed_customer(api_db, phone)
+    with session_scope(api_db) as session:
+        # ``_seed_customer`` above already inserted the customers row for this
+        # phone; ConversationSessionRow only needs the FK to satisfy.
+        session.add(
+            ConversationSessionRow(
+                customer_phone=phone,
+                current_stage="MENU",
+            )
+        )
+    token = mint_customer_token(phone, engine=api_db)
+
+    with _client() as client:
+        client.request(
+            "DELETE",
+            "/api/v1/me",
+            json={"confirm": CONFIRM_PHRASE},
+            headers={"X-Ewash-Token": token},
+        )
+
+    with session_scope(api_db) as session:
+        sessions = session.scalars(
+            select(ConversationSessionRow).where(ConversationSessionRow.customer_phone == phone)
+        ).all()
+    case.assertEqual(sessions, [])
+
+
+def test_delete_me_does_not_affect_other_customers(api_db):
+    """The deletion is strictly scoped to the calling token's phone. A
+    different customer's tokens, names, vehicles and booking PII must survive
+    untouched — a regression here would be a multi-customer data wipe."""
+    target_phone = "212600000512"
+    other_phone = "212600000513"
+    _seed_customer(api_db, target_phone)
+    _seed_customer(api_db, other_phone)
+    persistence.persist_customer_name(other_phone, "Hassan Other", engine=api_db)
+    _seed_booking(api_db, phone=other_phone, ref="EW-2026-7200")
+    other_token = mint_customer_token(other_phone, engine=api_db)
+    target_token = mint_customer_token(target_phone, engine=api_db)
+
+    with _client() as client:
+        response = client.request(
+            "DELETE",
+            "/api/v1/me",
+            json={"confirm": CONFIRM_PHRASE},
+            headers={"X-Ewash-Token": target_token},
+        )
+    case.assertEqual(response.status_code, 200)
+
+    # Other customer untouched.
+    case.assertEqual(persistence.verify_customer_token(other_token, engine=api_db), other_phone)
+    with session_scope(api_db) as session:
+        other_names = session.scalars(
+            select(CustomerName).where(CustomerName.customer_phone == other_phone)
+        ).all()
+        other_bookings = session.scalars(
+            select(BookingRow).where(BookingRow.customer_phone == other_phone)
+        ).all()
+        other_vehicles = session.scalars(
+            select(CustomerVehicle).where(CustomerVehicle.customer_phone == other_phone)
+        ).all()
+
+    # ``persist_confirmed_booking`` upserts its own ``customer_names`` entry
+    # alongside the explicit ``persist_customer_name`` call, so the row count
+    # is at least 1 — both rows belong to the OTHER customer and must survive.
+    case.assertGreaterEqual(len(other_names), 1)
+    case.assertEqual(len(other_bookings), 1)
+    case.assertEqual(other_bookings[0].customer_phone, other_phone)
+    # The booking was seeded with name "Hassan El" by ``_seed_booking``; what
+    # matters here is that the row WASN'T anonymized — the name is not the
+    # "Anonyme" sentinel and the customer_phone wasn't pivoted to a DEL-prefix.
+    case.assertNotEqual(other_bookings[0].customer_name, "Anonyme")
+    case.assertFalse(other_bookings[0].customer_phone.startswith("DEL-"))
+    case.assertGreater(len(other_vehicles), 0)
+
+
+def test_delete_me_log_phone_hash_matches_audit_row_phone_hash(api_db, caplog):
+    """The log line emits ``phone_hash=<sha256[:12]>`` while the audit row
+    stores the full 64-char digest. The two MUST share a prefix so an admin
+    investigating a log line can pivot to the corresponding audit entry."""
+    caplog.set_level(logging.INFO, logger="ewash.api")
+    phone = "212600000514"
+    _seed_customer(api_db, phone)
+    token = mint_customer_token(phone, engine=api_db)
+
+    with _client() as client:
+        client.request(
+            "DELETE",
+            "/api/v1/me",
+            json={"confirm": CONFIRM_PHRASE},
+            headers={"X-Ewash-Token": token},
+        )
+
+    with session_scope(api_db) as session:
+        audit = session.scalars(select(DataErasureAuditRow)).one()
+
+    log_lines = [
+        rec.getMessage()
+        for rec in caplog.records
+        if "me.delete" in rec.getMessage() and "phone_hash=" in rec.getMessage()
+    ]
+    case.assertTrue(log_lines)
+    # Extract the 12-char hash printed by `_hash_for_log` in the log line.
+    line = log_lines[0]
+    marker = "phone_hash="
+    start = line.index(marker) + len(marker)
+    # Tokens in the log line are space-separated.
+    log_hash = line[start:].split(" ", 1)[0]
+    case.assertEqual(len(log_hash), 12)
+    case.assertTrue(
+        audit.phone_hash.startswith(log_hash),
+        msg=f"log hash {log_hash!r} is not a prefix of audit hash {audit.phone_hash!r}",
+    )
+
+
+def test_delete_me_rate_limited(api_db):
+    """3/hour per token per the bead spec. Hit the route 3 times with the same
+    token (first succeeds, 2nd/3rd would 401 since the token is revoked but
+    still consume the limiter bucket) then prove the 4th call 429s."""
+    phone = "212600000515"
+    _seed_customer(api_db, phone)
+    token = mint_customer_token(phone, engine=api_db)
+
+    with _client() as client:
+        for i in range(3):
+            response = client.request(
+                "DELETE",
+                "/api/v1/me",
+                json={"confirm": CONFIRM_PHRASE},
+                headers={"X-Ewash-Token": token},
+            )
+            case.assertNotEqual(
+                response.status_code,
+                429,
+                msg=f"unexpected 429 on attempt {i + 1}",
+            )
+
+        burst = client.request(
+            "DELETE",
+            "/api/v1/me",
+            json={"confirm": CONFIRM_PHRASE},
+            headers={"X-Ewash-Token": token},
+        )
+
+    case.assertEqual(burst.status_code, 429)
