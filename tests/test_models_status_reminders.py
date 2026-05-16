@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from app.models import (
+    ALLOWED_STATUS_TRANSITIONS,
     BOOKING_STATUSES,
     FINAL_BOOKING_STATUSES,
     BookingRecord,
@@ -67,6 +68,48 @@ def test_invalid_booking_status_transition_is_rejected():
 
     with pytest.raises(ValueError):
         transition_booking_status(booking, "in_progress", actor="admin")
+
+
+def test_draft_can_transition_directly_to_pending_ewash_confirmation():
+    """ewash-osw: the live customer-confirm flow (WhatsApp BOOK_CONFIRM and the
+    planned PWA POST /api/v1/bookings) goes from a brand-new ``draft`` to
+    ``pending_ewash_confirmation`` in a single ``persist_confirmed_booking``
+    transaction. The FSM must reflect that — otherwise the
+    ``BookingStatusEventRow`` written by ``_persist_confirmed_booking_in_session``
+    records a (from='draft', to='pending_ewash_confirmation') pair that the
+    spec disallows, and any future caller routed through
+    ``transition_booking_status`` would raise ``ValueError``.
+    """
+    booking = BookingRecord(phone="212665883062", status="draft")
+
+    event = transition_booking_status(
+        booking,
+        "pending_ewash_confirmation",
+        actor="customer",
+        note="Confirmation WhatsApp",
+    )
+
+    assert booking.status == "pending_ewash_confirmation"
+    assert event.from_status == "draft"
+    assert event.to_status == "pending_ewash_confirmation"
+    # The transition the live persist path records must be in the spec.
+    assert "pending_ewash_confirmation" in ALLOWED_STATUS_TRANSITIONS["draft"]
+
+
+def test_draft_to_awaiting_confirmation_path_still_works():
+    """The legacy intermediate ``awaiting_confirmation`` bucket is still
+    reachable from ``draft`` — kept so admin imports and reserved/future flows
+    have a parking state that ``/admin`` already surfaces a count for. The
+    ewash-osw fix added ``pending_ewash_confirmation`` as a *second* allowed
+    target on the ``draft`` key without removing the older one.
+    """
+    booking = BookingRecord(phone="212665883062", status="draft")
+
+    transition_booking_status(booking, "awaiting_confirmation", actor="admin")
+    assert booking.status == "awaiting_confirmation"
+
+    transition_booking_status(booking, "pending_ewash_confirmation", actor="customer")
+    assert booking.status == "pending_ewash_confirmation"
 
 
 def test_pending_booking_cannot_skip_ewash_confirmation_to_rescheduled():

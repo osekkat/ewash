@@ -45,7 +45,15 @@ FINAL_BOOKING_STATUSES = (
 # recovery transitions (e.g. rescheduled -> confirmed) while preventing nonsense
 # like completed -> in_progress.
 ALLOWED_STATUS_TRANSITIONS: dict[str, set[str]] = {
-    "draft": {"awaiting_confirmation", "expired", "customer_cancelled", "admin_cancelled"},
+    # `pending_ewash_confirmation` is reachable directly from `draft` because the
+    # live customer-confirm flow (WhatsApp `BOOK_CONFIRM` and the planned PWA
+    # `POST /api/v1/bookings`) writes the row with `status='pending_ewash_confirmation'`
+    # in a single transaction — there is no separate "awaiting customer confirm"
+    # step server-side once the customer has clicked through the recap. The
+    # `awaiting_confirmation` intermediate is kept reachable so admin imports /
+    # future flows can park rows in that bucket (the admin dashboard already
+    # surfaces a count of it), but is not part of the customer happy path.
+    "draft": {"awaiting_confirmation", "pending_ewash_confirmation", "expired", "customer_cancelled", "admin_cancelled"},
     "awaiting_confirmation": {"pending_ewash_confirmation", "expired", "customer_cancelled", "admin_cancelled"},
     "pending_ewash_confirmation": {"confirmed", "customer_cancelled", "admin_cancelled", "expired"},
     "confirmed": {
