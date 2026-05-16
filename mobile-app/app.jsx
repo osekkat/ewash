@@ -84,6 +84,19 @@ function DebugOverlay() {
   );
 }
 
+function _readStoredProfile() {
+  try {
+    const nameKey = (window.EwashAPI && window.EwashAPI._NAME_KEY) || 'ewash.name';
+    const phoneKey = (window.EwashAPI && window.EwashAPI._PHONE_KEY) || 'ewash.phone';
+    return {
+      name: (typeof localStorage !== 'undefined' && localStorage.getItem(nameKey)) || '',
+      phone: (typeof localStorage !== 'undefined' && localStorage.getItem(phoneKey)) || '',
+    };
+  } catch (_) {
+    return { name: '', phone: '' };
+  }
+}
+
 // ─────────────────────────────────────────────────────────────
 // MAIN APP
 // ─────────────────────────────────────────────────────────────
@@ -115,10 +128,11 @@ function App() {
     setTab(next);
   };
 
-  const profile = useM_a(() => ({
-    name: lang === 'ar' ? 'يوسف' : 'Youssef',
-    phone: '6 11 20 45 02',
-  }), [lang]);
+  // Anonymous-until-first-booking: name/phone are empty for new users and get
+  // populated by api.submitBooking after a successful POST /api/v1/bookings.
+  // HomeScreen and ProfileScreen render an empty-state when these are blank.
+  const [profile, setProfile] = useS_a(_readStoredProfile);
+  const refreshProfile = () => setProfile(_readStoredProfile());
 
   useE_a(() => {
     document.documentElement.setAttribute('data-variant', variant);
@@ -203,14 +217,14 @@ function App() {
             profile={profile}
             staffContact={staffContact}
             onToast={setToast}
-            onLogout={() => { setPhaseLogged('lang'); setTabLogged('home'); }}/>
+            onLogout={() => { refreshProfile(); setPhaseLogged('lang'); setTabLogged('home'); }}/>
         )}
         {modal === 'booking' && (
           <BookingFlow t={t} lang={lang} theme={theme} variant={variant}
             profile={profile}
             staffContact={staffContact}
             onClose={() => setModal(null)}
-            onComplete={() => { setModal(null); setTabLogged('bookings'); setToast(t.bookingConfirmed); }}/>
+            onComplete={() => { refreshProfile(); setModal(null); setTabLogged('bookings'); setToast(t.bookingConfirmed); }}/>
         )}
         {modal === 'support' && (
           <SupportScreen t={t} theme={theme} staffContact={staffContact}

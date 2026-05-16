@@ -118,7 +118,9 @@ function _bookingDataSize(data) {
 function _initialBookingData(profile) {
   return {
     name: (profile && profile.name) || '',
-    phone: '', // collected in the recap step (replaces the old OTP login flow)
+    // Pre-fill from the stored profile for returning users. New (anonymous)
+    // users get a blank field and type their phone in the recap step.
+    phone: (profile && profile.phone) || '',
     category: null, // 'A' | 'B' | 'C' | 'MOTO'
     make: '', color: '', plate: '',
     locationKind: null, // 'home' | 'center'

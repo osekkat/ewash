@@ -1,6 +1,7 @@
 (function () {
   const BOOKINGS_STORAGE_KEY = ["ewash.bookings", "token"].join("_");
   const PHONE_STORAGE_KEY = "ewash.phone";
+  const NAME_STORAGE_KEY = "ewash.name";
   const BOOTSTRAP_CACHE_KEY = "ewash.bootstrap_cache.v1";
   const BOOTSTRAP_CACHE_VERSION = 1;
   const BOOTSTRAP_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -306,6 +307,15 @@
     }
   }
 
+  function _saveName(name) {
+    if (!name) return;
+    try {
+      localStorage.setItem(NAME_STORAGE_KEY, name);
+    } catch (_) {
+      EwashLog.warn("localstorage.error", { op: "set", key: "name" });
+    }
+  }
+
   function _bootstrapCacheStorageKey(params) {
     const category = params && params.category ? String(params.category).trim().toUpperCase() : "";
     const promo = params && params.promo ? String(params.promo).trim().toUpperCase() : "";
@@ -608,6 +618,7 @@
     // on `getMyBookings` can authenticate.
     if (response && response.bookings_token) _saveToken(response.bookings_token);
     if (payload && payload.phone) _savePhone(payload.phone);
+    if (payload && payload.name) _saveName(payload.name);
 
     if (response) {
       EwashLog.info("booking.confirmed", {
@@ -677,6 +688,7 @@
     _fetch: _fetch,
     _TOKEN_KEY: BOOKINGS_STORAGE_KEY,
     _PHONE_KEY: PHONE_STORAGE_KEY,
+    _NAME_KEY: NAME_STORAGE_KEY,
     _BOOTSTRAP_CACHE_KEY: BOOTSTRAP_CACHE_KEY,
     _getToken: _getToken,
     getBootstrap: getBootstrap,

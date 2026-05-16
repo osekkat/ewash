@@ -52,14 +52,20 @@ function HomeScreen({ t, lang, openBooking, gotoSupport, gotoTariffs, theme, var
       <div className="appbar">
         <div className="row gap-10">
           <Icons.Logo size={30} style={{ color: 'var(--primary)' }} />
-          <div className="col" style={{ gap: 2 }}>
-            <div className="t-tiny" style={{ color: 'var(--text-2)', fontWeight: 600 }}>
-              {t.welcome},
+          {profile.name ? (
+            <div className="col" style={{ gap: 2 }}>
+              <div className="t-tiny" style={{ color: 'var(--text-2)', fontWeight: 600 }}>
+                {t.welcome},
+              </div>
+              <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 15, lineHeight: 1 }}>
+                {profile.name}
+              </div>
             </div>
-            <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 15, lineHeight: 1 }}>
-              {profile.name}
+          ) : (
+            <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 17, lineHeight: 1 }}>
+              {t.welcome} 👋
             </div>
-          </div>
+          )}
         </div>
         <div className="row gap-4">
           <HelpButton t={t} staffContact={staffContact} currentScreen="home" />
@@ -1122,7 +1128,10 @@ function _clearLocalAuthState() {
   const phoneKey = window.EwashAPI && window.EwashAPI._PHONE_KEY
     ? window.EwashAPI._PHONE_KEY
     : 'ewash.phone';
-  [tokenKey, phoneKey, 'ewash.booking_draft'].forEach((key) => {
+  const nameKey = window.EwashAPI && window.EwashAPI._NAME_KEY
+    ? window.EwashAPI._NAME_KEY
+    : 'ewash.name';
+  [tokenKey, phoneKey, nameKey, 'ewash.booking_draft'].forEach((key) => {
     try {
       localStorage.removeItem(key);
     } catch (err) {
@@ -1204,23 +1213,38 @@ function ProfileScreen({ t, lang, setLang, theme, setTheme, variant, setVariant,
     <div className="app-scroll">
       <TopBar title={t.myProfile} t={t} staffContact={staffContact} currentScreen="profile" />
       <div className="px-16 col gap-20 anim-stagger" style={{ paddingBottom: 24 }}>
-        {/* User card */}
+        {/* User card — anonymous until first booking populates name/phone. */}
         <div className="card card-elev" style={{ padding: 16, display: 'flex', gap: 14, alignItems: 'center' }}>
           <div style={{
             width: 60, height: 60, borderRadius: 18,
-            background: 'linear-gradient(135deg, color-mix(in srgb, var(--primary) 92%, white) 0%, var(--primary) 50%, color-mix(in srgb, var(--primary) 70%, black) 100%)',
-            color: 'var(--primary-text)',
+            background: profile.name
+              ? 'linear-gradient(135deg, color-mix(in srgb, var(--primary) 92%, white) 0%, var(--primary) 50%, color-mix(in srgb, var(--primary) 70%, black) 100%)'
+              : 'color-mix(in srgb, var(--primary) 12%, var(--surface))',
+            color: profile.name ? 'var(--primary-text)' : 'var(--primary)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: 26,
             letterSpacing: '-0.02em',
-            boxShadow:
-              'inset 0 1px 0 rgba(255,255,255,0.25), 0 8px 18px -8px color-mix(in srgb, var(--primary) 50%, transparent)',
-          }}>{profile.name[0]}</div>
-          <div className="col gap-2 flex-1">
-            <div style={{ fontWeight: 700, fontSize: 16 }}>{profile.name}</div>
-            <div className="t-muted">+212 {profile.phone}</div>
+            boxShadow: profile.name
+              ? 'inset 0 1px 0 rgba(255,255,255,0.25), 0 8px 18px -8px color-mix(in srgb, var(--primary) 50%, transparent)'
+              : 'none',
+          }}>
+            {profile.name ? profile.name[0] : <Icons.User size={28} stroke={2} />}
           </div>
-          <button className="icon-btn"><Icons.Edit size={18}/></button>
+          <div className="col gap-2 flex-1">
+            <div style={{ fontWeight: 700, fontSize: 16 }}>
+              {profile.name || (t.guestLabel || 'Invité')}
+            </div>
+            {profile.phone ? (
+              <div className="t-muted">+212 {profile.phone}</div>
+            ) : (
+              <div className="t-muted" style={{ fontSize: 13 }}>
+                {t.guestHint || 'Réservez pour personnaliser votre profil'}
+              </div>
+            )}
+          </div>
+          {profile.name && (
+            <button className="icon-btn"><Icons.Edit size={18}/></button>
+          )}
         </div>
 
         {/* Eco impact card */}
@@ -1308,34 +1332,40 @@ function ProfileScreen({ t, lang, setLang, theme, setTheme, variant, setVariant,
 
         <ProfileSection>
           <ProfileRow icon={<Icons.Message size={18}/>} label={t.helpCenter} />
-          <ProfileRow
-            icon={<Icons.LogOut size={18}/>}
-            label={logoutBusy === 'current' ? t.logoutInProgress : t.logout}
-            onClick={() => doLogout('current')}
-            danger
-            disabled={!!logoutBusy}
-          />
-          <ProfileRow
-            icon={<Icons.Shield size={18}/>}
-            label={t.logoutEverywhere}
-            onClick={() => setConfirmingAllOut(true)}
-            danger
-            disabled={!!logoutBusy}
-          />
+          {profile.name && (
+            <ProfileRow
+              icon={<Icons.LogOut size={18}/>}
+              label={logoutBusy === 'current' ? t.logoutInProgress : t.logout}
+              onClick={() => doLogout('current')}
+              danger
+              disabled={!!logoutBusy}
+            />
+          )}
+          {profile.name && (
+            <ProfileRow
+              icon={<Icons.Shield size={18}/>}
+              label={t.logoutEverywhere}
+              onClick={() => setConfirmingAllOut(true)}
+              danger
+              disabled={!!logoutBusy}
+            />
+          )}
         </ProfileSection>
 
-        <ProfileSection title={t.dangerZoneTitle}>
-          <ProfileRow
-            icon={<Icons.Close size={18}/>}
-            label={t.deleteAccount}
-            onClick={() => {
-              setDeleteError('');
-              setConfirmingDelete(true);
-            }}
-            danger
-            disabled={!!logoutBusy || deleteBusy}
-          />
-        </ProfileSection>
+        {profile.name && (
+          <ProfileSection title={t.dangerZoneTitle}>
+            <ProfileRow
+              icon={<Icons.Close size={18}/>}
+              label={t.deleteAccount}
+              onClick={() => {
+                setDeleteError('');
+                setConfirmingDelete(true);
+              }}
+              danger
+              disabled={!!logoutBusy || deleteBusy}
+            />
+          </ProfileSection>
+        )}
 
         <div className="text-center t-tiny" style={{ paddingBlock: 8 }}>
           ewash · {t.appVersion} 1.0.0 (Casablanca)

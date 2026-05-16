@@ -63,6 +63,8 @@ window.I18N = {
     verifyCodeHelp: 'Code envoyé au',
     resend: 'Renvoyer',
     welcome: 'Bonjour',
+    guestLabel: 'Invité',
+    guestHint: 'Réservez pour personnaliser votre profil',
     // home
     bookNow: 'Réserver un lavage',
     bookCta: 'Prendre rendez-vous',
@@ -311,6 +313,8 @@ window.I18N = {
     verifyCodeHelp: 'تم الإرسال إلى',
     resend: 'إعادة الإرسال',
     welcome: 'مرحباً',
+    guestLabel: 'زائر',
+    guestHint: 'احجز لتخصيص ملفك الشخصي',
     bookNow: 'احجز غسيلاً',
     bookCta: 'احجز موعداً',
     nextAppointment: 'الموعد القادم',
