@@ -788,3 +788,176 @@ def test_bookings_client_request_id_is_nullable_and_roundtrips():
         assert rows[0].client_request_id is None
         assert rows[1].client_request_id is None
         assert rows[2].client_request_id == "11111111-2222-3333-4444-555555555555"
+
+
+# ── Regression: ewash-rnr ──────────────────────────────────────────────────
+# Before this fix, ``@lru_cache(maxsize=1)`` decorated each engine factory.
+# lru_cache is thread-safe for the cache LOOKUP but NOT for the function BODY:
+# two threads racing the very first call would both execute
+# ``make_engine(...)`` + ``init_db(...)``. ``init_db`` runs
+# ``Base.metadata.create_all`` + ``_seed_service_catalog`` +
+# ``_backfill_vehicle_reference_data`` + ``_backfill_booking_ref_counters``,
+# and the duplicate-PK INSERTs from a second concurrent run raise
+# ``IntegrityError`` on the loser. Because ``lru_cache`` does not memoize
+# exceptions, the next caller would race again until all seed rows happened
+# to be present.
+#
+# The fix replaces the decorator with a ``threading.Lock``-protected,
+# double-checked module-level singleton. These tests prove the new pattern
+# runs the body exactly once across many concurrent first-callers, while the
+# preserved ``.cache_clear()`` attribute keeps the existing test surface.
+
+
+@pytest.mark.parametrize(
+    "module_path,factory_name",
+    [
+        ("app.persistence", "_configured_engine"),
+        ("app.catalog", "_catalog_engine"),
+        ("app.notifications", "_notification_engine"),
+    ],
+)
+def test_engine_factory_concurrent_callers_run_init_db_exactly_once(
+    module_path, factory_name, monkeypatch
+):
+    """Regression for ewash-rnr — `init_db` must run at most once under
+    concurrent first-callers. The lock-protected singleton enforces this; the
+    old `@lru_cache(maxsize=1)` did not.
+    """
+    import importlib
+    import threading
+    import time as _t
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    module = importlib.import_module(module_path)
+    factory = getattr(module, factory_name)
+    factory.cache_clear()
+
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "database_url", "sqlite+pysqlite:///:memory:")
+
+    sentinel_engine = make_engine("sqlite+pysqlite:///:memory:")
+    counts_lock = threading.Lock()
+    init_db_calls = 0
+    make_engine_calls = 0
+    barrier = threading.Barrier(8)
+
+    def fake_make_engine(url):
+        nonlocal make_engine_calls
+        with counts_lock:
+            make_engine_calls += 1
+        return sentinel_engine
+
+    def fake_init_db(engine):
+        nonlocal init_db_calls
+        # Widen the race window — under the old @lru_cache, every thread
+        # blocked here would still re-execute the body once released.
+        _t.sleep(0.01)
+        with counts_lock:
+            init_db_calls += 1
+
+    monkeypatch.setattr(module, "make_engine", fake_make_engine)
+    monkeypatch.setattr(module, "init_db", fake_init_db)
+
+    def call_factory():
+        barrier.wait(timeout=5.0)
+        return factory()
+
+    try:
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            futures = [executor.submit(call_factory) for _ in range(8)]
+            results = [f.result(timeout=5.0) for f in as_completed(futures)]
+    finally:
+        factory.cache_clear()
+
+    assert init_db_calls == 1, (
+        f"{module_path}.{factory_name}: expected init_db to be called exactly "
+        f"once across 8 concurrent threads, got {init_db_calls}"
+    )
+    assert make_engine_calls == 1, (
+        f"{module_path}.{factory_name}: expected make_engine to be called "
+        f"exactly once, got {make_engine_calls}"
+    )
+    assert all(r is sentinel_engine for r in results), (
+        f"{module_path}.{factory_name}: not all threads received the same "
+        f"singleton Engine instance"
+    )
+
+
+@pytest.mark.parametrize(
+    "module_path,factory_name",
+    [
+        ("app.persistence", "_configured_engine"),
+        ("app.catalog", "_catalog_engine"),
+        ("app.notifications", "_notification_engine"),
+    ],
+)
+def test_engine_factory_caches_none_when_database_url_unset(
+    module_path, factory_name, monkeypatch
+):
+    """When ``settings.database_url`` is empty, the factory returns ``None``
+    and caches it — preserving the old ``@lru_cache`` behaviour so callers
+    relying on the unset-DB short circuit don't pay a fresh check on every
+    call. ``cache_clear()`` re-arms the lookup.
+    """
+    import importlib
+
+    module = importlib.import_module(module_path)
+    factory = getattr(module, factory_name)
+    factory.cache_clear()
+
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "database_url", "")
+
+    make_engine_calls = 0
+
+    def fake_make_engine(url):
+        nonlocal make_engine_calls
+        make_engine_calls += 1
+        raise AssertionError("make_engine must not be called when URL is unset")
+
+    monkeypatch.setattr(module, "make_engine", fake_make_engine)
+
+    try:
+        assert factory() is None
+        assert factory() is None  # second call hits cached None, no fresh check
+        assert make_engine_calls == 0
+    finally:
+        factory.cache_clear()
+
+
+def test_engine_factory_exception_during_init_does_not_memoize(monkeypatch):
+    """If ``init_db`` raises, the singleton is left unset so the next caller
+    retries — matching the old ``@lru_cache`` semantic (exceptions are not
+    memoized).
+    """
+    from app import persistence
+    from app.config import settings
+
+    persistence._configured_engine.cache_clear()
+    monkeypatch.setattr(settings, "database_url", "sqlite+pysqlite:///:memory:")
+
+    sentinel_engine = make_engine("sqlite+pysqlite:///:memory:")
+    monkeypatch.setattr(persistence, "make_engine", lambda url: sentinel_engine)
+
+    raise_count = 0
+
+    def flaky_init_db(engine):
+        nonlocal raise_count
+        raise_count += 1
+        if raise_count == 1:
+            raise RuntimeError("transient init failure")
+        # second invocation succeeds silently
+
+    monkeypatch.setattr(persistence, "init_db", flaky_init_db)
+
+    try:
+        with pytest.raises(RuntimeError, match="transient init failure"):
+            persistence._configured_engine()
+        # The failure must have left the singleton unset — retry succeeds.
+        result = persistence._configured_engine()
+        assert result is sentinel_engine
+        assert raise_count == 2
+    finally:
+        persistence._configured_engine.cache_clear()

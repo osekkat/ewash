@@ -11,10 +11,10 @@ import hashlib
 import json
 import logging
 import re
+import threading
 from dataclasses import dataclass
 from dataclasses import asdict
 from datetime import date, datetime, time, timedelta, timezone
-from functools import lru_cache
 from typing import Iterable
 from zoneinfo import ZoneInfo
 
@@ -121,13 +121,47 @@ class DashboardSummary:
     bookings_admin_last_7d: int = 0
 
 
-@lru_cache(maxsize=1)
+# Lock-protected singleton replaces @lru_cache(maxsize=1). lru_cache is thread-safe
+# for the lookup but not for the body — two threads on the very first call would
+# both run init_db (Base.metadata.create_all + _seed_service_catalog + the
+# backfills), colliding on duplicate-key INSERTs and raising IntegrityError on
+# the loser. Since lru_cache does not memoize exceptions, the next call would
+# race again. The lock-protected double-checked pattern below runs init_db
+# exactly once on success and leaves the singleton unset on failure so the next
+# caller retries — matching lru_cache's exception behavior, eliminating the race.
+_engine_lock = threading.Lock()
+_engine: Engine | None = None
+_engine_initialized = False
+
+
 def _configured_engine() -> Engine | None:
-    if not settings.database_url:
-        return None
-    engine = make_engine(settings.database_url)
-    init_db(engine)
-    return engine
+    global _engine, _engine_initialized
+    if _engine_initialized:
+        return _engine
+    with _engine_lock:
+        if _engine_initialized:
+            return _engine
+        if not settings.database_url:
+            _engine = None
+            _engine_initialized = True
+            return None
+        engine = make_engine(settings.database_url)
+        init_db(engine)
+        _engine = engine
+        _engine_initialized = True
+        return _engine
+
+
+def _reset_configured_engine() -> None:
+    global _engine, _engine_initialized
+    with _engine_lock:
+        _engine = None
+        _engine_initialized = False
+
+
+# Preserve the @lru_cache.cache_clear() surface so the 50+ tests that call
+# ``_configured_engine.cache_clear()`` directly continue to work unchanged.
+_configured_engine.cache_clear = _reset_configured_engine  # type: ignore[attr-defined]
 
 
 def _engine_or_configured(engine: Engine | None = None) -> Engine | None:

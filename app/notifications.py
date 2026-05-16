@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from functools import lru_cache
 import logging
 import re
+import threading
 import time
 
 from sqlalchemy import Engine
@@ -28,17 +28,40 @@ class BookingNotificationSettings:
     template_language: str = "fr"
 
 
-@lru_cache(maxsize=1)
+# Lock-protected singleton replaces @lru_cache(maxsize=1). See
+# app/persistence.py for the full rationale — same race, same fix.
+_engine_lock = threading.Lock()
+_engine: Engine | None = None
+_engine_initialized = False
+
+
 def _notification_engine() -> Engine | None:
-    if not settings.database_url:
-        return None
-    engine = make_engine(settings.database_url)
-    init_db(engine)
-    return engine
+    global _engine, _engine_initialized
+    if _engine_initialized:
+        return _engine
+    with _engine_lock:
+        if _engine_initialized:
+            return _engine
+        if not settings.database_url:
+            _engine = None
+            _engine_initialized = True
+            return None
+        engine = make_engine(settings.database_url)
+        init_db(engine)
+        _engine = engine
+        _engine_initialized = True
+        return _engine
 
 
 def notification_cache_clear() -> None:
-    _notification_engine.cache_clear()
+    global _engine, _engine_initialized
+    with _engine_lock:
+        _engine = None
+        _engine_initialized = False
+
+
+# Preserve the @lru_cache.cache_clear() surface for any direct callers/tests.
+_notification_engine.cache_clear = notification_cache_clear  # type: ignore[attr-defined]
 
 
 def _engine_or_configured(engine: Engine | None = None) -> Engine | None:

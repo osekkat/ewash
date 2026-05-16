@@ -7,9 +7,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from functools import lru_cache
 import logging
 import re
+import threading
 
 from sqlalchemy import Engine, delete, func, select
 
@@ -199,18 +199,44 @@ DEFAULT_TEXT_SNIPPETS: dict[str, tuple[str, str]] = {
 }
 
 
-@lru_cache(maxsize=1)
+# Lock-protected singleton replaces @lru_cache(maxsize=1) for the same reason
+# documented in app/persistence.py: lru_cache is thread-safe for the lookup but
+# not the body, so two threads racing the first call would both run init_db's
+# create_all + seed + backfills and collide on duplicate-key INSERTs. See
+# app/persistence.py for the full rationale.
+_engine_lock = threading.Lock()
+_engine: Engine | None = None
+_engine_initialized = False
+
+
 def _catalog_engine() -> Engine | None:
-    if not settings.database_url:
-        return None
-    engine = make_engine(settings.database_url)
-    init_db(engine)
-    return engine
+    global _engine, _engine_initialized
+    if _engine_initialized:
+        return _engine
+    with _engine_lock:
+        if _engine_initialized:
+            return _engine
+        if not settings.database_url:
+            _engine = None
+            _engine_initialized = True
+            return None
+        engine = make_engine(settings.database_url)
+        init_db(engine)
+        _engine = engine
+        _engine_initialized = True
+        return _engine
 
 
 def catalog_cache_clear() -> None:
     """Clear cached DB state after admin catalog writes or test setting changes."""
-    _catalog_engine.cache_clear()
+    global _engine, _engine_initialized
+    with _engine_lock:
+        _engine = None
+        _engine_initialized = False
+
+
+# Preserve the @lru_cache.cache_clear() surface for any direct callers/tests.
+_catalog_engine.cache_clear = catalog_cache_clear  # type: ignore[attr-defined]
 
 
 def _engine_or_configured(engine: Engine | None = None) -> Engine | None:
