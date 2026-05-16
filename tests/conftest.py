@@ -2,17 +2,16 @@
 
 import os
 
-import pytest
-
-from app.rate_limit import limiter
-
 
 def _placeholder(*parts: str) -> str:
     return "-".join(("ewash", "test", *parts))
 
 
 # Importing app.config requires Meta/admin env vars. Tests never call external
-# services, so use harmless computed placeholders.
+# services, so use harmless computed placeholders. These MUST be applied
+# before any ``from app.*`` import below, because app.rate_limit now pulls in
+# app.config at module-load time (ewash-y0n made the limiter read its
+# storage URI from settings).
 _REQUIRED_ENV_DEFAULTS = {
     "META_APP_" + "SECRET": _placeholder("meta", "app"),
     "META_VERIFY_" + "TOKEN": _placeholder("meta", "verify"),
@@ -43,6 +42,10 @@ os.environ.setdefault("RATE_LIMIT_BOOKINGS_PER_IP", "1000/hour")
 os.environ.setdefault("RATE_LIMIT_CATALOG_PER_IP", "1000/hour")
 os.environ.setdefault("RATE_LIMIT_PROMO_PER_IP", "1000/hour")
 os.environ.setdefault("RATE_LIMIT_BOOKINGS_LIST_PER_" + "TOKEN", "1000/hour")
+
+import pytest  # noqa: E402
+
+from app.rate_limit import limiter  # noqa: E402
 
 
 @pytest.fixture(autouse=True)

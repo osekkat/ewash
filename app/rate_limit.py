@@ -12,16 +12,30 @@ from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
+from .config import settings
 from .security import hash_token
 
 logger = logging.getLogger("ewash.rate_limit")
 
-limiter = Limiter(
-    key_func=get_remote_address,
-    default_limits=[],
-    storage_uri="memory://",
-    headers_enabled=True,
-)
+
+def _build_limiter() -> Limiter:
+    """Construct the module-level Limiter from current settings.
+
+    Memory storage (the default) resets on Railway redeploy and never
+    spans workers; production horizontal scale should point
+    ``RATE_LIMIT_STORAGE_URI`` at a shared backend like
+    ``redis://host:6379/0`` (ewash-y0n).
+    """
+    return Limiter(
+        key_func=get_remote_address,
+        default_limits=[],
+        storage_uri=settings.rate_limit_storage_uri,
+        strategy=settings.rate_limit_strategy,
+        headers_enabled=True,
+    )
+
+
+limiter = _build_limiter()
 
 
 def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:

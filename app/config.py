@@ -68,6 +68,18 @@ class Settings(BaseSettings):
     # tight enough to cap the aggregate request rate from one origin.
     rate_limit_token_endpoints_per_ip: str = "600/hour"
 
+    # slowapi storage backend. ``memory://`` (default) is in-process and
+    # resets on Railway redeploy + does not span workers — fine for a
+    # single-process pre-launch deploy. For horizontal scale or to keep
+    # caps intact across redeploys, point to a shared store such as
+    # ``redis://host:6379/0`` (requires the ``redis`` package; not pinned
+    # in requirements.txt — install on demand). See ewash-y0n.
+    rate_limit_storage_uri: str = "memory://"
+    # slowapi strategy: ``fixed-window`` (default), ``moving-window``, or
+    # ``sliding-window-counter``. Moving-window gives smoother caps at the
+    # cost of more storage ops per request.
+    rate_limit_strategy: str = "fixed-window"
+
     def allowed_origins_list(self) -> list[str]:
         """Parse ``allowed_origins`` into a clean list of non-empty origins."""
         return [o.strip() for o in self.allowed_origins.split(",") if o.strip()]

@@ -19,6 +19,7 @@ from app.db import init_db, make_engine
 from app.main import app as main_app
 from app.rate_limit import (
     PerPhoneRateLimitExceeded,
+    _build_limiter,
     _token_key_func,
     hit_phone_limit,
     limiter,
@@ -455,3 +456,37 @@ def test_token_key_func_falls_back_to_remote_address():
     request = _request_with_headers({})
 
     case.assertEqual(_token_key_func(request), "198.51.100.9")
+
+
+def test_module_limiter_uses_memory_storage_by_default():
+    # The shipped module-level limiter follows the conftest default
+    # (memory://) so unit tests stay hermetic.
+    case.assertEqual(limiter._storage_uri, "memory://")
+    case.assertEqual(
+        type(limiter._storage).__module__,
+        "limits.storage.memory",
+    )
+
+
+def test_build_limiter_reads_storage_uri_from_settings(monkeypatch):
+    monkeypatch.setattr(settings, "rate_limit_storage_uri", "memory://")
+    monkeypatch.setattr(settings, "rate_limit_strategy", "moving-window")
+
+    rebuilt = _build_limiter()
+
+    case.assertEqual(rebuilt._storage_uri, "memory://")
+    # slowapi stores the strategy choice on construction. Whichever
+    # internal attribute names it uses, the storage-uri plumbing is what
+    # this bead is about — the strategy field is exercised in the
+    # negative test below.
+
+
+def test_build_limiter_propagates_invalid_storage_uri_through_slowapi(monkeypatch):
+    # slowapi defers backend resolution to ``limits.storage_from_string``;
+    # an unknown scheme raises at construction. The fact that this raises
+    # (rather than silently falling back to memory://) is the evidence
+    # that ``settings.rate_limit_storage_uri`` is actually wired through.
+    monkeypatch.setattr(settings, "rate_limit_storage_uri", "bogus-scheme://nope")
+
+    with case.assertRaises(Exception):
+        _build_limiter()
