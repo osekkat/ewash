@@ -329,7 +329,7 @@ def test_alembic_offline_sql_generation_uses_static_plan():
 
     assert "CREATE TABLE customers" in sql
     assert "CREATE TABLE bookings" in sql
-    assert "UPDATE alembic_version SET version_num='20260514_0006'" in sql
+    assert "UPDATE alembic_version SET version_num='20260516_0007'" in sql
 
 
 def test_migration_0006_sqlite_roundtrip(tmp_path):
@@ -466,6 +466,98 @@ def test_migration_0006_source_check_rejects_invalid():
                 "VALUES ('212600000001','draft','EW-2026-CHECK','Test','bogus')"
             ))
             conn.commit()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Migration 0007 — H-2 reminder rule seed (ewash-ili)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_migration_0007_seeds_h2_reminder_rule_idempotent(tmp_path):
+    """Migration 0007 seeds exactly one ``ReminderRuleRow(name='H-2')``.
+
+    Production gap fixed by this migration: ``_h2_reminder_rule()`` falls
+    back to ``None`` on a fresh DB, so the H-2 reminder row gets a
+    ``rule_id = NULL`` and the cadence is invisible in ``/admin/reminders``.
+    The seed makes the rule editable from day one.
+
+    Idempotency is exercised via a downgrade-then-upgrade cycle (mirroring
+    ``test_migration_0006_sqlite_roundtrip``): the seed must reappear with
+    no duplicates after every upgrade.
+    """
+    db_path = tmp_path / "ewash_0007.db"
+    db_url = f"sqlite+pysqlite:///{db_path}"
+
+    _alembic_upgrade(db_url, "head")
+
+    engine = make_engine(db_url)
+    with session_scope(engine) as sess:
+        rows = sess.scalars(
+            select(ReminderRuleRow).where(ReminderRuleRow.name == "H-2")
+        ).all()
+        assert len(rows) == 1, f"expected one H-2 rule, got {len(rows)}"
+        row = rows[0]
+        assert row.enabled is True
+        assert row.offset_minutes_before == 120
+        assert row.max_sends == 1
+        assert row.min_minutes_between_sends == 0
+        assert row.template_name == "booking_reminder_h2"
+        assert row.channel == "whatsapp_template"
+
+    # Down then up — the seed must reappear without duplicating.
+    _alembic_downgrade(db_url, "20260514_0006")
+
+    engine2 = make_engine(db_url)
+    with session_scope(engine2) as sess:
+        remaining = sess.scalars(
+            select(ReminderRuleRow).where(ReminderRuleRow.name == "H-2")
+        ).all()
+        assert remaining == [], "downgrade did not remove the seed"
+
+    _alembic_upgrade(db_url, "head")
+
+    engine3 = make_engine(db_url)
+    with session_scope(engine3) as sess:
+        redo = sess.scalars(
+            select(ReminderRuleRow).where(ReminderRuleRow.name == "H-2")
+        ).all()
+        assert len(redo) == 1, f"redo produced {len(redo)} H-2 rules"
+
+
+def test_migration_0007_does_not_overwrite_admin_edits(tmp_path):
+    """A second ``alembic upgrade head`` (after admin tweaks) must be a no-op.
+
+    Admins can edit ``reminder_rules`` row at runtime from ``/admin/reminders``.
+    The seed must never overwrite those edits; ``INSERT ... WHERE NOT EXISTS``
+    short-circuits when the row already exists.
+    """
+    db_path = tmp_path / "ewash_0007_preserve.db"
+    db_url = f"sqlite+pysqlite:///{db_path}"
+
+    _alembic_upgrade(db_url, "head")
+
+    engine = make_engine(db_url)
+    with session_scope(engine) as sess:
+        row = sess.scalars(
+            select(ReminderRuleRow).where(ReminderRuleRow.name == "H-2")
+        ).one()
+        row.template_name = "admin_custom_template"
+        row.max_sends = 3
+        row.min_minutes_between_sends = 45
+
+    # No-op upgrade: alembic sees we're already at head, but even if it ran
+    # the body again the WHERE NOT EXISTS gate prevents overwrite.
+    _alembic_upgrade(db_url, "head")
+
+    engine2 = make_engine(db_url)
+    with session_scope(engine2) as sess:
+        rows = sess.scalars(
+            select(ReminderRuleRow).where(ReminderRuleRow.name == "H-2")
+        ).all()
+        assert len(rows) == 1
+        assert rows[0].template_name == "admin_custom_template"
+        assert rows[0].max_sends == 3
+        assert rows[0].min_minutes_between_sends == 45
 
 
 # ─────────────────────────────────────────────────────────────────────────────
