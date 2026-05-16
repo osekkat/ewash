@@ -5,9 +5,10 @@ const { useState: useS_h, useEffect: useE_h, useMemo: useM_h, useRef: useR_h } =
 
 // Smoothly count from 0 to `target` over `duration` ms (ease-out cubic).
 // Respects prefers-reduced-motion.
-function useCountUp(target, duration = 1200) {
+function useCountUp(target, duration = 1200, enabled = true) {
   const [value, setValue] = useS_h(0);
   useE_h(() => {
+    if (!enabled) { setValue(target); return; }
     if (typeof window === 'undefined') { setValue(target); return; }
     const reduced = window.matchMedia &&
       window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -22,17 +23,30 @@ function useCountUp(target, duration = 1200) {
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [target, duration]);
+  }, [target, duration, enabled]);
   return value;
+}
+
+function _positiveNumber(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function _readImpactStats() {
+  const source = typeof window !== 'undefined' ? window.EWASH_IMPACT_STATS : null;
+  return {
+    litersSaved: _positiveNumber(source && source.liters_saved),
+    washCount: _positiveNumber(source && source.wash_count),
+  };
 }
 
 // ─────────────────────────────────────────────────────────────
 // HOME
 // ─────────────────────────────────────────────────────────────
 function HomeScreen({ t, lang, openBooking, gotoSupport, gotoTariffs, theme, variant, profile, staffContact }) {
-  const litersSaved = 2147;
-  const litersCount = useCountUp(litersSaved, 1400);
-  const washCount = useCountUp(23, 900);
+  const impactStats = _readImpactStats();
+  const litersCount = useCountUp(impactStats.litersSaved || 0, 1400, !!impactStats.litersSaved);
+  const washCount = useCountUp(impactStats.washCount || 0, 900, !!impactStats.washCount);
   return (
     <div className="app-scroll">
       <div className="appbar">
@@ -113,20 +127,35 @@ function HomeScreen({ t, lang, openBooking, gotoSupport, gotoTariffs, theme, var
           <div className="card" style={{ flex: 1, padding: 14, borderRadius: 18 }}>
             <div className="row gap-6 mb-8">
               <Icons.Drop size={16} style={{ color: 'var(--primary)' }} />
-              <span className="t-tiny" style={{ color: 'var(--text-2)', fontWeight: 600 }}>{t.waterSaved}</span>
+              <span className="t-tiny" style={{ color: 'var(--text-2)', fontWeight: 600 }}>
+                {impactStats.litersSaved ? t.waterSaved : (t.waterlessMethod || 'Méthode')}
+              </span>
             </div>
-            <div className="t-num" style={{ fontWeight: 800, fontSize: 26, color: 'var(--text)' }}>
-              {litersCount.toLocaleString('fr-FR')}<span style={{ fontSize: 14, color: 'var(--text-2)', marginInlineStart: 4 }}>L</span>
+            <div className="t-num" style={{ fontWeight: 800, fontSize: impactStats.litersSaved ? 26 : 22, color: 'var(--text)' }}>
+              {impactStats.litersSaved ? (
+                <React.Fragment>
+                  {litersCount.toLocaleString('fr-FR')}<span style={{ fontSize: 14, color: 'var(--text-2)', marginInlineStart: 4 }}>L</span>
+                </React.Fragment>
+              ) : (
+                t.waterlessBadge || 'Sans eau'
+              )}
             </div>
           </div>
           <div className="card" style={{ flex: 1, padding: 14, borderRadius: 18 }}>
             <div className="row gap-6 mb-8">
               <Icons.Sparkle size={16} style={{ color: 'var(--accent)' }} />
-              <span className="t-tiny" style={{ color: 'var(--text-2)', fontWeight: 600 }}>Lavages</span>
+              <span className="t-tiny" style={{ color: 'var(--text-2)', fontWeight: 600 }}>
+                {impactStats.washCount ? (t.washMetric || 'Lavages') : (t.ecoImpact || 'Impact')}
+              </span>
             </div>
             <div className="t-num" style={{ fontWeight: 800, fontSize: 26, color: 'var(--text)' }}>
-              {washCount}
+              {impactStats.washCount ? washCount : '—'}
             </div>
+            {!impactStats.washCount && (
+              <div className="t-tiny" style={{ color: 'var(--text-3)', fontWeight: 600, marginTop: 2 }}>
+                {t.impactPending || 'Mesure en cours'}
+              </div>
+            )}
           </div>
         </div>
 
@@ -1110,6 +1139,8 @@ function ProfileScreen({ t, lang, setLang, theme, setTheme, variant, setVariant,
   const [logoutBusy, setLogoutBusy] = useS_h(null);
   const [deleteBusy, setDeleteBusy] = useS_h(false);
   const [deleteError, setDeleteError] = useS_h('');
+  const impactStats = _readImpactStats();
+  const profileLitersCount = useCountUp(impactStats.litersSaved || 0, 1200, !!impactStats.litersSaved);
 
   const doLogout = async (scope) => {
     if (logoutBusy) return;
@@ -1207,17 +1238,29 @@ function ProfileScreen({ t, lang, setLang, theme, setTheme, variant, setVariant,
           }}/>
           <div className="row gap-8 mb-8" style={{ position: 'relative' }}>
             <Icons.Drop size={18} />
-            <div className="t-tiny" style={{ fontWeight: 700, letterSpacing: '0.12em', color: 'rgba(255,255,255,0.78)' }}>VOTRE IMPACT</div>
+            <div className="t-tiny" style={{ fontWeight: 700, letterSpacing: '0.12em', color: 'rgba(255,255,255,0.78)' }}>
+              {(t.ecoImpact || 'Impact').toUpperCase()}
+            </div>
           </div>
           <div className="row" style={{ alignItems: 'baseline', gap: 8, position: 'relative' }}>
             <div style={{
               fontFamily: 'var(--font-display)', fontWeight: 800,
-              fontSize: 40, letterSpacing: '-0.03em', lineHeight: 1.0,
+              fontSize: impactStats.litersSaved ? 40 : 30,
+              letterSpacing: 0,
+              lineHeight: 1.0,
               fontVariantNumeric: 'tabular-nums',
-            }}>2 147<span style={{ fontSize: 22, marginInlineStart: 4, opacity: 0.85 }}>L</span></div>
+            }}>
+              {impactStats.litersSaved ? (
+                <React.Fragment>
+                  {profileLitersCount.toLocaleString('fr-FR')}<span style={{ fontSize: 22, marginInlineStart: 4, opacity: 0.85 }}>L</span>
+                </React.Fragment>
+              ) : (
+                t.waterlessBadge || 'Sans eau'
+              )}
+            </div>
           </div>
           <div className="t-muted" style={{ color: 'rgba(255,255,255,0.78)', marginTop: 6, position: 'relative' }}>
-            {t.waterSaved.toLowerCase()} · soit {Math.round(2147 / 12)} douches évitées
+            {impactStats.litersSaved ? t.waterSaved.toLowerCase() : (t.impactPendingBody || 'Vos économies réelles apparaîtront ici après vos réservations.')}
           </div>
         </div>
 
