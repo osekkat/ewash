@@ -37,11 +37,19 @@ BOOKING_STATUSES = (
 )
 
 
+def _is_offline() -> bool:
+    return bool(op.get_context().as_sql)
+
+
 def _tables() -> set[str]:
+    if _is_offline():
+        return set()
     return set(inspect(op.get_bind()).get_table_names())
 
 
 def _columns(table: str) -> set[str]:
+    if _is_offline():
+        return set()
     return {column["name"] for column in inspect(op.get_bind()).get_columns(table)}
 
 
@@ -111,6 +119,10 @@ def _seed_services() -> None:
 
 
 def upgrade() -> None:
+    if _is_offline():
+        Base.metadata.create_all(bind=op.get_bind(), checkfirst=False)
+        return
+
     tables = _tables()
     if "customers" not in tables or "bookings" not in tables:
         Base.metadata.create_all(bind=op.get_bind())

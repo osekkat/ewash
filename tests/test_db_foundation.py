@@ -1,3 +1,4 @@
+import io
 import os
 import tempfile
 from datetime import datetime, timezone
@@ -299,6 +300,36 @@ def _alembic_downgrade(db_url: str, revision: str) -> None:
             os.environ.pop("DATABASE_URL", None)
         else:
             os.environ["DATABASE_URL"] = prior
+
+
+def _alembic_upgrade_sql(db_url: str, revision: str = "head") -> str:
+    from alembic import command
+    from alembic.config import Config
+
+    output = io.StringIO()
+    cfg = Config(
+        os.path.join(os.path.dirname(__file__), os.pardir, "alembic.ini"),
+        output_buffer=output,
+    )
+    cfg.set_main_option("script_location", os.path.join(os.path.dirname(__file__), os.pardir, "migrations"))
+    prior = os.environ.get("DATABASE_URL")
+    os.environ["DATABASE_URL"] = db_url
+    try:
+        command.upgrade(cfg, revision, sql=True)
+    finally:
+        if prior is None:
+            os.environ.pop("DATABASE_URL", None)
+        else:
+            os.environ["DATABASE_URL"] = prior
+    return output.getvalue()
+
+
+def test_alembic_offline_sql_generation_uses_static_plan():
+    sql = _alembic_upgrade_sql("sqlite+pysqlite:///:memory:", "head")
+
+    assert "CREATE TABLE customers" in sql
+    assert "CREATE TABLE bookings" in sql
+    assert "UPDATE alembic_version SET version_num='20260514_0006'" in sql
 
 
 def test_migration_0006_sqlite_roundtrip(tmp_path):

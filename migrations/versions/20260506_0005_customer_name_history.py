@@ -16,7 +16,13 @@ branch_labels = None
 depends_on = None
 
 
+def _is_offline() -> bool:
+    return bool(op.get_context().as_sql)
+
+
 def _tables() -> set[str]:
+    if _is_offline():
+        return set()
     return set(inspect(op.get_bind()).get_table_names())
 
 
@@ -27,6 +33,9 @@ def _indexes(table: str) -> set[str]:
 
 
 def upgrade() -> None:
+    if _is_offline():
+        return
+
     if "customer_names" not in _tables():
         op.create_table(
             "customer_names",
@@ -47,5 +56,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    if _is_offline():
+        return
+
     if "customer_names" in _tables():
         op.drop_table("customer_names")

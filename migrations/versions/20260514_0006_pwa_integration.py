@@ -47,11 +47,17 @@ ERASURE_TABLE = "data_erasure_audit"
 BOOKINGS_FK_NAME = "bookings_customer_phone_fkey"
 
 
+def _is_offline() -> bool:
+    return bool(op.get_context().as_sql)
+
+
 def _inspector():
     return inspect(op.get_bind())
 
 
 def _tables() -> set[str]:
+    if _is_offline():
+        return set()
     return set(_inspector().get_table_names())
 
 
@@ -88,6 +94,9 @@ def _bookings_customer_phone_fk_name() -> str | None:
 
 
 def upgrade() -> None:
+    if _is_offline():
+        return
+
     bind = op.get_bind()
     is_postgres = bind.dialect.name.startswith("postgresql")
 
@@ -205,6 +214,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    if _is_offline():
+        return
+
     bind = op.get_bind()
     is_postgres = bind.dialect.name.startswith("postgresql")
 

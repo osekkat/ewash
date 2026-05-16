@@ -16,11 +16,20 @@ branch_labels = None
 depends_on = None
 
 
+def _is_offline() -> bool:
+    return bool(op.get_context().as_sql)
+
+
 def _columns(table: str) -> set[str]:
+    if _is_offline():
+        return set()
     return {column["name"] for column in inspect(op.get_bind()).get_columns(table)}
 
 
 def upgrade() -> None:
+    if _is_offline():
+        return
+
     columns = _columns("customers")
     if "whatsapp_profile_name" not in columns:
         op.add_column(
@@ -36,6 +45,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    if _is_offline():
+        return
+
     columns = _columns("customers")
     if "whatsapp_wa_id" in columns:
         op.drop_index("ix_customers_whatsapp_wa_id", table_name="customers")

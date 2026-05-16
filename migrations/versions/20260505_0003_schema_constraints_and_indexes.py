@@ -23,11 +23,17 @@ BOOKING_STATUS_CHECK = (
 )
 
 
+def _is_offline() -> bool:
+    return bool(op.get_context().as_sql)
+
+
 def _inspector():
     return inspect(op.get_bind())
 
 
 def _tables() -> set[str]:
+    if _is_offline():
+        return set()
     return set(_inspector().get_table_names())
 
 
@@ -61,6 +67,9 @@ def _create_index_if_missing(table: str, name: str, columns: list[str]) -> None:
 
 
 def upgrade() -> None:
+    if _is_offline():
+        return
+
     bind = op.get_bind()
 
     _create_index_if_missing("bookings", "ix_bookings_center_id", ["center_id"])
@@ -94,6 +103,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    if _is_offline():
+        return
+
     bind = op.get_bind()
 
     for table, index_name in (
