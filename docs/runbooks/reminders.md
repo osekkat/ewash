@@ -35,8 +35,9 @@ the dispatcher:
 
 Concurrent invocations (cron firings overlapping) cannot double-send: Postgres
 returns disjoint row sets due to `SKIP LOCKED`, and the in-flight claim stamps
-`sent_at` so the row no longer matches the eligibility predicate on the next
-sweep.
+`sent_at` so the row leaves the eligibility predicate while the sender is
+active. If a process dies mid-send, the stale claim can be retried after a
+5-minute lease when the reminder still has attempts remaining.
 
 ## Scheduling — Railway
 

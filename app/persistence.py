@@ -49,6 +49,7 @@ from .security import generate_token, hash_token
 log = logging.getLogger(__name__)
 H2_REMINDER_KIND = "H-2"
 H2_REMINDER_OFFSET_MINUTES = 120
+REMINDER_CLAIM_LEASE_MINUTES = 5
 CONVERSATION_ABANDON_AFTER_SECONDS = 60 * 60 * 2
 
 
@@ -1224,6 +1225,7 @@ def claim_next_due_reminder(
         return None
 
     skip_set = {int(rid) for rid in exclude_ids} if exclude_ids else set()
+    stale_claim_before = current - timedelta(minutes=REMINDER_CLAIM_LEASE_MINUTES)
     with session_scope(db_engine) as session:
         while True:
             max_sends_expr = func.coalesce(ReminderRuleRow.max_sends, 1)
@@ -1235,13 +1237,18 @@ def claim_next_due_reminder(
                 .where(
                     BookingReminderRow.scheduled_for <= current,
                     BookingRow.status == "confirmed",
-                    attempts_expr < max_sends_expr,
                     or_(
                         and_(
                             BookingReminderRow.status == "pending",
-                            BookingReminderRow.sent_at.is_(None),
+                            or_(
+                                BookingReminderRow.sent_at.is_(None),
+                                BookingReminderRow.sent_at <= stale_claim_before,
+                            ),
                         ),
-                        BookingReminderRow.status == "failed",
+                        and_(
+                            BookingReminderRow.status == "failed",
+                            attempts_expr < max_sends_expr,
+                        ),
                     ),
                 )
                 .order_by(BookingReminderRow.scheduled_for.asc(), BookingReminderRow.id.asc())
@@ -1259,6 +1266,13 @@ def claim_next_due_reminder(
             rule = row.rule
             max_sends = int(rule.max_sends) if rule is not None and rule.max_sends else 1
             min_minutes = int(rule.min_minutes_between_sends) if rule is not None and rule.min_minutes_between_sends else 0
+
+            if (row.attempt_count or 0) >= max_sends:
+                row.status = "failed"
+                if not row.error:
+                    row.error = "max_sends exhausted"
+                skip_set.add(int(row.id))
+                continue
 
             if row.status == "failed" and row.sent_at is not None and min_minutes > 0:
                 cooldown_end = _as_utc(row.sent_at) + timedelta(minutes=min_minutes)

@@ -243,6 +243,23 @@ def test_claim_skips_bookings_not_in_confirmed_status(_patch_engine):
     assert claim_next_due_reminder() is None
 
 
+def test_mark_sent_rechecks_booking_status_after_in_flight_cancellation(_patch_engine):
+    ref, reminder_id, _ = _setup_confirmed_booking_with_reminder(_patch_engine)
+    candidate = claim_next_due_reminder()
+    assert candidate is not None
+
+    with session_scope(_patch_engine) as session:
+        booking = session.scalars(select(BookingRow).where(BookingRow.ref == ref)).one()
+        booking.status = "customer_cancelled"
+
+    mark_reminder_sent(reminder_id)
+
+    with session_scope(_patch_engine) as session:
+        row = session.get(BookingReminderRow, reminder_id)
+        assert row.status == "pending"
+        assert row.booking.status == "customer_cancelled"
+
+
 def test_in_flight_pending_reminder_does_not_block_later_due_row(_patch_engine):
     _, in_flight_id, _ = _setup_confirmed_booking_with_reminder(
         _patch_engine,
@@ -304,6 +321,25 @@ def test_claim_does_not_repick_pending_in_flight_retryable_row(_patch_engine):
         assert row.status == "pending"
         assert row.sent_at is not None
         assert row.attempt_count == 1
+
+
+def test_claim_recovers_stale_pending_in_flight_row(_patch_engine):
+    """A crashed sender should not strand a retryable claimed row forever."""
+    now = datetime.now(timezone.utc)
+    _, reminder_id, _ = _setup_confirmed_booking_with_reminder(
+        _patch_engine,
+        rule_kwargs={"max_sends": 2, "min_minutes_between_sends": 0},
+    )
+
+    first = claim_next_due_reminder(now=now)
+    too_soon = claim_next_due_reminder(now=now + timedelta(minutes=4, seconds=59))
+    stale_retry = claim_next_due_reminder(now=now + timedelta(minutes=5, seconds=1))
+
+    assert first is not None
+    assert too_soon is None
+    assert stale_retry is not None
+    assert stale_retry.reminder_id == reminder_id
+    assert stale_retry.attempt_count == 2
 
 
 def test_claim_sql_uses_for_update_skip_locked_on_postgresql():
@@ -438,6 +474,47 @@ def test_dispatch_exhausted_failed_row_does_not_block_later_due_reminder(monkeyp
         second = session.get(BookingReminderRow, second_reminder_id)
         assert exhausted.status == "failed"
         assert exhausted.attempt_count == 1
+        assert second.status == "sent"
+
+
+def test_dispatch_exhausted_stale_pending_row_does_not_block_later_due_reminder(monkeypatch, _patch_engine):
+    _, exhausted_reminder_id, _ = _setup_confirmed_booking_with_reminder(
+        _patch_engine,
+        phone="212600009114",
+    )
+    second_ref, second_reminder_id, _ = _setup_confirmed_booking_with_reminder(
+        _patch_engine,
+        phone="212600009115",
+    )
+    now = datetime.now(timezone.utc)
+    with session_scope(_patch_engine) as session:
+        exhausted = session.get(BookingReminderRow, exhausted_reminder_id)
+        exhausted.status = "pending"
+        exhausted.attempt_count = 1
+        exhausted.sent_at = now - timedelta(minutes=10)
+        exhausted.scheduled_for = now - timedelta(hours=3)
+        second = session.get(BookingReminderRow, second_reminder_id)
+        second.scheduled_for = now - timedelta(hours=1)
+
+    sent_refs: list[str] = []
+
+    async def fake_send_template(to, template_name, *, language_code="fr", body_parameters=None):
+        sent_refs.append(list(body_parameters or [])[0])
+        return {"ok": True}
+
+    monkeypatch.setattr(meta_module, "send_template", fake_send_template)
+
+    result = asyncio.run(dispatch_pending_reminders(now=now, batch_size=10))
+
+    assert result.sent == 1
+    assert result.failed == 0
+    assert result.examined == 1
+    assert sent_refs == [second_ref]
+    with session_scope(_patch_engine) as session:
+        exhausted = session.get(BookingReminderRow, exhausted_reminder_id)
+        second = session.get(BookingReminderRow, second_reminder_id)
+        assert exhausted.status == "failed"
+        assert exhausted.error == "max_sends exhausted"
         assert second.status == "sent"
 
 
