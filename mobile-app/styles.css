@@ -499,6 +499,7 @@ button.chip:active { transform: scale(0.95); }
   background: var(--surface);
   border-top: 1px solid var(--border);
   position: relative;
+  flex-shrink: 0;
 }
 .bottom-nav::before {
   content: "";
@@ -1133,7 +1134,16 @@ button.chip:active { transform: scale(0.95); }
 [data-pwa-standalone] .appbar {
   padding-top: calc(10px + env(safe-area-inset-top));
 }
+/* In iOS standalone, relying on flex-column positioning to keep .bottom-nav
+ * at the viewport bottom is unreliable — dvh sometimes lags during URL-bar
+ * transitions, and the bar can drift up as content scrolls. Pin it to the
+ * viewport directly, mirroring the .cta-dock fix below. */
 [data-pwa-standalone] .bottom-nav {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 10;
   padding-bottom: calc(10px + env(safe-area-inset-bottom));
 }
 /* CtaDock — always-visible bottom CTA used by every booking step.
@@ -1159,8 +1169,11 @@ button.chip:active { transform: scale(0.95); }
   left: 0;
   right: 0;
 }
-/* The fixed CtaDock overlays the bottom ~110px of content; reserve that
- * space inside .app-scroll so the last list item isn't covered. */
+/* Whichever bottom bar is rendered (BottomNav on tab screens, CtaDock in the
+ * booking modal) is position:fixed in standalone mode and overlays the bottom
+ * of the viewport. Reserve enough room inside .app-scroll so the last item
+ * isn't covered by either. 110px covers the taller CtaDock; the shorter
+ * BottomNav simply gets some extra breathing room. */
 [data-pwa-standalone] .app-scroll {
   padding-bottom: calc(110px + env(safe-area-inset-bottom));
 }
