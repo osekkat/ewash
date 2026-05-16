@@ -98,8 +98,11 @@ def test_moto_branch_no_vehicle():
 
     booking = _booking_from(payload, vehicle_label="Moto / Scooter")
 
-    assert booking.car_model is None
-    assert booking.color is None
+    # Moto bookings omit the vehicle block; the corresponding fields must
+    # default to "" (not None) so they round-trip into BookingRow's
+    # nullable=False columns on Postgres (ewash-len).
+    assert booking.car_model == ""
+    assert booking.color == ""
     assert booking.service_bucket == "moto"
 
 
@@ -118,7 +121,9 @@ def test_home_vs_center_location():
 
     assert booking_home.location_mode == "home"
     assert booking_home.location_address == "My House"
-    assert booking_home.center is None
+    # Home bookings have no center; "" lets the value land in BookingRow's
+    # nullable=False center column (ewash-len).
+    assert booking_home.center == ""
 
     payload_center = _make_payload(
         location_kind="center",
@@ -131,6 +136,8 @@ def test_home_vs_center_location():
     assert booking_center.location_mode == "center"
     assert booking_center.center == "Stand Bouskoura"
     assert booking_center.center_id == "c1"
+    # Inverse: center bookings have no pin_address.
+    assert booking_center.location_address == ""
 
 
 def test_client_request_id_threaded():
@@ -164,7 +171,13 @@ def test_scratch_fields_default():
 
     assert booking.when_page == 0
     assert booking.when_dates == []
-    assert booking.ref is None
-    assert booking.created_at is None
-    assert booking.addon_service is None
+    # ref/created_at get overwritten by assign_ref() before persist; the
+    # dataclass default is "" — keep the from_api_payload return shape in
+    # sync with the dataclass declaration so the persist step never sees
+    # NULLs (ewash-len).
+    assert booking.ref == ""
+    assert booking.created_at == ""
+    assert booking.addon_service == ""
+    assert booking.addon_service_label == ""
+    assert booking.addon_price_dh == 0
     assert {field.name for field in fields(Booking)} == set(booking.__dict__)

@@ -113,25 +113,32 @@ def from_api_payload(
     from .notifications import normalize_phone
 
     normalized_phone = normalize_phone(payload.phone)
-    promo_code = catalog.normalize_promo_code(payload.promo_code) if payload.promo_code else None
+    promo_code = catalog.normalize_promo_code(payload.promo_code) if payload.promo_code else ""
+    # NB: every str field below defaults to ``""`` (not None) — the Booking
+    # dataclass declares them as ``str = ""`` and the matching BookingRow
+    # columns are nullable=False. Passing None worked on SQLite (which is
+    # permissive) but blew up Postgres with a NOT NULL violation on the
+    # first omitted-vehicle / home-without-pin-address PWA booking
+    # (ewash-len). ``client_request_id``, ``latitude`` and ``longitude``
+    # stay None because their model columns *are* nullable.
     booking = Booking(
         phone=normalized_phone,
-        name=clean_text(payload.name, max_len=120),
+        name=clean_text(payload.name, max_len=120) or "",
         category=payload.category,
         vehicle_type=vehicle_label,
-        car_model=clean_text(payload.vehicle.make, max_len=64) if payload.vehicle else None,
-        color=clean_text(payload.vehicle.color, max_len=64) if payload.vehicle else None,
+        car_model=(clean_text(payload.vehicle.make, max_len=64) or "") if payload.vehicle else "",
+        color=(clean_text(payload.vehicle.color, max_len=64) or "") if payload.vehicle else "",
         location_mode=payload.location.kind,
-        center_id=payload.location.center_id,
-        center=location_label if payload.location.kind == "center" else None,
-        location_name=None,
-        location_address=payload.location.pin_address if payload.location.kind == "home" else None,
-        address=clean_text(payload.location.address_details, max_len=200),
+        center_id=payload.location.center_id or "",
+        center=location_label if payload.location.kind == "center" else "",
+        location_name="",
+        location_address=(payload.location.pin_address or "") if payload.location.kind == "home" else "",
+        address=clean_text(payload.location.address_details, max_len=200) or "",
         latitude=None,
         longitude=None,
-        geo=None,
+        geo="",
         promo_code=promo_code,
-        promo_label=promo_label,
+        promo_label=promo_label or "",
         service=payload.service_id,
         service_bucket=_bucket_for(payload.service_id),
         service_label=service_label,
@@ -141,15 +148,13 @@ def from_api_payload(
         date_label=date_label,
         slot_id=payload.slot,
         slot=slot_label,
-        note=clean_text(payload.note, max_len=500),
-        addon_service=None,
-        addon_service_label=None,
-        addon_price_dh=None,
+        note=clean_text(payload.note, max_len=500) or "",
+        addon_service="",
+        addon_service_label="",
+        addon_price_dh=0,
         client_request_id=payload.client_request_id,
         when_page=0,
         when_dates=[],
-        ref=None,
-        created_at=None,
     )
     log.debug(
         "ewash.booking.from_api phone_hash=%s category=%s service=%s price=%d "

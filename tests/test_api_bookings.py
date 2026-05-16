@@ -182,6 +182,75 @@ def test_create_booking_happy_path_persists_pending_api_booking(api_db, caplog):
     assert "212611204502" not in messages
 
 
+def test_create_booking_minimal_home_payload_persists_empty_strings_not_null(api_db):
+    """Regression for ewash-len: a PWA booking that omits every optional
+    string field (vehicle, pin_address, address_details, note, promo,
+    addons, client_request_id) must persist with `""` on the matching
+    nullable=False columns. SQLite is permissive about NULLs in these
+    columns, but Postgres would 23502 on the first such request."""
+    minimal = {
+        "phone": "+212 611-204-502",
+        "name": "Minimal Test",
+        "category": "A",
+        "location": {"kind": "home"},
+        "service_id": "svc_cpl",
+        "date": "2026-06-15",
+        "slot": "slot_9_11",
+    }
+
+    with _client() as client:
+        response = client.post("/api/v1/bookings", json=minimal)
+
+    assert response.status_code == 200, response.text
+
+    with session_scope(api_db) as session:
+        row = session.scalars(select(BookingRow)).one()
+
+        # Every str column on BookingRow that maps to a Booking str field
+        # must be a non-None string. The bug would surface as None on any
+        # of these.
+        for column_name in (
+            "ref",
+            "customer_name",
+            "vehicle_type",
+            "car_model",
+            "color",
+            "service_id",
+            "service_bucket",
+            "service_label",
+            "promo_code",
+            "promo_label",
+            "location_mode",
+            "center",
+            "center_id",
+            "geo",
+            "address",
+            "address_text",
+            "location_name",
+            "location_address",
+            "date_label",
+            "slot",
+            "slot_id",
+            "note",
+            "addon_service",
+            "addon_service_label",
+        ):
+            value = getattr(row, column_name)
+            assert value is not None, f"BookingRow.{column_name} was NULL"
+            assert isinstance(value, str), (
+                f"BookingRow.{column_name} expected str, got {type(value).__name__}"
+            )
+
+        # int columns must be 0 (not None either)
+        assert row.addon_price_dh == 0
+        assert row.total_price_dh == row.price_dh
+
+        # Nullable columns may legitimately be None — just sanity check
+        # the booking actually landed.
+        assert row.status == "pending_ewash_confirmation"
+        assert row.customer_phone == "212611204502"
+
+
 def test_create_booking_refs_are_monotonic(api_db):
     with _client() as client:
         first = client.post(
