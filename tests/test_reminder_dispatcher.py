@@ -157,6 +157,32 @@ def test_claim_marks_failed_when_max_sends_exceeded(_patch_engine):
         assert row.attempt_count == 1
 
 
+def test_exhausted_failed_reminder_does_not_block_later_due_row(_patch_engine):
+    _, exhausted_id, _ = _setup_confirmed_booking_with_reminder(
+        _patch_engine,
+        phone="212600009010",
+    )
+    _, eligible_id, _ = _setup_confirmed_booking_with_reminder(
+        _patch_engine,
+        phone="212600009011",
+    )
+    now = datetime.now(timezone.utc)
+    with session_scope(_patch_engine) as session:
+        exhausted = session.get(BookingReminderRow, exhausted_id)
+        exhausted.status = "failed"
+        exhausted.attempt_count = 1
+        exhausted.scheduled_for = now - timedelta(hours=2)
+        exhausted.error = "permanent template failure"
+
+        eligible = session.get(BookingReminderRow, eligible_id)
+        eligible.scheduled_for = now - timedelta(hours=1)
+
+    candidate = claim_next_due_reminder()
+
+    assert candidate is not None
+    assert candidate.reminder_id == eligible_id
+
+
 def test_claim_defers_inside_min_minutes_between_sends(_patch_engine):
     _, reminder_id, _ = _setup_confirmed_booking_with_reminder(
         _patch_engine,
@@ -180,6 +206,34 @@ def test_claim_defers_inside_min_minutes_between_sends(_patch_engine):
     assert claim_next_due_reminder() is not None
 
 
+def test_failed_reminder_inside_cooldown_does_not_block_later_due_row(_patch_engine):
+    _, cooling_id, _ = _setup_confirmed_booking_with_reminder(
+        _patch_engine,
+        phone="212600009020",
+        rule_kwargs={"max_sends": 3, "min_minutes_between_sends": 30},
+    )
+    _, eligible_id, _ = _setup_confirmed_booking_with_reminder(
+        _patch_engine,
+        phone="212600009021",
+    )
+    now = datetime.now(timezone.utc)
+    with session_scope(_patch_engine) as session:
+        cooling = session.get(BookingReminderRow, cooling_id)
+        cooling.status = "failed"
+        cooling.attempt_count = 1
+        cooling.sent_at = now - timedelta(minutes=5)
+        cooling.scheduled_for = now - timedelta(hours=2)
+        cooling.error = "transient meta failure"
+
+        eligible = session.get(BookingReminderRow, eligible_id)
+        eligible.scheduled_for = now - timedelta(hours=1)
+
+    candidate = claim_next_due_reminder()
+
+    assert candidate is not None
+    assert candidate.reminder_id == eligible_id
+
+
 def test_claim_skips_bookings_not_in_confirmed_status(_patch_engine):
     ref, _, _ = _setup_confirmed_booking_with_reminder(_patch_engine)
     with session_scope(_patch_engine) as session:
@@ -187,6 +241,33 @@ def test_claim_skips_bookings_not_in_confirmed_status(_patch_engine):
         row.status = "customer_cancelled"
 
     assert claim_next_due_reminder() is None
+
+
+def test_in_flight_pending_reminder_does_not_block_later_due_row(_patch_engine):
+    _, in_flight_id, _ = _setup_confirmed_booking_with_reminder(
+        _patch_engine,
+        phone="212600009030",
+        rule_kwargs={"max_sends": 2, "min_minutes_between_sends": 0},
+    )
+    _, eligible_id, _ = _setup_confirmed_booking_with_reminder(
+        _patch_engine,
+        phone="212600009031",
+    )
+    now = datetime.now(timezone.utc)
+    with session_scope(_patch_engine) as session:
+        in_flight = session.get(BookingReminderRow, in_flight_id)
+        in_flight.status = "pending"
+        in_flight.attempt_count = 1
+        in_flight.sent_at = now
+        in_flight.scheduled_for = now - timedelta(hours=2)
+
+        eligible = session.get(BookingReminderRow, eligible_id)
+        eligible.scheduled_for = now - timedelta(hours=1)
+
+    candidate = claim_next_due_reminder()
+
+    assert candidate is not None
+    assert candidate.reminder_id == eligible_id
 
 
 def test_concurrent_claim_does_not_double_pick_same_row(_patch_engine):
@@ -204,6 +285,25 @@ def test_concurrent_claim_does_not_double_pick_same_row(_patch_engine):
 
     assert first is not None
     assert second is None
+
+
+def test_claim_does_not_repick_pending_in_flight_retryable_row(_patch_engine):
+    """A claimed pending row is in-flight even when max_sends allows retries."""
+    _, reminder_id, _ = _setup_confirmed_booking_with_reminder(
+        _patch_engine,
+        rule_kwargs={"max_sends": 2, "min_minutes_between_sends": 0},
+    )
+
+    first = claim_next_due_reminder()
+    second = claim_next_due_reminder()
+
+    assert first is not None
+    assert second is None
+    with session_scope(_patch_engine) as session:
+        row = session.get(BookingReminderRow, reminder_id)
+        assert row.status == "pending"
+        assert row.sent_at is not None
+        assert row.attempt_count == 1
 
 
 def test_claim_sql_uses_for_update_skip_locked_on_postgresql():
@@ -255,6 +355,110 @@ def test_dispatch_pending_reminders_sends_and_marks_sent(monkeypatch, _patch_eng
         row = session.get(BookingReminderRow, reminder_id)
         assert row.status == "sent"
         assert row.error == ""
+
+
+def test_dispatch_cooldown_row_does_not_block_later_due_reminder(monkeypatch, _patch_engine):
+    first_ref, first_reminder_id, _ = _setup_confirmed_booking_with_reminder(
+        _patch_engine,
+        phone="212600009110",
+        rule_kwargs={"max_sends": 3, "min_minutes_between_sends": 30},
+    )
+    second_ref, second_reminder_id, _ = _setup_confirmed_booking_with_reminder(
+        _patch_engine,
+        phone="212600009111",
+    )
+    now = datetime.now(timezone.utc)
+    with session_scope(_patch_engine) as session:
+        first = session.get(BookingReminderRow, first_reminder_id)
+        first.status = "failed"
+        first.attempt_count = 1
+        first.sent_at = now - timedelta(minutes=5)
+        first.scheduled_for = now - timedelta(hours=3)
+        second = session.get(BookingReminderRow, second_reminder_id)
+        second.scheduled_for = now - timedelta(hours=1)
+
+    sent_refs: list[str] = []
+
+    async def fake_send_template(to, template_name, *, language_code="fr", body_parameters=None):
+        sent_refs.append(list(body_parameters or [])[0])
+        return {"ok": True}
+
+    monkeypatch.setattr(meta_module, "send_template", fake_send_template)
+
+    result = asyncio.run(dispatch_pending_reminders(now=now, batch_size=10))
+
+    assert result.sent == 1
+    assert result.failed == 0
+    assert result.examined == 1
+    assert sent_refs == [second_ref]
+    with session_scope(_patch_engine) as session:
+        first = session.get(BookingReminderRow, first_reminder_id)
+        second = session.get(BookingReminderRow, second_reminder_id)
+        assert first.status == "failed"
+        assert first.attempt_count == 1
+        assert second.status == "sent"
+    assert first_ref != second_ref
+
+
+def test_dispatch_exhausted_failed_row_does_not_block_later_due_reminder(monkeypatch, _patch_engine):
+    _, exhausted_reminder_id, _ = _setup_confirmed_booking_with_reminder(
+        _patch_engine,
+        phone="212600009112",
+    )
+    second_ref, second_reminder_id, _ = _setup_confirmed_booking_with_reminder(
+        _patch_engine,
+        phone="212600009113",
+    )
+    now = datetime.now(timezone.utc)
+    with session_scope(_patch_engine) as session:
+        exhausted = session.get(BookingReminderRow, exhausted_reminder_id)
+        exhausted.status = "failed"
+        exhausted.attempt_count = 1
+        exhausted.sent_at = now - timedelta(hours=2)
+        exhausted.scheduled_for = now - timedelta(hours=3)
+        second = session.get(BookingReminderRow, second_reminder_id)
+        second.scheduled_for = now - timedelta(hours=1)
+
+    sent_refs: list[str] = []
+
+    async def fake_send_template(to, template_name, *, language_code="fr", body_parameters=None):
+        sent_refs.append(list(body_parameters or [])[0])
+        return {"ok": True}
+
+    monkeypatch.setattr(meta_module, "send_template", fake_send_template)
+
+    result = asyncio.run(dispatch_pending_reminders(now=now, batch_size=10))
+
+    assert result.sent == 1
+    assert result.failed == 0
+    assert result.examined == 1
+    assert sent_refs == [second_ref]
+    with session_scope(_patch_engine) as session:
+        exhausted = session.get(BookingReminderRow, exhausted_reminder_id)
+        second = session.get(BookingReminderRow, second_reminder_id)
+        assert exhausted.status == "failed"
+        assert exhausted.attempt_count == 1
+        assert second.status == "sent"
+
+
+def test_mark_sent_does_not_override_cancelled_in_flight_reminder(_patch_engine):
+    ref, reminder_id, _ = _setup_confirmed_booking_with_reminder(_patch_engine)
+    candidate = claim_next_due_reminder()
+    assert candidate is not None
+    assert candidate.booking_ref == ref
+
+    with session_scope(_patch_engine) as session:
+        reminder = session.get(BookingReminderRow, reminder_id)
+        reminder.status = "cancelled"
+        reminder.error = "booking_status:admin_cancelled"
+        reminder.booking.status = "admin_cancelled"
+
+    mark_reminder_sent(reminder_id)
+
+    with session_scope(_patch_engine) as session:
+        reminder = session.get(BookingReminderRow, reminder_id)
+        assert reminder.status == "cancelled"
+        assert reminder.error == "booking_status:admin_cancelled"
 
 
 def test_dispatch_marks_failed_when_meta_send_raises(monkeypatch, _patch_engine):
