@@ -65,6 +65,8 @@ window.I18N = {
     welcome: 'Bonjour',
     guestLabel: 'Invité',
     guestHint: 'Réservez pour personnaliser votre profil',
+    enterName: 'Votre nom',
+    namePlaceholder: 'Prénom et nom',
     // home
     bookNow: 'Réserver un lavage',
     bookCta: 'Prendre rendez-vous',
@@ -315,6 +317,8 @@ window.I18N = {
     welcome: 'مرحباً',
     guestLabel: 'زائر',
     guestHint: 'احجز لتخصيص ملفك الشخصي',
+    enterName: 'اسمك',
+    namePlaceholder: 'الاسم واللقب',
     bookNow: 'احجز غسيلاً',
     bookCta: 'احجز موعداً',
     nextAppointment: 'الموعد القادم',

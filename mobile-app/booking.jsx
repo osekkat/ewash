@@ -1808,8 +1808,9 @@ function RecapStep({ t, lang, data, patch, totalPrice, categories, centers, slot
   const promoLabel = data.promoCode ? data.promoCode : '';
   const phoneDigits = data.phone.replace(/\s/g, '').length;
   const phoneValid = phoneDigits >= 9;
+  const nameValid = (data.name || '').trim().length >= 1;
   const [submitting, setSubmitting] = useS_b(false);
-  const submitBlocked = rateLimitRemaining > 0;
+  const submitBlocked = rateLimitRemaining > 0 || !nameValid || !phoneValid;
   const confirm = async () => {
     if (submitting || submitBlocked) return;
     if (window.EwashLog) {
@@ -1852,6 +1853,12 @@ function RecapStep({ t, lang, data, patch, totalPrice, categories, centers, slot
       </div>
       <div className="px-16 col gap-12" style={{ paddingBottom: 100 }}>
         <div className="card card-elev" style={{ padding: 0, overflow: 'hidden' }}>
+          <NameRecapRow t={t} value={data.name || ''}
+            error={fieldErrors && fieldErrors.name}
+            onChange={(v) => {
+              if (onClearError) onClearError();
+              patch({ name: v });
+            }}/>
           <PhoneRecapRow t={t} value={data.phone}
             error={fieldErrors && fieldErrors.phone}
             onChange={(v) => {
@@ -1946,6 +1953,49 @@ function RecapStep({ t, lang, data, patch, totalPrice, categories, centers, slot
 
 // Phone-entry row inside the recap card. Replaces the old OTP login —
 // we collect the number here, at the moment it actually matters.
+function NameRecapRow({ t, value, onChange, error }) {
+  return (
+    <div style={{
+      display: 'flex', gap: 12, padding: '14px 16px',
+      borderBottom: '1px solid var(--border)',
+      alignItems: 'center',
+      background: error ? 'color-mix(in srgb, var(--danger) 8%, transparent)' : 'transparent',
+    }}>
+      <div style={{
+        width: 32, height: 32, borderRadius: 10,
+        background: 'var(--primary-soft)', color: 'var(--primary-soft-text)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+      }}>
+        <Icons.User size={18}/>
+      </div>
+      <div className="col flex-1" style={{ gap: 4, minWidth: 0 }}>
+        <div className="t-tiny" style={{ fontWeight: 600, color: 'var(--text-2)' }}>{t.enterName || 'Votre nom'}</div>
+        <input
+          value={value}
+          placeholder={t.namePlaceholder || 'Prénom et nom'}
+          autoComplete="name"
+          onChange={(e) => onChange(e.target.value)}
+          style={{
+            width: '100%',
+            fontWeight: 700, fontSize: 14, letterSpacing: '0.2px',
+            background: 'transparent',
+            border: 'none',
+            borderBottom: error ? '1px solid var(--danger)' : '1px solid transparent',
+            outline: 'none',
+            padding: 0,
+            color: 'var(--text)',
+            fontFamily: 'var(--font-display)',
+          }}/>
+        {error && (
+          <div className="t-tiny" style={{ color: 'var(--danger)', fontWeight: 700 }}>
+            {error}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function PhoneRecapRow({ t, value, onChange, error }) {
   return (
     <div style={{
