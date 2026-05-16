@@ -1,0 +1,67 @@
+{
+  "after_failure": [
+    {
+      "attempt_count": 1,
+      "booking_id": "[ID]",
+      "booking_ref": "[BOOKING_REF]",
+      "booking_status": "confirmed",
+      "error": "RuntimeError: transient golden failure",
+      "id": "[ID]",
+      "kind": "H-2",
+      "max_sends": 2,
+      "min_minutes_between_sends": 0,
+      "scheduled_for": "[TIMESTAMP]",
+      "sent_at": "[TIMESTAMP]",
+      "status": "failed",
+      "template_name": "booking_reminder_h2"
+    }
+  ],
+  "after_retry": [
+    {
+      "attempt_count": 2,
+      "booking_id": "[ID]",
+      "booking_ref": "[BOOKING_REF]",
+      "booking_status": "confirmed",
+      "error": "",
+      "id": "[ID]",
+      "kind": "H-2",
+      "max_sends": 2,
+      "min_minutes_between_sends": 0,
+      "scheduled_for": "[TIMESTAMP]",
+      "sent_at": "[TIMESTAMP]",
+      "status": "sent",
+      "template_name": "booking_reminder_h2"
+    }
+  ],
+  "before": [
+    {
+      "attempt_count": 0,
+      "booking_id": "[ID]",
+      "booking_ref": "[BOOKING_REF]",
+      "booking_status": "confirmed",
+      "error": "",
+      "id": "[ID]",
+      "kind": "H-2",
+      "max_sends": 2,
+      "min_minutes_between_sends": 0,
+      "scheduled_for": "[TIMESTAMP]",
+      "sent_at": null,
+      "status": "pending",
+      "template_name": "booking_reminder_h2"
+    }
+  ],
+  "meta_call_count": 2,
+  "results": [
+    {
+      "examined": 1,
+      "failed": 1,
+      "sent": 0
+    },
+    {
+      "examined": 1,
+      "failed": 0,
+      "sent": 1
+    }
+  ],
+  "scenario": "retry-after-failure"
+}

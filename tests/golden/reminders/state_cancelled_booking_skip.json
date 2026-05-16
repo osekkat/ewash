@@ -1,0 +1,43 @@
+{
+  "after": [
+    {
+      "attempt_count": 1,
+      "booking_id": "[ID]",
+      "booking_ref": "[BOOKING_REF]",
+      "booking_status": "admin_cancelled",
+      "error": "booking_status:admin_cancelled",
+      "id": "[ID]",
+      "kind": "H-2",
+      "max_sends": 1,
+      "min_minutes_between_sends": 0,
+      "scheduled_for": "[TIMESTAMP]",
+      "sent_at": "[TIMESTAMP]",
+      "status": "cancelled",
+      "template_name": "booking_reminder_h2"
+    }
+  ],
+  "before": [
+    {
+      "attempt_count": 0,
+      "booking_id": "[ID]",
+      "booking_ref": "[BOOKING_REF]",
+      "booking_status": "confirmed",
+      "error": "",
+      "id": "[ID]",
+      "kind": "H-2",
+      "max_sends": 1,
+      "min_minutes_between_sends": 0,
+      "scheduled_for": "[TIMESTAMP]",
+      "sent_at": null,
+      "status": "pending",
+      "template_name": "booking_reminder_h2"
+    }
+  ],
+  "meta_call_count": 0,
+  "result": {
+    "examined": 1,
+    "failed": 1,
+    "sent": 0
+  },
+  "scenario": "cancelled-booking-skip"
+}

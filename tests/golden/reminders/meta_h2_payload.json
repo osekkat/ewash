@@ -1,0 +1,43 @@
+{
+  "messaging_product": "whatsapp",
+  "recipient_type": "individual",
+  "template": {
+    "components": [
+      {
+        "parameters": [
+          {
+            "text": "[BOOKING_REF]",
+            "type": "text"
+          },
+          {
+            "text": "Oussama",
+            "type": "text"
+          },
+          {
+            "text": "Le Complet \u2014 110 DH",
+            "type": "text"
+          },
+          {
+            "text": "2026-05-16",
+            "type": "text"
+          },
+          {
+            "text": "10h-12h",
+            "type": "text"
+          },
+          {
+            "text": "Bouskoura, portail bleu",
+            "type": "text"
+          }
+        ],
+        "type": "body"
+      }
+    ],
+    "language": {
+      "code": "fr"
+    },
+    "name": "booking_reminder_h2"
+  },
+  "to": "[PHONE]",
+  "type": "template"
+}
