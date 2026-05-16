@@ -44,7 +44,7 @@ FINAL_BOOKING_STATUSES = (
 # Guardrails for the operational workflow. This intentionally allows some admin
 # recovery transitions (e.g. rescheduled -> confirmed) while preventing nonsense
 # like completed -> in_progress.
-_ALLOWED_STATUS_TRANSITIONS: dict[str, set[str]] = {
+ALLOWED_STATUS_TRANSITIONS: dict[str, set[str]] = {
     "draft": {"awaiting_confirmation", "expired", "customer_cancelled", "admin_cancelled"},
     "awaiting_confirmation": {"pending_ewash_confirmation", "expired", "customer_cancelled", "admin_cancelled"},
     "pending_ewash_confirmation": {"confirmed", "customer_cancelled", "admin_cancelled", "expired"},
@@ -584,13 +584,13 @@ class BookingReminder:
 
 
 def transition_booking_status(
-    booking: BookingRecord,
+    booking: BookingRecord | BookingRow,
     new_status: str,
     *,
     actor: str,
     note: str = "",
     now: datetime | None = None,
-) -> BookingStatusEvent:
+) -> BookingStatusEvent | BookingStatusEventRow:
     """Move a booking through a guarded lifecycle and append an audit event."""
     require_valid_status(new_status)
     if not actor:
@@ -600,20 +600,32 @@ def transition_booking_status(
     if current == new_status:
         raise ValueError(f"Booking is already {new_status}")
 
-    allowed = _ALLOWED_STATUS_TRANSITIONS.get(current, set())
+    allowed = ALLOWED_STATUS_TRANSITIONS.get(current, set())
     if new_status not in allowed:
         raise ValueError(f"Invalid booking status transition: {current} -> {new_status}")
 
-    event = BookingStatusEvent(
-        booking_id=booking.id,
-        from_status=current,
-        to_status=new_status,
-        actor=actor,
-        note=note,
-        created_at=now or utcnow(),
-    )
+    event_at = now or utcnow()
+    event: BookingStatusEvent | BookingStatusEventRow
+    if isinstance(booking, BookingRow):
+        event = BookingStatusEventRow(
+            booking_id=booking.id,
+            from_status=current,
+            to_status=new_status,
+            actor=actor,
+            note=note,
+            created_at=event_at,
+        )
+    else:
+        event = BookingStatusEvent(
+            booking_id=booking.id,
+            from_status=current,
+            to_status=new_status,
+            actor=actor,
+            note=note,
+            created_at=event_at,
+        )
     booking.status = new_status
-    booking.updated_at = event.created_at
+    booking.updated_at = event_at
     booking.status_events.append(event)
 
     if new_status in FINAL_BOOKING_STATUSES:
@@ -622,7 +634,7 @@ def transition_booking_status(
     return event
 
 
-def cancel_pending_reminders(booking: BookingRecord, *, reason: str) -> int:
+def cancel_pending_reminders(booking: BookingRecord | BookingRow, *, reason: str) -> int:
     """Cancel pending reminders when the booking can no longer receive them."""
     count = 0
     for reminder in booking.reminders:
