@@ -243,7 +243,15 @@ def test_claim_skips_bookings_not_in_confirmed_status(_patch_engine):
     assert claim_next_due_reminder() is None
 
 
-def test_mark_sent_rechecks_booking_status_after_in_flight_cancellation(_patch_engine):
+def test_mark_sent_marks_row_sent_even_if_booking_cancelled_after_meta(_patch_engine):
+    """ewash-44j: ``mark_reminder_sent`` is only called after Meta accepted
+    the template, so the customer has the message in hand. Even if the
+    booking flipped to a cancelled status between the Meta success and this
+    call, the reminder row MUST move from ``pending`` → ``sent`` so the
+    stale-claim recovery branch in :func:`claim_next_due_reminder` cannot
+    re-pick it on the next sweep. The booking status that won the race is
+    captured in ``error`` for audit.
+    """
     ref, reminder_id, _ = _setup_confirmed_booking_with_reminder(_patch_engine)
     candidate = claim_next_due_reminder()
     assert candidate is not None
@@ -256,8 +264,54 @@ def test_mark_sent_rechecks_booking_status_after_in_flight_cancellation(_patch_e
 
     with session_scope(_patch_engine) as session:
         row = session.get(BookingReminderRow, reminder_id)
-        assert row.status == "pending"
+        assert row.status == "sent"
+        assert row.sent_at is not None
+        assert row.error == "sent_after_status_change:customer_cancelled"
         assert row.booking.status == "customer_cancelled"
+
+
+def test_sent_row_not_reclaimed_after_meta_success_and_booking_resurrected(_patch_engine):
+    """ewash-44j follow-up: prove that once ``mark_reminder_sent`` transitions
+    the row to ``sent``, the stale-claim recovery branch cannot re-pick it
+    even when the booking flips back to ``confirmed`` after the lease window
+    elapses. Without the fix, the row would have stayed ``pending`` with a
+    stale ``sent_at``, and the next sweep would have re-claimed and double-
+    sent the WhatsApp template.
+    """
+    now = datetime.now(timezone.utc)
+    ref, reminder_id, _ = _setup_confirmed_booking_with_reminder(
+        _patch_engine,
+        rule_kwargs={"max_sends": 2, "min_minutes_between_sends": 0},
+    )
+
+    # T1 claims the row, T2 cancels the booking, T1 records the Meta success.
+    candidate = claim_next_due_reminder(now=now)
+    assert candidate is not None
+    with session_scope(_patch_engine) as session:
+        booking = session.scalars(select(BookingRow).where(BookingRow.ref == ref)).one()
+        booking.status = "customer_cancelled"
+    mark_reminder_sent(reminder_id, now=now)
+
+    with session_scope(_patch_engine) as session:
+        row = session.get(BookingReminderRow, reminder_id)
+        assert row.status == "sent"
+        assert row.sent_at is not None
+
+    # Booking is later resurrected (admin un-cancels) AND the 5-min claim
+    # lease elapses. The recovery branch must still skip this row because
+    # status='sent' is excluded by the claim eligibility filter.
+    with session_scope(_patch_engine) as session:
+        booking = session.scalars(select(BookingRow).where(BookingRow.ref == ref)).one()
+        booking.status = "confirmed"
+
+    after_lease = now + timedelta(minutes=6)
+    second = claim_next_due_reminder(now=after_lease)
+    assert second is None
+
+    with session_scope(_patch_engine) as session:
+        row = session.get(BookingReminderRow, reminder_id)
+        assert row.status == "sent"
+        assert row.attempt_count == 1
 
 
 def test_send_one_skips_meta_call_when_booking_cancelled_after_claim(monkeypatch, _patch_engine):

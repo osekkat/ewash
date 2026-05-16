@@ -1317,7 +1317,21 @@ def mark_reminder_sent(
     now: datetime | None = None,
     engine: Engine | None = None,
 ) -> None:
-    """Mark a previously-claimed reminder row as successfully delivered."""
+    """Mark a previously-claimed reminder row as successfully delivered.
+
+    Called by ``reminders._send_one`` ONLY after ``meta.send_template``
+    returned 200 — at that point Meta has accepted the message and the
+    customer is going to receive (or has received) the WhatsApp. The row
+    MUST therefore move out of ``pending`` regardless of whether the
+    booking flipped to a cancelled status mid-flight; leaving it
+    ``pending`` would let the stale-claim recovery branch in
+    :func:`claim_next_due_reminder` re-pick the row after the lease
+    elapses and double-send if the booking is later re-confirmed
+    (ewash-44j). When the booking *was* cancelled between the Meta
+    success and this call we still stamp ``status='sent'`` and record
+    the blocking booking status in ``error`` so the operator audit
+    trail reflects the unusual lifecycle.
+    """
     current = _as_utc(now or _now())
     db_engine = _engine_or_configured(engine)
     if db_engine is None:
@@ -1326,11 +1340,16 @@ def mark_reminder_sent(
         row = session.get(BookingReminderRow, reminder_id)
         if row is None:
             return
-        if row.status != "pending" or row.booking.status != "confirmed":
+        if row.status != "pending":
             return
+        booking_status = str(row.booking.status or "") if row.booking is not None else ""
         row.status = "sent"
         row.sent_at = current
-        row.error = ""
+        row.error = (
+            ""
+            if booking_status == "confirmed"
+            else f"sent_after_status_change:{booking_status or 'missing'}"
+        )
 
 
 def skip_reminder_if_booking_not_sendable(
