@@ -1333,6 +1333,36 @@ def mark_reminder_sent(
         row.error = ""
 
 
+def skip_reminder_if_booking_not_sendable(
+    reminder_id: int,
+    *,
+    allowed_booking_statuses: Iterable[str] = ("confirmed",),
+    engine: Engine | None = None,
+) -> str | None:
+    """Cancel/skip an in-flight reminder when its booking left sendable status.
+
+    Returns the blocking reason when the reminder was moved out of the retry
+    pool; returns ``None`` when the booking is still eligible to receive the
+    reminder.
+    """
+    db_engine = _engine_or_configured(engine)
+    if db_engine is None:
+        return None
+    allowed = {status for status in allowed_booking_statuses if status}
+    with session_scope(db_engine) as session:
+        row = session.get(BookingReminderRow, reminder_id)
+        if row is None:
+            return "missing_reminder"
+        if row.status != "pending":
+            return f"reminder_status:{row.status}"
+        booking_status = str(row.booking.status or "") if row.booking is not None else ""
+        if booking_status in allowed:
+            return None
+        row.status = "cancelled" if booking_status in {"customer_cancelled", "admin_cancelled"} else "skipped"
+        row.error = f"booking_status:{booking_status or 'missing'}"
+        return row.error
+
+
 def mark_reminder_failed(
     reminder_id: int,
     *,

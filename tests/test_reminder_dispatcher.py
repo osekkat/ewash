@@ -260,6 +260,36 @@ def test_mark_sent_rechecks_booking_status_after_in_flight_cancellation(_patch_e
         assert row.booking.status == "customer_cancelled"
 
 
+def test_send_one_skips_meta_call_when_booking_cancelled_after_claim(monkeypatch, _patch_engine):
+    ref, reminder_id, _ = _setup_confirmed_booking_with_reminder(_patch_engine)
+    candidate = claim_next_due_reminder()
+    assert candidate is not None
+    assert candidate.booking_ref == ref
+
+    with session_scope(_patch_engine) as session:
+        booking = session.scalars(select(BookingRow).where(BookingRow.ref == ref)).one()
+        booking.status = "admin_cancelled"
+
+    sent_calls = 0
+
+    async def fake_send_template(*args, **kwargs):
+        nonlocal sent_calls
+        sent_calls += 1
+        return {"ok": True}
+
+    monkeypatch.setattr(meta_module, "send_template", fake_send_template)
+
+    success, error = asyncio.run(reminders_module._send_one(candidate))
+
+    assert not success
+    assert error == "booking_status:admin_cancelled"
+    assert sent_calls == 0
+    with session_scope(_patch_engine) as session:
+        reminder = session.get(BookingReminderRow, reminder_id)
+        assert reminder.status == "cancelled"
+        assert reminder.error == "booking_status:admin_cancelled"
+
+
 def test_in_flight_pending_reminder_does_not_block_later_due_row(_patch_engine):
     _, in_flight_id, _ = _setup_confirmed_booking_with_reminder(
         _patch_engine,

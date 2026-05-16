@@ -31,6 +31,7 @@ from .persistence import (
     claim_next_due_reminder,
     mark_reminder_failed,
     mark_reminder_sent,
+    skip_reminder_if_booking_not_sendable,
 )
 
 log = logging.getLogger(__name__)
@@ -38,6 +39,7 @@ router = APIRouter()
 
 DEFAULT_BATCH_SIZE = 50
 MAX_BATCH_SIZE = 200
+REMINDER_SEND_ALLOWED_BOOKING_STATUSES = ("confirmed",)
 
 
 @dataclass(frozen=True)
@@ -74,6 +76,12 @@ async def _send_one(candidate: ReminderDispatchCandidate) -> tuple[bool, str]:
         return False, "missing customer_phone"
     if not candidate.template_name:
         return False, "missing template_name"
+    blocking_reason = skip_reminder_if_booking_not_sendable(
+        candidate.reminder_id,
+        allowed_booking_statuses=REMINDER_SEND_ALLOWED_BOOKING_STATUSES,
+    )
+    if blocking_reason is not None:
+        return False, blocking_reason
     try:
         await meta.send_template(
             candidate.customer_phone,
