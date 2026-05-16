@@ -1207,9 +1207,10 @@ def claim_next_due_reminder(
     - Postgres uses ``SELECT ... FOR UPDATE SKIP LOCKED`` so a second caller
       reading at the same instant skips the row another worker just locked.
     - Once committed, the row's ``sent_at`` is non-null. Later sweeps only
-      consider fresh ``pending`` rows where ``sent_at IS NULL`` or ``failed``
-      rows with sends remaining; failed rows still inside their cooldown are
-      skipped so they cannot hide later eligible reminders in the queue.
+      consider fresh ``pending`` rows where ``sent_at IS NULL``, stale pending
+      rows whose claim lease has elapsed, or ``failed`` rows with sends
+      remaining; failed rows still inside their cooldown are skipped so they
+      cannot hide later eligible reminders in the queue.
 
     ``exclude_ids`` is the in-memory set of rows the caller has already
     handled in the current dispatch loop — passed in so a single endpoint
