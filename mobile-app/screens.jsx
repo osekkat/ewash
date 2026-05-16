@@ -131,46 +131,12 @@ function HomeScreen({ t, lang, openBooking, gotoSupport, gotoTariffs, theme, var
         </div>
 
         {/* NEXT APPOINTMENT */}
-        <div>
-          <div className="row between" style={{ marginBottom: 10 }}>
-            <div className="t-h3">{t.nextAppointment}</div>
-            <span className="chip chip-accent">
-              <span className="live-dot" />
-              {t.upcoming}
-            </span>
-          </div>
-          <div className="card card-elev" style={{ padding: 16 }}>
-            <div className="row gap-12">
-              <div style={{
-                width: 56, minWidth: 56,
-                borderRadius: 14, padding: '10px 0',
-                background: 'var(--primary-soft)',
-                color: 'var(--primary-soft-text)',
-                textAlign: 'center',
-                boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.5), 0 6px 14px -8px color-mix(in srgb, var(--primary) 35%, transparent)',
-              }}>
-                <div className="t-tiny" style={{ fontWeight: 700, opacity: 0.85, letterSpacing: '0.12em' }}>SAM</div>
-                <div className="t-num" style={{ fontWeight: 800, fontSize: 22, lineHeight: 1, letterSpacing: '-0.02em' }}>16</div>
-                <div className="t-tiny" style={{ opacity: 0.85, letterSpacing: '0.08em' }}>MAI</div>
-              </div>
-              <div className="col gap-4 flex-1">
-                <div style={{ fontWeight: 700, fontSize: 15 }}>Le Complet · Berline</div>
-                <div className="t-muted" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <Icons.Clock size={13}/> 10:30 · 45 {t.min}
-                </div>
-                <div className="t-muted" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <Icons.Pin size={13}/> Bd Anfa, Casablanca
-                </div>
-              </div>
-            </div>
-            <div className="row gap-8 mt-12">
-              <Btn variant="soft" style={{ flex: 1 }}>{t.track}</Btn>
-              <button className="btn btn-secondary" style={{ flex: '0 0 auto' }}>
-                <Icons.Edit size={16}/>
-              </button>
-            </div>
-          </div>
-        </div>
+        <HomeNextAppointmentSection
+          t={t}
+          openBooking={openBooking}
+          gotoSupport={gotoSupport}
+          staffContact={staffContact}
+        />
 
         {/* QUICK ACTIONS */}
         <div>
@@ -220,6 +186,266 @@ function HomeScreen({ t, lang, openBooking, gotoSupport, gotoTariffs, theme, var
           </div>
           <div className="t-muted">{t.promiseBody}</div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+const HOME_FINAL_STATUSES = new Set([
+  'customer_cancelled',
+  'admin_cancelled',
+  'expired',
+  'no_show',
+  'completed',
+  'completed_with_issue',
+  'refunded',
+]);
+
+function _todayIsoLocal() {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return y + '-' + m + '-' + d;
+}
+
+function _bookingSortValue(booking) {
+  const dateIso = (booking && booking.date_iso) || '';
+  const hour = Number(booking && booking.slot_start_hour);
+  const normalizedHour = Number.isFinite(hour) ? hour : 99;
+  return dateIso + 'T' + String(normalizedHour).padStart(2, '0');
+}
+
+function _nextFutureBooking(bookings) {
+  const today = _todayIsoLocal();
+  return (bookings || [])
+    .filter(function (booking) {
+      if (!booking || !booking.date_iso) return false;
+      if (booking.date_iso < today) return false;
+      if (HOME_FINAL_STATUSES.has(booking.status)) return false;
+      return true;
+    })
+    .slice()
+    .sort(function (a, b) {
+      return _bookingSortValue(a).localeCompare(_bookingSortValue(b));
+    })[0] || null;
+}
+
+function _homeDateBadge(booking) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec((booking && booking.date_iso) || '');
+  if (!match) return { weekday: 'RDV', day: '—', month: '' };
+  const y = Number(match[1]);
+  const m = Number(match[2]);
+  const d = Number(match[3]);
+  const dateObj = new Date(y, m - 1, d);
+  const weekdays = ['DIM', 'LUN', 'MAR', 'MER', 'JEU', 'VEN', 'SAM'];
+  return {
+    weekday: weekdays[dateObj.getDay()],
+    day: String(d).padStart(2, '0'),
+    month: (_FR_MONTH_ABBREV[m - 1] || '').toUpperCase(),
+  };
+}
+
+function _homeBookingTitle(booking) {
+  const service = booking.service_label || booking.service_id || 'Réservation Ewash';
+  const vehicle = booking.vehicle_label || '';
+  return vehicle ? service + ' · ' + vehicle : service;
+}
+
+function _openBookingHelp(booking, staffContact, fallback, intent) {
+  if (window.EwashLog) {
+    window.EwashLog.info('home.next_appointment.' + intent, { ref: booking && booking.ref });
+  }
+  const phone = staffContact && staffContact.whatsapp_phone;
+  const action = intent === 'edit' ? 'modifier' : 'suivre';
+  const text = "Bonjour, je souhaite " + action + " ma réservation Ewash " + ((booking && booking.ref) || '') + ".";
+  const url = phone ? _waLinkFor(phone, text) : ('https://wa.me/?text=' + encodeURIComponent(text));
+  if (url) {
+    window.open(url, '_blank');
+    return;
+  }
+  if (fallback) fallback();
+}
+
+function HomeNextAppointmentSection({ t, openBooking, gotoSupport, staffContact }) {
+  const [uiState, setUiState] = useS_h('loading');
+  const [booking, setBooking] = useS_h(null);
+
+  useE_h(() => {
+    let alive = true;
+    setUiState('loading');
+    setBooking(null);
+
+    if (typeof navigator !== 'undefined' && navigator && navigator.onLine === false) {
+      setUiState('empty');
+      return function () { alive = false; };
+    }
+
+    if (!window.EwashAPI || !window.EwashAPI.getMyBookings) {
+      setUiState('error');
+      return function () { alive = false; };
+    }
+
+    window.EwashAPI.getMyBookings()
+      .then(function (resp) {
+        if (!alive) return;
+        const items = (resp && resp.bookings) || [];
+        const next = _nextFutureBooking(items);
+        setBooking(next);
+        setUiState(next ? 'ready' : 'empty');
+        if (window.EwashLog) {
+          window.EwashLog.info('home.next_appointment.loaded', {
+            count: items.length,
+            has_next: !!next,
+            ref: next && next.ref,
+          });
+        }
+      })
+      .catch(function (err) {
+        if (!alive) return;
+        const error_code = (err && err.error_code) || null;
+        const status = (err && err.status) || null;
+        if (error_code === 'invalid_token') {
+          try { localStorage.removeItem('ewash.bookings_token'); } catch (e) { /* ignore */ }
+        }
+        if (window.EwashLog) {
+          window.EwashLog.warn('home.next_appointment.error', { error_code: error_code, status: status });
+        }
+        setBooking(null);
+        setUiState(error_code === 'no_local_token' || error_code === 'invalid_token' ? 'empty' : 'error');
+      });
+
+    return function () { alive = false; };
+  }, []);
+
+  return (
+    <div>
+      <div className="row between" style={{ marginBottom: 10 }}>
+        <div className="t-h3">{t.nextAppointment}</div>
+        {booking && (
+          <span className="chip chip-accent">
+            <span className="live-dot" />
+            {t.upcoming}
+          </span>
+        )}
+      </div>
+
+      {uiState === 'loading' && <HomeAppointmentSkeleton />}
+      {uiState === 'ready' && booking && (
+        <HomeAppointmentCard
+          t={t}
+          booking={booking}
+          staffContact={staffContact}
+          gotoSupport={gotoSupport}
+        />
+      )}
+      {(uiState === 'empty' || uiState === 'error') && (
+        <HomeNoAppointmentCard
+          t={t}
+          onBook={openBooking}
+          isError={uiState === 'error'}
+        />
+      )}
+    </div>
+  );
+}
+
+function HomeAppointmentSkeleton() {
+  return (
+    <div className="card card-elev" style={{ padding: 16, opacity: 0.65 }}>
+      <div className="row gap-12">
+        <div style={{
+          width: 56, minWidth: 56, height: 64,
+          borderRadius: 14,
+          background: 'var(--surface-2)',
+        }} />
+        <div className="col gap-8 flex-1">
+          <div style={{ height: 14, width: '65%', borderRadius: 6, background: 'var(--surface-2)' }} />
+          <div style={{ height: 11, width: '46%', borderRadius: 6, background: 'var(--surface-2)' }} />
+          <div style={{ height: 11, width: '58%', borderRadius: 6, background: 'var(--surface-2)' }} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function HomeNoAppointmentCard({ t, onBook, isError }) {
+  return (
+    <div className="card card-elev center" style={{
+      padding: 18,
+      flexDirection: 'column',
+      alignItems: 'flex-start',
+      gap: 12,
+    }}>
+      <div className="row gap-10">
+        <div style={{
+          width: 38, height: 38, borderRadius: 12,
+          background: 'var(--primary-soft)',
+          color: 'var(--primary-soft-text)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}>
+          <Icons.Calendar size={18} />
+        </div>
+        <div className="col gap-3" style={{ minWidth: 0 }}>
+          <div style={{ fontWeight: 700, fontSize: 14.5 }}>
+            {isError ? (t.homeUpcomingError || t.networkErrorTitle || 'Connexion impossible') : (t.homeNoUpcoming || 'Aucun rendez-vous à venir')}
+          </div>
+          <div className="t-muted" style={{ fontSize: 13 }}>
+            {isError ? (t.homeUpcomingErrorBody || 'Vos rendez-vous ne peuvent pas être chargés pour le moment.') : (t.homeNoUpcomingBody || 'Réservez votre prochain lavage en quelques étapes.')}
+          </div>
+        </div>
+      </div>
+      <Btn variant="soft" onClick={onBook} style={{ width: '100%' }}>
+        {t.bookNow || t.bookCta || 'Réserver un lavage'}
+      </Btn>
+    </div>
+  );
+}
+
+function HomeAppointmentCard({ t, booking, staffContact, gotoSupport }) {
+  const badge = _homeDateBadge(booking);
+  const trackBooking = function () {
+    _openBookingHelp(booking, staffContact, gotoSupport, 'track');
+  };
+  const editBooking = function () {
+    _openBookingHelp(booking, staffContact, gotoSupport, 'edit');
+  };
+  return (
+    <div className="card card-elev" style={{ padding: 16 }}>
+      <div className="row gap-12">
+        <div style={{
+          width: 56, minWidth: 56,
+          borderRadius: 14, padding: '10px 0',
+          background: 'var(--primary-soft)',
+          color: 'var(--primary-soft-text)',
+          textAlign: 'center',
+          boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.5), 0 6px 14px -8px color-mix(in srgb, var(--primary) 35%, transparent)',
+        }}>
+          <div className="t-tiny" style={{ fontWeight: 700, opacity: 0.85, letterSpacing: '0.12em' }}>{badge.weekday}</div>
+          <div className="t-num" style={{ fontWeight: 800, fontSize: 22, lineHeight: 1 }}>{badge.day}</div>
+          <div className="t-tiny" style={{ opacity: 0.85, letterSpacing: '0.08em' }}>{badge.month}</div>
+        </div>
+        <div className="col gap-4 flex-1" style={{ minWidth: 0 }}>
+          <div style={{ fontWeight: 700, fontSize: 15 }}>{_homeBookingTitle(booking)}</div>
+          <div className="t-tiny" style={{ color: 'var(--text-3)', fontWeight: 700 }}>{booking.ref}</div>
+          <div className="t-muted" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <Icons.Clock size={13}/> {booking.slot_label || 'Créneau à confirmer'}
+          </div>
+          <div className="t-muted" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <Icons.Pin size={13}/> {booking.location_label || 'Lieu à confirmer'}
+          </div>
+        </div>
+      </div>
+      <div className="row gap-8 mt-12">
+        <Btn variant="soft" onClick={trackBooking} style={{ flex: 1 }}>{t.track}</Btn>
+        <button
+          className="btn btn-secondary"
+          onClick={editBooking}
+          aria-label={(t.edit || 'Modifier') + ' ' + booking.ref}
+          style={{ flex: '0 0 auto' }}
+        >
+          <Icons.Edit size={16}/>
+        </button>
       </div>
     </div>
   );
