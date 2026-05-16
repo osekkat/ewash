@@ -174,6 +174,14 @@ async def receive_webhook(request: Request):
                 contact = contacts[i] if i < len(contacts) else None
                 try:
                     await handlers.handle_message(msg, contact)
+                except meta.MetaSendError as exc:
+                    log.exception(
+                        "handler Meta send error msg_id=%s status=%s path=%s body=%s",
+                        msg.get("id"),
+                        exc.status_code,
+                        exc.request_path,
+                        exc.body,
+                    )
                 except Exception:
                     log.exception("handler error msg_id=%s", msg.get("id"))
 

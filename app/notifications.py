@@ -244,6 +244,16 @@ async def notify_booking_confirmation(
             language_code="fr",
             body_parameters=booking_notification_parameters(booking, event_label=event_label),
         )
+    except meta.MetaSendError as exc:
+        log.exception(
+            "booking notification failed ref=%s to=%s status=%s path=%s body=%s",
+            booking.ref,
+            config.phone_number,
+            exc.status_code,
+            exc.request_path,
+            exc.body,
+        )
+        return False
     except Exception:
         log.exception("booking notification failed ref=%s to=%s", booking.ref, config.phone_number)
         return False

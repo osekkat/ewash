@@ -17,9 +17,22 @@ from .config import settings
 
 log = logging.getLogger(__name__)
 
+GRAPH_API_PATH = f"/v21.0/{settings.meta_phone_number_id}/messages"
 GRAPH_API_URL = (
-    f"https://graph.facebook.com/v21.0/{settings.meta_phone_number_id}/messages"
+    f"https://graph.facebook.com{GRAPH_API_PATH}"
 )
+
+
+class MetaSendError(Exception):
+    """Raised when Meta rejects an outbound message and returns a response body."""
+
+    def __init__(self, *, status_code: int, body: str, request_path: str) -> None:
+        self.status_code = status_code
+        self.body = body
+        self.request_path = request_path
+        super().__init__(
+            f"Meta send failed status={status_code} path={request_path} body={body}"
+        )
 
 
 def verify_signature(payload: bytes, signature_header: str | None) -> bool:
@@ -43,8 +56,13 @@ async def _post(payload: dict) -> dict:
     async with httpx.AsyncClient(timeout=10.0) as client:
         r = await client.post(GRAPH_API_URL, headers=headers, json=payload)
     if r.status_code >= 400:
-        log.error("Meta send failed status=%s body=%s", r.status_code, r.text)
-    r.raise_for_status()
+        body = r.text
+        log.error("Meta send failed status=%s body=%s", r.status_code, body)
+        raise MetaSendError(
+            status_code=r.status_code,
+            body=body,
+            request_path=GRAPH_API_PATH,
+        )
     return r.json()
 
 

@@ -89,6 +89,8 @@ async def _send_one(candidate: ReminderDispatchCandidate) -> tuple[bool, str]:
             language_code=candidate.template_language or "fr",
             body_parameters=_reminder_template_parameters(candidate),
         )
+    except meta.MetaSendError as exc:
+        return False, (exc.body or str(exc))[:1500]
     except Exception as exc:
         return False, f"{type(exc).__name__}: {exc}"[:1500]
     return True, ""

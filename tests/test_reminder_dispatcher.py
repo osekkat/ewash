@@ -592,6 +592,35 @@ def test_dispatch_marks_failed_when_meta_send_raises(monkeypatch, _patch_engine)
         assert row.attempt_count == 1
 
 
+def test_dispatch_records_meta_send_error_body(monkeypatch, _patch_engine):
+    _, reminder_id, _ = _setup_confirmed_booking_with_reminder(
+        _patch_engine,
+        rule_kwargs={"max_sends": 2, "min_minutes_between_sends": 0},
+    )
+    body = '{"error":{"message":"Recipient outside the allowed window","code":131047}}'
+
+    async def rejected_by_meta(*args, **kwargs):
+        raise meta_module.MetaSendError(
+            status_code=400,
+            body=body,
+            request_path="/v21.0/test-phone/messages",
+        )
+
+    monkeypatch.setattr(meta_module, "send_template", rejected_by_meta)
+
+    result = asyncio.run(dispatch_pending_reminders(batch_size=10))
+
+    assert result.sent == 0
+    assert result.failed == 1
+    assert result.examined == 1
+
+    with session_scope(_patch_engine) as session:
+        row = session.get(BookingReminderRow, reminder_id)
+        assert row.status == "failed"
+        assert row.error == body
+        assert row.attempt_count == 1
+
+
 def test_dispatch_is_a_noop_when_no_due_rows(monkeypatch, _patch_engine):
     """No reminder rows → 0 sends, 0 failures, 0 examined."""
     calls = 0
