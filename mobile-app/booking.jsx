@@ -12,6 +12,7 @@ const FALLBACK_STAFF_WHATSAPP = '+212611204502';
 const BOOKING_DRAFT_STORAGE_KEY = 'ewash.booking_draft';
 const BOOKING_DRAFT_MAX_AGE_MS = 60 * 60 * 1000;
 const BOOKING_DRAFT_SCHEMA_VERSION = 1;
+const LEGACY_DEFAULT_PIN_ADDRESS = '173 Bd Anfa, Casablanca';
 
 const CATEGORY_ICONS = {
   A: Icons.Car,
@@ -121,7 +122,7 @@ function _initialBookingData(profile) {
     category: null, // 'A' | 'B' | 'C' | 'MOTO'
     make: '', color: '', plate: '',
     locationKind: null, // 'home' | 'center'
-    pinAddress: '173 Bd Anfa, Casablanca',
+    pinAddress: '',
     addressDetails: '',
     centerId: null,
     promoCode: null,
@@ -173,6 +174,7 @@ function _sanitizeDraftService(service) {
 
 function _sanitizeDraftData(data) {
   const draftData = Object.assign({}, data || {});
+  if (draftData.pinAddress === LEGACY_DEFAULT_PIN_ADDRESS) draftData.pinAddress = '';
   draftData.service = _sanitizeDraftService(draftData.service);
   draftData.addons = Array.isArray(draftData.addons) ? draftData.addons.slice() : [];
   return draftData;
@@ -186,6 +188,7 @@ function _restoreDraftData(profile, draftData, clientRequestId) {
   );
   restored.service = _sanitizeDraftService(restored.service);
   restored.addons = Array.isArray(restored.addons) ? restored.addons : [];
+  if (restored.pinAddress === LEGACY_DEFAULT_PIN_ADDRESS) restored.pinAddress = '';
   if (clientRequestId && !restored.clientRequestId) restored.clientRequestId = clientRequestId;
   return restored;
 }
@@ -721,6 +724,16 @@ function BookingFlow({ t, lang, theme, variant, onClose, onComplete, profile, st
   };
 
   const submitBooking = async () => {
+    if (data.locationKind === 'home' && !(data.pinAddress || '').trim()) {
+      const message = t.pinRequired || 'Veuillez sélectionner votre adresse';
+      setStep('addressPin');
+      setStepError({ message: message, code: 'missing_pin_address' });
+      setToastMsg(message);
+      const err = new Error(message);
+      err.error_code = 'missing_pin_address';
+      _markHandled(err);
+      throw err;
+    }
     const clientRequestId = data.clientRequestId || _uuid();
     if (!data.clientRequestId) {
       setData((d) => d.clientRequestId ? d : Object.assign({}, d, { clientRequestId: clientRequestId }));
@@ -817,7 +830,17 @@ function BookingFlow({ t, lang, theme, variant, onClose, onComplete, profile, st
         )}
         {step === 'addressPin' && (
           <AddressPinStep t={t} data={data} patch={patch}
-            onNext={() => goTo(_isMotoCategory(data.category) ? 'service' : 'promo')}/>
+            error={stepError && stepError.code === 'missing_pin_address' ? stepError.message : ''}
+            onNext={() => {
+              if (!(data.pinAddress || '').trim()) {
+                const message = t.pinRequired || 'Veuillez sélectionner votre adresse';
+                setStepError({ message: message, code: 'missing_pin_address' });
+                setToastMsg(message);
+                return;
+              }
+              clearSubmitError();
+              goTo(_isMotoCategory(data.category) ? 'service' : 'promo');
+            }}/>
         )}
         {step === 'centers' && (
           <CentersStep t={t} data={data} centers={centersList}
@@ -1226,7 +1249,9 @@ function LocationStep({ t, centers, onHome, onCenter }) {
 // ─────────────────────────────────────────────────────────────
 // STEP: Address pin
 // ─────────────────────────────────────────────────────────────
-function AddressPinStep({ t, data, patch, onNext }) {
+function AddressPinStep({ t, data, patch, error, onNext }) {
+  const hasPinAddress = !!(data.pinAddress || '').trim();
+  const dropPin = () => patch({ pinAddress: t.pinDroppedAddress || 'Position sélectionnée sur la carte' });
   return (
     <>
       <div className="px-20 col gap-6 mb-12">
@@ -1234,10 +1259,25 @@ function AddressPinStep({ t, data, patch, onNext }) {
         <div className="t-muted">{t.pinAddressSub}</div>
       </div>
       <div style={{ padding: '0 16px' }}>
-        <div className="map-bg" style={{
+        <div
+          role="button"
+          tabIndex={0}
+          className="map-bg"
+          onClick={dropPin}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              dropPin();
+            }
+          }}
+          style={{
           height: 220, borderRadius: 20,
           position: 'relative', overflow: 'hidden',
           border: '1px solid var(--border)',
+          display: 'block',
+          width: '100%',
+          padding: 0,
+          textAlign: 'inherit',
         }}>
           {/* roads */}
           <svg viewBox="0 0 360 220" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }}>
@@ -1269,7 +1309,7 @@ function AddressPinStep({ t, data, patch, onNext }) {
             animation: 'ripple 2s infinite',
           }}/>
           {/* recenter button */}
-          <button style={{
+          <button type="button" onClick={(event) => { event.stopPropagation(); dropPin(); }} style={{
             position: 'absolute', insetInlineEnd: 12, bottom: 12,
             width: 40, height: 40, borderRadius: 12,
             background: 'var(--surface)',
@@ -1282,14 +1322,31 @@ function AddressPinStep({ t, data, patch, onNext }) {
         </div>
       </div>
       <div className="px-20 col gap-16 mt-16" style={{ paddingBottom: 100 }}>
-        <div className="card-soft" style={{ padding: 14, display: 'flex', gap: 10, alignItems: 'center' }}>
-          <Icons.Pin size={20} style={{ color: 'var(--primary)' }}/>
+        <button type="button" onClick={dropPin} className="card-soft" style={{
+          padding: 14,
+          display: 'flex',
+          gap: 10,
+          alignItems: 'center',
+          textAlign: 'inherit',
+        }}>
+          <Icons.Pin size={20} style={{ color: hasPinAddress ? 'var(--primary)' : 'var(--text-3)' }}/>
           <div className="col flex-1">
-            <div style={{ fontWeight: 700, fontSize: 14 }}>{data.pinAddress}</div>
+            <div style={{
+              fontWeight: 700,
+              fontSize: 14,
+              color: hasPinAddress ? 'var(--text)' : 'var(--text-3)',
+            }}>
+              {hasPinAddress ? data.pinAddress : (t.pinPlaceholder || '📍 Touchez la carte pour déposer un pin')}
+            </div>
             <div className="t-tiny">{t.yourLocation}</div>
           </div>
-          <button className="icon-btn"><Icons.Edit size={16}/></button>
-        </div>
+          <span className="icon-btn" aria-hidden="true"><Icons.Edit size={16}/></span>
+        </button>
+        {error && (
+          <div className="t-tiny" role="alert" style={{ color: 'var(--danger)', fontWeight: 700 }}>
+            {error}
+          </div>
+        )}
         <Field label={t.addressDetails}>
           <textarea className="input" rows={3}
             placeholder={t.addressDetailsPh}
