@@ -4,6 +4,27 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>ewash · Mobile app</title>
+
+<!-- Set [data-pwa-standalone] BEFORE first paint so standalone-only CSS
+     (fixed BottomNav, fixed CtaDock, safe-area paddings) is applied on the
+     first frame. app.jsx re-runs this inside a useEffect, but that fires
+     after the initial paint — and iOS doesn't always reflow on attribute
+     change, so the BottomNav would render at its `position: relative` spot
+     until the first touch event forced a relayout. Mirrors app.jsx:136-146. -->
+<script>
+  (function () {
+    try {
+      var win = window;
+      var standalone = false;
+      if (win.matchMedia && win.matchMedia('(display-mode: standalone)').matches) standalone = true;
+      else if (win.navigator && win.navigator.standalone) standalone = true;
+      else if (new URLSearchParams(win.location.search).has('pwa')) standalone = true;
+      else if (win.matchMedia && win.matchMedia('(max-width: 600px)').matches) standalone = true;
+      if (standalone) document.documentElement.setAttribute('data-pwa-standalone', '');
+    } catch (e) { /* ignore — useEffect in app.jsx will re-run the detection */ }
+  })();
+</script>
+
 <link rel="stylesheet" href="styles.css" />
 
 <link rel="manifest" href="manifest.webmanifest" />
