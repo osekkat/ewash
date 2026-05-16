@@ -8,11 +8,19 @@ PWA's retry to allocate a fresh `EW-YYYY-####` ref and bill the slot twice.
 from __future__ import annotations
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 from sqlalchemy import select
 
+from app import api, booking as booking_store, catalog, notifications, persistence
+from app.config import settings
 from app.db import init_db, make_engine, session_scope
-from app.models import BookingRow, Customer
+from app.models import BookingRow, Customer, CustomerTokenRow
 from app.persistence import find_booking_by_client_request_id
+from app.rate_limit import limiter
+from app.security import hash_token
 
 
 def _engine_with_customer(phone: str = "212600000200"):
@@ -21,6 +29,58 @@ def _engine_with_customer(phone: str = "212600000200"):
     with session_scope(engine) as session:
         session.add(Customer(phone=phone, display_name="Idem"))
     return engine, phone
+
+
+def _client() -> TestClient:
+    app = FastAPI()
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+    app.include_router(api.router)
+    api.install_exception_handlers(app)
+    return TestClient(app)
+
+
+@pytest.fixture
+def api_db(monkeypatch, tmp_path):
+    booking_store._bookings.clear()
+    monkeypatch.setattr(booking_store, "_counter", 0)
+    db_url = f"sqlite+pysqlite:///{tmp_path / 'api-idempotency.db'}"
+    engine = make_engine(db_url)
+    init_db(engine)
+    monkeypatch.setattr(settings, "database_url", db_url)
+    persistence._configured_engine.cache_clear()
+    catalog.catalog_cache_clear()
+    notifications.notification_cache_clear()
+    try:
+        yield engine
+    finally:
+        persistence._configured_engine.cache_clear()
+        catalog.catalog_cache_clear()
+        notifications.notification_cache_clear()
+        booking_store._bookings.clear()
+
+
+def _booking_payload(**overrides) -> dict:
+    payload = {
+        "phone": "+212 611-204-502",
+        "name": "Oussama Test",
+        "category": "A",
+        "vehicle": {"make": "Dacia Logan", "color": "Blanc"},
+        "location": {
+            "kind": "home",
+            "pin_address": "Villa Oussama",
+            "address_details": "Gate 3",
+        },
+        "promo_code": "ys26",
+        "service_id": "svc_cpl",
+        "date": "2026-06-15",
+        "slot": "slot_9_11",
+        "note": "Sonner deux fois",
+        "addon_ids": [],
+        "client_request_id": "idempotency-security",
+    }
+    payload.update(overrides)
+    return payload
 
 
 def test_find_returns_existing_booking_by_client_request_id() -> None:
@@ -39,6 +99,89 @@ def test_find_returns_existing_booking_by_client_request_id() -> None:
     assert row is not None
     assert row.ref == "EW-2026-1001"
     assert row.client_request_id == crid
+
+
+def test_replay_by_different_phone_does_not_leak_or_mint_token(api_db) -> None:
+    """Regression for ewash-416: a leaked client_request_id is not enough to
+    replay another phone's booking or mint a token for that victim."""
+    request_id = "idempotency-phone-mismatch"
+    victim_phone = "+212 611-204-502"
+    attacker_phone = "+212 600-000-701"
+
+    with _client() as client:
+        first_response = client.post(
+            "/api/v1/bookings",
+            json=_booking_payload(
+                phone=victim_phone,
+                name="Victim Customer",
+                client_request_id=request_id,
+            ),
+        )
+        replay_response = client.post(
+            "/api/v1/bookings",
+            json=_booking_payload(
+                phone=attacker_phone,
+                name="Attacker Customer",
+                client_request_id=request_id,
+            ),
+        )
+
+    assert first_response.status_code == 200
+    first = first_response.json()
+    assert first["ref"]
+    assert first["bookings_token"]
+
+    body_text = replay_response.text
+    assert first["ref"] not in body_text
+    assert first["bookings_token"] not in body_text
+    assert "Victim Customer" not in body_text
+    assert "212611204502" not in body_text
+
+    assert replay_response.status_code in (200, 409, 422, 500)
+    if replay_response.status_code == 200:
+        replay = replay_response.json()
+        assert replay["ref"] != first["ref"]
+        assert replay["bookings_token"] != first["bookings_token"]
+        assert replay["is_idempotent_replay"] is False
+        assert persistence.verify_customer_token(
+            replay["bookings_token"], engine=api_db
+        ) == notifications.normalize_phone(attacker_phone)
+    else:
+        assert replay_response.status_code >= 400
+
+
+def test_replay_with_correct_token_idempotent(api_db) -> None:
+    request_id = "idempotency-correct-token"
+
+    with _client() as client:
+        first_response = client.post(
+            "/api/v1/bookings",
+            json=_booking_payload(client_request_id=request_id),
+        )
+        first = first_response.json()
+        replay_response = client.post(
+            "/api/v1/bookings",
+            json=_booking_payload(
+                client_request_id=request_id,
+                bookings_token=first["bookings_token"],
+            ),
+        )
+
+    assert first_response.status_code == 200
+    assert replay_response.status_code == 200
+    replay = replay_response.json()
+    assert replay["ref"] == first["ref"]
+    assert replay["bookings_token"] == first["bookings_token"]
+    assert replay["line_items"] == first["line_items"]
+    assert replay["is_idempotent_replay"] is True
+
+    with session_scope(api_db) as session:
+        bookings = session.scalars(select(BookingRow)).all()
+        assert len(bookings) == 1
+        assert bookings[0].client_request_id == request_id
+        tokens = session.scalars(select(CustomerTokenRow)).all()
+        assert len(tokens) == 1
+        assert tokens[0].token_hash == hash_token(first["bookings_token"])
 
 
 def test_find_returns_none_for_unknown_client_request_id() -> None:
