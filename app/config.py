@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     admin_password: str = ""
     admin_session_secret: str = ""
     admin_session_ttl_seconds: int = 60 * 60 * 24 * 7
+    # Whether the admin session cookie is emitted with the Secure flag.
+    # Default True so Railway production gets a hardened cookie; flip to
+    # False for localhost http dev and the test client (ewash-mfx).
+    admin_cookie_secure: bool = True
     internal_cron_secret: str = ""
     admin_default_locale: str = "fr"
 

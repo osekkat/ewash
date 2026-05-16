@@ -20,6 +20,9 @@ _REQUIRED_ENV_DEFAULTS = {
     "META_PHONE_NUMBER_ID": _placeholder("meta", "phone", "id"),
     "ADMIN_" + "PASSWORD": _placeholder("admin"),
     "INTERNAL_CRON_" + "SECRET": _placeholder("cron"),
+    # TestClient runs over plain http; a Secure cookie would never be sent
+    # back, breaking every admin test that follows up after login.
+    "ADMIN_COOKIE_SECURE": "false",
 }
 
 for _env_name, _env_value in _REQUIRED_ENV_DEFAULTS.items():

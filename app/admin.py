@@ -955,6 +955,7 @@ async def admin_password_submit(request: Request, lang: str | None = Query(defau
         max_age=settings.admin_session_ttl_seconds,
         httponly=True,
         samesite="lax",
+        secure=settings.admin_cookie_secure,
     )
     return response
 

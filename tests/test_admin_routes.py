@@ -119,6 +119,45 @@ def test_admin_entrypoint_accepts_configured_password_without_username(monkeypat
     assert 'href="/admin/prices"' in dashboard.text
 
 
+def test_admin_login_emits_secure_cookie_when_setting_enabled(monkeypatch):
+    monkeypatch.setattr(settings, "admin_password", "secret-pass")
+    monkeypatch.setattr(settings, "admin_cookie_secure", True)
+    client = TestClient(app)
+
+    response = client.post(
+        "/admin",
+        content="password=secret-pass",
+        headers={"content-type": "application/x-www-form-urlencoded"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    set_cookie = response.headers["set-cookie"]
+    assert "ewash_admin_session" in set_cookie
+    assert "Secure" in set_cookie
+    assert "HttpOnly" in set_cookie
+    assert "samesite=lax" in set_cookie.lower()
+
+
+def test_admin_login_omits_secure_cookie_when_setting_disabled(monkeypatch):
+    monkeypatch.setattr(settings, "admin_password", "secret-pass")
+    monkeypatch.setattr(settings, "admin_cookie_secure", False)
+    client = TestClient(app)
+
+    response = client.post(
+        "/admin",
+        content="password=secret-pass",
+        headers={"content-type": "application/x-www-form-urlencoded"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    set_cookie = response.headers["set-cookie"]
+    assert "ewash_admin_session" in set_cookie
+    assert "Secure" not in set_cookie
+    assert "HttpOnly" in set_cookie
+
+
 def _sample_booking() -> Booking:
     booking = Booking(phone="212665883062")
     booking.name = "Sekkat"
