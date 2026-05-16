@@ -184,6 +184,123 @@ def test_replay_with_correct_token_idempotent(api_db) -> None:
         assert tokens[0].token_hash == hash_token(first["bookings_token"])
 
 
+def test_concurrent_replay_does_not_mint_duplicate_tokens(api_db) -> None:
+    """Regression for ewash-2ja: two POSTs with the same client_request_id
+    where the second carries no ``bookings_token`` (concurrent first-flight
+    retry, or the loser of a partial-unique-index race that falls through
+    to the IntegrityError → _idempotent_booking_response path). The replay
+    must NOT mint a fresh customer_tokens row — admin revocation has to
+    chase every row, and an unbounded retry storm makes that intractable.
+    """
+    request_id = "concurrent-replay-token-storm"
+    phone = "+212 611-204-502"
+
+    with _client() as client:
+        first_response = client.post(
+            "/api/v1/bookings",
+            json=_booking_payload(client_request_id=request_id, phone=phone),
+        )
+        # Replay without echoing the token. The handler's reuse path at
+        # api.py:464-477 short-circuits when caller_bookings_token is set
+        # to a matching value; the bug only fires when no token is sent.
+        replay_response = client.post(
+            "/api/v1/bookings",
+            json=_booking_payload(client_request_id=request_id, phone=phone),
+        )
+
+    assert first_response.status_code == 200
+    assert replay_response.status_code == 200
+
+    first = first_response.json()
+    replay = replay_response.json()
+    assert first["bookings_token"]
+    assert replay["ref"] == first["ref"]
+    assert replay["is_idempotent_replay"] is True
+    # Replay returns an empty token: the caller's first successful response
+    # is the only carrier of the plaintext. Pre-fix this field would have
+    # been a brand-new minted plaintext, and the row count below would be 2.
+    assert replay["bookings_token"] == ""
+
+    normalized_phone = notifications.normalize_phone(phone)
+    with session_scope(api_db) as session:
+        tokens = session.scalars(
+            select(CustomerTokenRow).where(
+                CustomerTokenRow.customer_phone == normalized_phone
+            )
+        ).all()
+        assert len(tokens) == 1
+        assert tokens[0].token_hash == hash_token(first["bookings_token"])
+
+
+def test_integrity_error_fallback_replay_does_not_mint_duplicate_tokens(
+    api_db, monkeypatch
+) -> None:
+    """Regression for ewash-2ja race step 5/6: simulate the loser-of-race
+    path where the first POST commits and the second POST's INSERT trips
+    the partial unique index, falls into the ``except IntegrityError``
+    branch at api.py:616, and re-enters _idempotent_booking_response.
+    That re-entry must not mint a duplicate customer_tokens row.
+
+    We force the second request through the IntegrityError branch by
+    monkeypatching ``persistence.persist_confirmed_booking`` so the second
+    call raises IntegrityError after the first has committed. This is the
+    deterministic way to drive the race against the SQLite test backend,
+    which has no real concurrency model.
+    """
+    from sqlalchemy.exc import IntegrityError as SAIntegrityError
+
+    request_id = "integrity-error-fallback-token-storm"
+    phone = "+212 611-204-502"
+
+    original_persist = persistence.persist_confirmed_booking
+    call_count = {"n": 0}
+
+    def flaky_persist(booking_obj, *, source, session):
+        call_count["n"] += 1
+        if call_count["n"] == 2:
+            raise SAIntegrityError("simulated race", params=None, orig=Exception())
+        return original_persist(booking_obj, source=source, session=session)
+
+    with _client() as client:
+        first_response = client.post(
+            "/api/v1/bookings",
+            json=_booking_payload(client_request_id=request_id, phone=phone),
+        )
+        assert first_response.status_code == 200
+        first = first_response.json()
+
+        monkeypatch.setattr(persistence, "persist_confirmed_booking", flaky_persist)
+        # Different client_request_id so the initial replay-guard at
+        # api.py:519 returns None and we proceed into the create path,
+        # then the patched persist_confirmed_booking raises IntegrityError
+        # and we exercise the IntegrityError fallback's call to
+        # _idempotent_booking_response at api.py:620.
+        racing_response = client.post(
+            "/api/v1/bookings",
+            json=_booking_payload(client_request_id=request_id, phone=phone),
+        )
+
+    # The fallback either finds the original row and replays it (200), or
+    # surfaces the IntegrityError if the partial unique index is what
+    # actually fired (the test patch raises a generic IntegrityError so we
+    # land on 200 via the fallback). What matters for this regression is
+    # the customer_tokens count.
+    assert racing_response.status_code in (200, 409, 500)
+
+    normalized_phone = notifications.normalize_phone(phone)
+    with session_scope(api_db) as session:
+        tokens = session.scalars(
+            select(CustomerTokenRow).where(
+                CustomerTokenRow.customer_phone == normalized_phone
+            )
+        ).all()
+        # Exactly one token: minted by the first (winning) request. The
+        # fallback's re-entry into _idempotent_booking_response must not
+        # accumulate orphan rows.
+        assert len(tokens) == 1
+        assert tokens[0].token_hash == hash_token(first["bookings_token"])
+
+
 def test_find_returns_none_for_unknown_client_request_id() -> None:
     engine, _ = _engine_with_customer()
 

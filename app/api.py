@@ -11,9 +11,11 @@ from typing import Literal
 from fastapi import APIRouter, BackgroundTasks, Body, FastAPI, Query, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse
 from slowapi.util import get_remote_address
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app import api_validation, booking as booking_module, catalog, notifications, persistence
+from app.models import CustomerTokenRow
 from app.api_schemas import (
     BookingCreateRequest,
     BookingCreateResponse,
@@ -476,12 +478,31 @@ def _idempotent_booking_response(
                 _hash_for_log(phone),
             )
     if not returned_token:
-        returned_token = persistence.mint_customer_token(phone, engine=engine)
-        logger.info(
-            "bookings.token minted ref=%s phone_hash=%s replay=true",
-            ref,
-            _hash_for_log(phone),
-        )
+        # Don't mint on every replay — the winning request already minted one
+        # on the create path, and the plaintext of an existing row is not
+        # retrievable (only its SHA-256 hash is stored). Returning "" here
+        # lets the caller fall back to whatever they already cached from
+        # their first successful response; minting again would just accrue
+        # orphan customer_tokens rows that admin revocation has to chase.
+        with persistence.session_scope(engine) as session:
+            has_existing_token = session.scalar(
+                select(CustomerTokenRow.id)
+                .where(CustomerTokenRow.customer_phone == phone)
+                .limit(1)
+            ) is not None
+        if has_existing_token:
+            logger.info(
+                "bookings.token mint_skipped_existing ref=%s phone_hash=%s replay=true",
+                ref,
+                _hash_for_log(phone),
+            )
+        else:
+            returned_token = persistence.mint_customer_token(phone, engine=engine)
+            logger.info(
+                "bookings.token minted ref=%s phone_hash=%s replay=true",
+                ref,
+                _hash_for_log(phone),
+            )
 
     response.bookings_token = returned_token
     request.state.booking_ref = ref
