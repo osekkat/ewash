@@ -135,7 +135,7 @@ def test_persist_confirmed_booking_upserts_customer_vehicle_and_status_event():
 
         event = session.scalars(select(BookingStatusEventRow)).one()
         assert event.booking_id == saved.id
-        assert event.from_status == "awaiting_confirmation"
+        assert event.from_status == "draft"
         assert event.to_status == "pending_ewash_confirmation"
         assert event.actor == "customer"
 

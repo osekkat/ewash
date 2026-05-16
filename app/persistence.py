@@ -882,7 +882,7 @@ def _persist_confirmed_booking_in_session(
     session.add(
         BookingStatusEventRow(
             booking_id=row.id,
-            from_status="awaiting_confirmation",
+            from_status="draft",
             to_status="pending_ewash_confirmation",
             actor="customer",
             note="Confirmation PWA" if source == "api" else "Confirmation WhatsApp",

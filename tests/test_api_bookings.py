@@ -169,7 +169,7 @@ def test_create_booking_happy_path_persists_pending_api_booking(api_db, caplog):
 
         event = session.scalars(select(BookingStatusEventRow)).one()
         assert event.booking_id == row.id
-        assert event.from_status == "awaiting_confirmation"
+        assert event.from_status == "draft"
         assert event.to_status == "pending_ewash_confirmation"
         assert event.actor == "customer"
         assert event.note == "Confirmation PWA"

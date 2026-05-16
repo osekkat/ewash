@@ -23,7 +23,7 @@ def test_customer_confirmation_creates_pending_ewash_confirmation_status():
         event = session.scalars(select(BookingStatusEventRow)).one()
 
     assert saved.status == "pending_ewash_confirmation"
-    assert event.from_status == "awaiting_confirmation"
+    assert event.from_status == "draft"
     assert event.to_status == "pending_ewash_confirmation"
     assert event.actor == "customer"
 
