@@ -263,7 +263,7 @@ def clean_text(value: str | None, *, max_len: int) -> str | None:
     return trimmed[:max_len]
 
 
-def validate_addon_ids(addon_ids: list[str]) -> list[str]:
+def validate_addon_ids(addon_ids: list[str], *, main_service_id: str) -> list[str]:
     """Return ``addon_ids`` if every id is a known detailing-bucket service.
 
     Addons in the PWA booking flow are upsells from the ``ESTHÉTIQUE`` /
@@ -271,11 +271,22 @@ def validate_addon_ids(addon_ids: list[str]) -> list[str]:
     or moto-bucket service ids are rejected — they belong in the main
     ``service_id`` field, not as addons.
 
+    Detailing services are also valid main services (``SERVICES_CAR`` =
+    ``SERVICES_WASH + SERVICES_DETAILING`` in :mod:`app.catalog`). Without an
+    extra check, a payload like ``{service_id: "svc_pol", addon_ids:
+    ["svc_pol"]}`` would pass both this validator and
+    :func:`validate_service_for_category` independently and then persist two
+    ``BookingLineItemRow`` rows — one as ``kind=main`` at full price, one as
+    ``kind=addon`` at 10% off — double-charging the customer. Reject early.
+
     Parameters
     ----------
     addon_ids : list[str]
         Service ids from the catalog (e.g., ``["svc_cuir", "svc_plastq"]``).
         An empty list is valid (the customer didn't pick an upsell).
+    main_service_id : str
+        The booking's main ``service_id``. An addon that equals it is
+        rejected as ``DuplicateAddon`` (see above).
 
     Returns
     -------
@@ -284,14 +295,23 @@ def validate_addon_ids(addon_ids: list[str]) -> list[str]:
 
     Raises
     ------
-    DuplicateAddon : if the same id is listed twice (two `BookingLineItemRow`
-        rows with identical service_id would muddy the data; reject early).
+    DuplicateAddon : if the same id is listed twice, OR if any id equals
+        ``main_service_id``.
     UnknownAddon : if an id is not in any static service catalog.
     NotADetailingService : if the id exists but lives in the wash or moto
         bucket — it cannot be used as an addon.
     """
     seen: set[str] = set()
     for addon_id in addon_ids:
+        if addon_id == main_service_id:
+            log.info(
+                "validation.rejection addon_id=%s reason=duplicate_addon equals_main_service_id",
+                addon_id,
+            )
+            raise DuplicateAddon(
+                f"addon_id={addon_id} equals main service_id; "
+                "the same service cannot be billed as both the main item and an addon"
+            )
         if addon_id in seen:
             log.info(
                 "validation.rejection addon_id=%s reason=duplicate_addon",

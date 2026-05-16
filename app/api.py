@@ -532,7 +532,7 @@ async def create_booking(
         hit_phone_limit(phone, settings.rate_limit_bookings_per_phone)
 
         api_validation.validate_service_for_category(body.service_id, body.category)
-        api_validation.validate_addon_ids(body.addon_ids)
+        api_validation.validate_addon_ids(body.addon_ids, main_service_id=body.service_id)
         api_validation.validate_center_id(
             body.location.center_id,
             location_kind=body.location.kind,

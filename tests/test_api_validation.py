@@ -257,26 +257,27 @@ def test_service_validation_exceptions_are_api_validation_errors() -> None:
 
 def test_validate_addon_ids_empty_list_returns_empty() -> None:
     # Customer skipped the upsell. Empty input is the common case, must pass.
-    assert validate_addon_ids([]) == []
+    assert validate_addon_ids([], main_service_id="svc_cpl") == []
 
 
 def test_validate_addon_ids_returns_same_list_for_all_valid_detailing() -> None:
     # Two real detailing services from SERVICES_DETAILING — should round-trip.
     addons = ["svc_cuir", "svc_plastq"]
-    assert validate_addon_ids(addons) == addons
+    assert validate_addon_ids(addons, main_service_id="svc_cpl") == addons
 
 
 def test_validate_addon_ids_rejects_unknown_id() -> None:
     with pytest.raises(UnknownAddon) as exc_info:
-        validate_addon_ids(["svc_does_not_exist"])
+        validate_addon_ids(["svc_does_not_exist"], main_service_id="svc_cpl")
     assert exc_info.value.error_code == "unknown_addon"
 
 
 def test_validate_addon_ids_rejects_wash_service() -> None:
     # svc_cpl is wash-bucket — has its own pricing per category, must not
-    # be used as a free-form addon.
+    # be used as a free-form addon. main_service_id is a detailing id so the
+    # equals-main check doesn't shadow the wash-bucket rejection.
     with pytest.raises(NotADetailingService) as exc_info:
-        validate_addon_ids(["svc_cpl"])
+        validate_addon_ids(["svc_cpl"], main_service_id="svc_pol")
     assert exc_info.value.error_code == "not_a_detailing_service"
     assert "bucket=wash" in str(exc_info.value)
 
@@ -284,7 +285,7 @@ def test_validate_addon_ids_rejects_wash_service() -> None:
 def test_validate_addon_ids_rejects_moto_service() -> None:
     # svc_moto is in SERVICES_MOTO — also not a detailing service.
     with pytest.raises(NotADetailingService) as exc_info:
-        validate_addon_ids(["svc_moto"])
+        validate_addon_ids(["svc_moto"], main_service_id="svc_cpl")
     assert exc_info.value.error_code == "not_a_detailing_service"
     assert "bucket=moto" in str(exc_info.value)
 
@@ -293,8 +294,31 @@ def test_validate_addon_ids_rejects_duplicates() -> None:
     # Two BookingLineItemRow rows with the same service_id would be confusing
     # admin-side and add no value to the customer's upsell list.
     with pytest.raises(DuplicateAddon) as exc_info:
-        validate_addon_ids(["svc_cuir", "svc_cuir"])
+        validate_addon_ids(["svc_cuir", "svc_cuir"], main_service_id="svc_cpl")
     assert exc_info.value.error_code == "duplicate_addon"
+
+
+def test_addon_id_equal_to_service_id_rejected() -> None:
+    # Detailing services live in BOTH SERVICES_CAR (so they pass
+    # validate_service_for_category) AND SERVICES_DETAILING (so they pass
+    # validate_addon_ids). A payload like {service_id: "svc_pol", addon_ids:
+    # ["svc_pol"]} would persist two BookingLineItemRow rows — main at full
+    # price plus addon at 10% off — and double-charge the customer for one
+    # service. The validator must reject this before persistence.
+    with pytest.raises(DuplicateAddon) as exc_info:
+        validate_addon_ids(["svc_pol"], main_service_id="svc_pol")
+    assert exc_info.value.error_code == "duplicate_addon"
+    assert "equals main service_id" in str(exc_info.value)
+
+
+def test_addon_id_equal_to_service_id_rejected_even_with_other_valid_addons() -> None:
+    # The duplicate-against-main check must scan the full list, not just
+    # short-circuit on a singleton. svc_cuir is a legitimate addon; svc_pol
+    # collides with the main service and is what we expect to be flagged.
+    with pytest.raises(DuplicateAddon) as exc_info:
+        validate_addon_ids(["svc_cuir", "svc_pol"], main_service_id="svc_pol")
+    assert exc_info.value.error_code == "duplicate_addon"
+    assert "svc_pol" in str(exc_info.value)
 
 
 def test_validate_addon_ids_logs_rejection(caplog) -> None:
@@ -302,7 +326,7 @@ def test_validate_addon_ids_logs_rejection(caplog) -> None:
 
     caplog.set_level(logging.INFO, logger="app.api_validation")
     with pytest.raises(UnknownAddon):
-        validate_addon_ids(["svc_unknown"])
+        validate_addon_ids(["svc_unknown"], main_service_id="svc_cpl")
     assert any(
         "validation.rejection" in rec.message and "addon_id=svc_unknown" in rec.message
         for rec in caplog.records
@@ -553,13 +577,35 @@ def test_http_duplicate_addon(api_db):
     assert response.json()["error_code"] == "duplicate_addon"
 
 
-def test_http_addon_must_be_detailing(api_db):
-    # svc_cpl is a wash-bucket service; it has its own pricing per category and
-    # would be confusing as a free-form upsell add-on.
+def test_http_addon_id_equal_to_service_id_rejected(api_db):
+    # End-to-end exploit guard: svc_pol is a detailing service that also lives
+    # in SERVICES_CAR, so {service_id: "svc_pol", addon_ids: ["svc_pol"]}
+    # passes validate_service_for_category as a main service AND would pass
+    # validate_addon_ids as a detailing addon without the equals-main check.
+    # Persistence would write two BookingLineItemRow rows (main + addon at
+    # -10%), double-charging the customer. Must surface as a 400 with
+    # error_code=duplicate_addon mapped to field=addon_ids.
     with _pwa_client() as client:
         response = client.post(
             "/api/v1/bookings",
-            json=_booking_payload(addon_ids=["svc_cpl"]),
+            json=_booking_payload(service_id="svc_pol", addon_ids=["svc_pol"]),
+        )
+
+    assert response.status_code == 400
+    body = response.json()
+    assert body["error_code"] == "duplicate_addon"
+    assert body["field"] == "addon_ids"
+
+
+def test_http_addon_must_be_detailing(api_db):
+    # svc_cpl is a wash-bucket service; it has its own pricing per category and
+    # would be confusing as a free-form upsell add-on. Use svc_sal as the main
+    # service so the addon doesn't collide with it (which would trip the
+    # equals-main check first).
+    with _pwa_client() as client:
+        response = client.post(
+            "/api/v1/bookings",
+            json=_booking_payload(service_id="svc_sal", addon_ids=["svc_cpl"]),
         )
 
     assert response.status_code == 400
