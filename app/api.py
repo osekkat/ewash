@@ -227,11 +227,16 @@ async def api_exception_handler(request: Request, exc: Exception) -> Response:
     the prefix guard the PWA error envelope (``{error_code, message, field,
     details}``) leaked into ``/admin/*`` and webhook 500 responses, where it
     confuses the admin operator and preempts each route's own redirect-with-
-    flash handling. Non-API paths now fall through to Starlette's default
-    plain 500 — Starlette re-raises after our handler returns, so uvicorn
-    still logs the traceback.
+    flash handling.
+
+    Non-API paths fall through to a plain 500. Once Starlette's
+    ``ExceptionMiddleware`` has called this handler and we return a response,
+    the exception is considered handled — it does NOT re-propagate to
+    ``ServerErrorMiddleware``, so we must log the traceback ourselves before
+    returning, otherwise admin/webhook 500s become invisible in production.
     """
     if not request.url.path.startswith(_API_PATH_PREFIX):
+        logger.exception("ewash.non_api unhandled exception path=%s", request.url.path)
         return PlainTextResponse("Internal Server Error", status_code=500)
 
     if type(exc) in _DOMAIN_EXC_MAP:
