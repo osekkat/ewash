@@ -19,7 +19,7 @@ from typing import Iterable
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import Engine, and_, delete, func, or_, select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import Session
 
 from .booking import Booking, all_bookings
@@ -51,6 +51,10 @@ H2_REMINDER_KIND = "H-2"
 H2_REMINDER_OFFSET_MINUTES = 120
 REMINDER_CLAIM_LEASE_MINUTES = 5
 CONVERSATION_ABANDON_AFTER_SECONDS = 60 * 60 * 2
+
+
+class BookingLockBusy(RuntimeError):
+    """Raised when a booking row is already locked by another admin action."""
 
 
 @dataclass(frozen=True)
@@ -1084,6 +1088,28 @@ def _booking_has_h2_reminder(session, booking_id: int) -> bool:
     return existing is not None
 
 
+def _is_nowait_lock_error(exc: DBAPIError) -> bool:
+    orig = getattr(exc, "orig", None)
+    sqlstate = (getattr(orig, "sqlstate", "") or getattr(orig, "pgcode", "") or "").upper()
+    if sqlstate == "55P03":
+        return True
+    text = " ".join(
+        str(part).lower()
+        for part in (exc, orig)
+        if part is not None
+    )
+    return any(
+        marker in text
+        for marker in (
+            "could not obtain lock",
+            "lock not available",
+            "nowait",
+            "database is locked",
+            "database table is locked",
+        )
+    )
+
+
 def _create_h2_reminder_for_confirmed_booking(
     session,
     booking: BookingRow,
@@ -1128,9 +1154,16 @@ def confirm_booking_by_ewash(
         raise RuntimeError("DATABASE_URL is not configured")
 
     with session_scope(db_engine) as session:
-        row = session.scalars(
-            select(BookingRow).where(BookingRow.ref == normalized_ref).with_for_update()
-        ).first()
+        try:
+            row = session.scalars(
+                select(BookingRow).where(BookingRow.ref == normalized_ref).with_for_update(nowait=True)
+            ).first()
+        except DBAPIError as exc:
+            if _is_nowait_lock_error(exc):
+                raise BookingLockBusy(
+                    f"Réservation {normalized_ref} déjà en cours de confirmation"
+                ) from exc
+            raise
         if row is None:
             raise ValueError(f"Réservation introuvable: {normalized_ref}")
         if row.status != "pending_ewash_confirmation":

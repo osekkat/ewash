@@ -1,10 +1,13 @@
 import asyncio
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import select
 from sqlalchemy.dialects import postgresql, sqlite
+from sqlalchemy.exc import OperationalError
 
+import app.persistence as persistence
 from app import handlers, meta, state
 from app.booking import Booking
 from app.config import settings
@@ -27,6 +30,7 @@ from app.persistence import (
     admin_customer_list,
     admin_dashboard_summary,
     assign_booking_ref,
+    confirm_booking_by_ewash,
     get_returning_customer_profile,
     mark_abandoned_conversations,
     persist_booking_identity,
@@ -138,6 +142,34 @@ def test_persist_confirmed_booking_upserts_customer_vehicle_and_status_event():
         assert event.from_status == "draft"
         assert event.to_status == "pending_ewash_confirmation"
         assert event.actor == "customer"
+
+
+def test_confirm_booking_by_ewash_nowait_contention_raises_lock_busy(monkeypatch):
+    engine = make_engine("sqlite+pysqlite:///:memory:")
+    init_db(engine)
+    booking = _sample_booking()
+    booking.date_iso = "2099-05-01"
+    persist_confirmed_booking(booking, engine=engine)
+
+    confirmed = confirm_booking_by_ewash(booking.ref, engine=engine)
+    assert confirmed.status == "confirmed"
+
+    @contextmanager
+    def busy_session_scope(_engine):
+        class BusySession:
+            def scalars(self, _stmt):
+                raise OperationalError(
+                    "SELECT ... FOR UPDATE NOWAIT",
+                    {},
+                    Exception("could not obtain lock on row in relation bookings"),
+                )
+
+        yield BusySession()
+
+    monkeypatch.setattr(persistence, "session_scope", busy_session_scope)
+
+    with pytest.raises(persistence.BookingLockBusy, match=booking.ref):
+        confirm_booking_by_ewash(booking.ref, engine=engine)
 
 
 def test_persist_confirmed_booking_reuses_existing_vehicle_for_repeat_customer():

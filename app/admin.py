@@ -22,6 +22,7 @@ from .catalog import SERVICES_DETAILING, SERVICES_MOTO, SERVICES_WASH
 from .config import settings
 from .notifications import get_booking_notification_settings, upsert_booking_notification_settings
 from .persistence import (
+    BookingLockBusy,
     admin_booking_list,
     admin_customer_list,
     admin_dashboard_summary,
@@ -752,7 +753,7 @@ def _booking_action_cell(item, *, locale: str) -> str:
     )
 
 
-def _bookings_page(*, locale: str, message: str = "", error: str = "") -> HTMLResponse:
+def _bookings_page(*, locale: str, message: str = "", error: str = "", status_code: int = 200) -> HTMLResponse:
     title = t("nav.bookings", locale)
     bookings = admin_booking_list()
     notice = _notice_html(message=message, error=error)
@@ -800,7 +801,7 @@ def _bookings_page(*, locale: str, message: str = "", error: str = "") -> HTMLRe
 """
     return HTMLResponse(
         content=_layout(locale=locale, title=title, body=body, active_path="/admin/bookings"),
-        status_code=200,
+        status_code=status_code,
     )
 
 
@@ -1050,6 +1051,12 @@ async def admin_booking_confirm_submit(request: Request, lang: str | None = Quer
     form = await _admin_form(request)
     try:
         confirm_booking_by_ewash(form.get("ref", [""])[0])
+    except BookingLockBusy:
+        return _bookings_page(
+            locale=locale,
+            error="Une autre confirmation admin est déjà en cours pour cette réservation — actualisez puis réessayez.",
+            status_code=status.HTTP_409_CONFLICT,
+        )
     except Exception as exc:
         return _bookings_page(locale=locale, error=str(exc))
     return RedirectResponse(url=f"/admin/bookings?lang={locale}&confirmed=1", status_code=status.HTTP_303_SEE_OTHER)

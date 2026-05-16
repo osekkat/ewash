@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
+from app import admin as admin_module
 from app.booking import Booking
 import app.booking as booking_store
 from app.config import settings
@@ -241,6 +242,26 @@ def test_admin_bookings_page_renders_persisted_reservations(monkeypatch, tmp_pat
     assert "badge src-wa" in response.text
     assert "WhatsApp" in response.text
     _configured_engine.cache_clear()
+
+
+def test_admin_booking_confirm_lock_busy_renders_conflict(monkeypatch, tmp_path):
+    db_url = f"sqlite+pysqlite:///{tmp_path / 'admin-confirm-busy.db'}"
+    engine = make_engine(db_url)
+    init_db(engine)
+    booking = _sample_booking()
+    persist_confirmed_booking(booking, engine=engine)
+    client = _logged_in_admin_client(monkeypatch, db_url)
+
+    def busy_confirm(_ref):
+        raise admin_module.BookingLockBusy("row is locked")
+
+    monkeypatch.setattr(admin_module, "confirm_booking_by_ewash", busy_confirm)
+
+    response = client.post("/admin/bookings/confirm?lang=fr", data={"ref": booking.ref})
+
+    assert response.status_code == 409
+    assert "Une autre confirmation admin est déjà en cours" in response.text
+    assert booking.ref in response.text
 
 
 def test_admin_dashboard_renders_pwa_and_whatsapp_split_counters(monkeypatch, tmp_path):
