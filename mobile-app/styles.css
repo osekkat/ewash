@@ -1134,17 +1134,29 @@ button.chip:active { transform: scale(0.95); }
 [data-pwa-standalone] .appbar {
   padding-top: calc(10px + env(safe-area-inset-top));
 }
-/* In iOS standalone, relying on flex-column positioning to keep .bottom-nav
- * at the viewport bottom is unreliable — dvh sometimes lags during URL-bar
- * transitions, and the bar can drift up as content scrolls. Pin it to the
- * viewport directly, mirroring the .cta-dock fix below. */
-[data-pwa-standalone] .bottom-nav {
-  position: fixed;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  z-index: 10;
-  padding-bottom: calc(10px + env(safe-area-inset-bottom));
+/* Pin .bottom-nav to the viewport bottom whenever we're in a context where
+ * the desktop stage/EwashFrame isn't being used. The media query is used
+ * INSTEAD of [data-pwa-standalone] because iOS has a quirk where, when a
+ * PWA is launched from the home screen, navigator.standalone and the
+ * (display-mode: standalone) JS check aren't fully populated by the time
+ * scripts in <head> run during HTML parsing. The attribute would get set
+ * only after React's useEffect fired (post first-paint), and the bar would
+ * render in document flow until the first touch event forced a relayout —
+ * the "bar pins itself when I touch it" symptom on standalone PWA.
+ *
+ * The browser re-evaluates @media at paint time and any time conditions
+ * change, so this works on frame 1 regardless of when the standalone state
+ * settles. We OR both checks so iPad PWAs (wider viewport but standalone)
+ * also get the fix. */
+@media (display-mode: standalone), (max-width: 600px) {
+  .bottom-nav {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 10;
+    padding-bottom: calc(10px + env(safe-area-inset-bottom));
+  }
 }
 /* CtaDock — always-visible bottom CTA used by every booking step.
  * Inline styles were moved here so the standalone override can win on
