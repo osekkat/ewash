@@ -11,7 +11,7 @@ import json
 import logging
 import secrets
 import time
-from datetime import date
+from datetime import date, timezone
 from hashlib import sha256
 from html import escape
 from pathlib import Path
@@ -1014,6 +1014,11 @@ def _b2b_hertz_db_file_records() -> list[dict[str, object]]:
                 "filename": filename,
                 "label": label,
                 "modified": row.updated_at.strftime("%Y-%m-%d %H:%M") if row.updated_at else "—",
+                "modified_timestamp": (
+                    row.updated_at.replace(tzinfo=timezone.utc).timestamp()
+                    if row.updated_at and row.updated_at.tzinfo is None
+                    else row.updated_at.timestamp() if row.updated_at else None
+                ),
                 "size": _format_file_size(size_bytes) if size_bytes else "—",
                 "href": f"/admin/b2b/hertz/files/{quote(filename, safe='')}",
             }
@@ -1033,6 +1038,7 @@ def _b2b_hertz_filesystem_records() -> list[dict[str, object]]:
                 "filename": path.name,
                 "label": path.name,
                 "modified": time.strftime("%Y-%m-%d %H:%M", time.localtime(path.stat().st_mtime)),
+                "modified_timestamp": path.stat().st_mtime,
                 "size": _format_file_size(path.stat().st_size),
                 "href": f"/admin/b2b/hertz/files/{quote(path.name, safe='')}",
             }
@@ -1040,14 +1046,30 @@ def _b2b_hertz_filesystem_records() -> list[dict[str, object]]:
     return records
 
 
-def _b2b_hertz_file_records() -> list[dict[str, object]]:
+_B2B_HERTZ_FILE_SORT_CHOICES = {
+    "date_desc": "Date de modification : plus récents",
+    "date_asc": "Date de modification : plus anciens",
+    "name_asc": "Nom du fichier : A → Z",
+    "name_desc": "Nom du fichier : Z → A",
+}
+
+
+def _b2b_hertz_file_records(*, sort: str = "date_desc") -> list[dict[str, object]]:
     records = _b2b_hertz_db_file_records()
     seen = {str(record["filename"]) for record in records}
     for record in _b2b_hertz_filesystem_records():
         if str(record["filename"]) in seen:
             continue
         records.append(record)
-    return records
+    # Case-insensitive filenames, with exact spelling as a deterministic tie-break.
+    records.sort(key=lambda record: (str(record["filename"]).casefold(), str(record["filename"])))
+    if sort in {"name_asc", "name_desc"}:
+        return list(reversed(records)) if sort == "name_desc" else records
+    dated = [record for record in records if record.get("modified_timestamp") is not None]
+    undated = [record for record in records if record.get("modified_timestamp") is None]
+    # Stable date sorting retains the filename tie-break; missing dates stay last.
+    dated.sort(key=lambda record: float(str(record["modified_timestamp"])), reverse=sort != "date_asc")
+    return dated + undated
 
 
 def _b2b_hertz_period_payload(period: str = _B2B_HERTZ_CURRENT_PERIOD) -> dict[str, object]:
@@ -1096,13 +1118,18 @@ def _b2b_page(*, locale: str) -> HTMLResponse:
     return HTMLResponse(content=_layout(locale=locale, title=title, body=body, active_path="/admin/b2b"))
 
 
-def _b2b_hertz_page(*, locale: str) -> HTMLResponse:
+def _b2b_hertz_page(*, locale: str, sort: str = "date_desc") -> HTMLResponse:
     title = "B2B · Hertz"
     payload = _b2b_hertz_period_payload()
     summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
     raw_rows = payload.get("rows")
     rows = [row for row in raw_rows if isinstance(row, dict)] if isinstance(raw_rows, list) else []
-    files = _b2b_hertz_file_records()
+    sort = sort if sort in _B2B_HERTZ_FILE_SORT_CHOICES else "date_desc"
+    files = _b2b_hertz_file_records(sort=sort)
+    sort_options = "".join(
+        f'<option value="{value}"{" selected" if value == sort else ""}>{escape(label)}</option>'
+        for value, label in _B2B_HERTZ_FILE_SORT_CHOICES.items()
+    )
     total_vehicles = int(summary.get("total_vehicles") or len(rows)) if isinstance(summary, dict) else len(rows)
     total_ht = int(summary.get("total_ht") or total_vehicles * 50) if isinstance(summary, dict) else total_vehicles * 50
     tva = int(summary.get("tva") or total_ht * 0.2) if isinstance(summary, dict) else int(total_ht * 0.2)
@@ -1149,6 +1176,12 @@ def _b2b_hertz_page(*, locale: str) -> HTMLResponse:
     </section>
     <section class="card" style="padding:18px; margin-bottom:16px;">
       <h2>Fichiers Hertz</h2>
+      <form method="get" action="/admin/b2b/hertz" style="margin-bottom:16px;">
+        <input type="hidden" name="lang" value="{escape(locale)}">
+        <label for="hertz-file-sort">Trier les fichiers</label>
+        <select id="hertz-file-sort" name="sort">{sort_options}</select>
+        <button type="submit">Appliquer</button>
+      </form>
       <div class="table-shell">
         <div class="table-row table-head" style="grid-template-columns:1.2fr .6fr .5fr .45fr;"><span>Fichier</span><span>Modifié</span><span>Taille</span><span>Action</span></div>
         {file_rows}
@@ -1922,7 +1955,11 @@ async def admin_payroll_receipt(request: Request, filename: str, lang: str | Non
 
 
 @router.get("/b2b/hertz", response_class=HTMLResponse)
-async def admin_b2b_hertz(request: Request, lang: str | None = Query(default=None)) -> HTMLResponse:
+async def admin_b2b_hertz(
+    request: Request,
+    lang: str | None = Query(default=None),
+    sort: str = Query(default="date_desc"),
+) -> HTMLResponse:
     locale = normalize_locale(lang or settings.admin_default_locale)
     if not settings.admin_password:
         title = t("admin.not_configured.title", locale)
@@ -1933,7 +1970,7 @@ async def admin_b2b_hertz(request: Request, lang: str | None = Query(default=Non
         )
     if not _valid_session_token(request.cookies.get(_SESSION_COOKIE)):
         return _password_form(locale=locale)
-    return _b2b_hertz_page(locale=locale)
+    return _b2b_hertz_page(locale=locale, sort=sort)
 
 
 @router.get("/b2b/hertz/files/{filename}")

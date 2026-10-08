@@ -2,6 +2,8 @@ import base64
 import hashlib
 import json
 import logging
+import os
+import re
 from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
@@ -225,6 +227,100 @@ def test_admin_personal_finances_page_lists_and_serves_db_workbook(monkeypatch, 
     assert download.status_code == 200
     assert download.content == workbook_bytes
     assert download.headers["content-type"] == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def test_admin_b2b_hertz_file_sorting_db_and_filesystem(monkeypatch, tmp_path):
+    engine = make_engine(f"sqlite+pysqlite:///{tmp_path / 'hertz-sort.sqlite3'}")
+    init_db(engine)
+    monkeypatch.setattr(admin_module, "_configured_engine", lambda: engine)
+    monkeypatch.setattr(admin_module, "_B2B_HERTZ_DIR", tmp_path)
+    monkeypatch.setattr(admin_module, "_b2b_hertz_period_payload", lambda: {})
+    monkeypatch.setattr(settings, "admin_password", "secret-pass")
+    instant = datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
+    with session_scope(engine) as session:
+        for filename, seconds, label in [("zeta.xlsx", 10, "Premier"), ("Alpha.xlsx", 30, "Dernier")]:
+            session.add(AdminTextRow(
+                text_key=f"{admin_module._B2B_HERTZ_FILE_TEXT_PREFIX}{filename}",
+                title=filename,
+                body=json.dumps({"filename": filename, "label": label,
+                                 "content_base64": base64.b64encode(b"db workbook").decode()}),
+                updated_at=instant + timedelta(seconds=seconds),
+            ))
+    for filename, seconds in [("middle.xlsx", 20), ("Beta.xlsx", 30), ("zeta.xlsx", 50)]:
+        path = tmp_path / filename
+        path.write_bytes(b"filesystem workbook")
+        timestamp = (instant + timedelta(seconds=seconds)).timestamp()
+        os.utime(path, (timestamp, timestamp))
+    client = TestClient(app)
+    client.cookies.set(admin_module._SESSION_COOKIE, admin_module._make_session_token())
+    expected = {
+        "name_asc": ["Alpha.xlsx", "Beta.xlsx", "middle.xlsx", "zeta.xlsx"],
+        "name_desc": ["zeta.xlsx", "middle.xlsx", "Beta.xlsx", "Alpha.xlsx"],
+        "date_desc": ["Alpha.xlsx", "Beta.xlsx", "middle.xlsx", "zeta.xlsx"],
+        "date_asc": ["zeta.xlsx", "middle.xlsx", "Alpha.xlsx", "Beta.xlsx"],
+    }
+    for sort, filenames in expected.items():
+        assert [record["filename"] for record in admin_module._b2b_hertz_file_records(sort=sort)] == filenames
+        page = client.get("/admin/b2b/hertz", params={"sort": sort, "lang": "en"})
+        assert page.status_code == 200
+        assert re.findall(r'/admin/b2b/hertz/files/([^"?]+)', page.text) == filenames
+        assert 'method="get" action="/admin/b2b/hertz"' in page.text
+        assert 'name="lang" value="en"' in page.text
+        assert f'value="{sort}" selected' in page.text
+        for choice in expected:
+            assert f'value="{choice}"' in page.text
+        assert "Nom du fichier : A → Z" in page.text
+        assert "Nom du fichier : Z → A" in page.text
+        assert "Date de modification : plus récents" in page.text
+        assert "Date de modification : plus anciens" in page.text
+    for params in [{}, {"sort": "invalid"}, {"sort": "<script>"}]:
+        page = client.get("/admin/b2b/hertz", params=params)
+        assert page.status_code == 200
+        assert 'value="date_desc" selected' in page.text
+        assert re.findall(r'/admin/b2b/hertz/files/([^"?]+)', page.text) == expected["date_desc"]
+    assert client.get("/admin/b2b/hertz/files/Alpha.xlsx").content == b"db workbook"
+    assert client.get("/admin/b2b/hertz/files/middle.xlsx").content == b"filesystem workbook"
+
+
+def test_admin_b2b_hertz_sort_missing_dates_and_filename_ties(monkeypatch):
+    records = [
+        {"filename": "beta.xlsx", "modified_timestamp": None},
+        {"filename": "alpha.xlsx", "modified_timestamp": 100},
+        {"filename": "Alpha.xlsx", "modified_timestamp": 100},
+        {"filename": "unknown.xlsx", "modified_timestamp": None},
+    ]
+    monkeypatch.setattr(admin_module, "_b2b_hertz_db_file_records", lambda: list(records))
+    monkeypatch.setattr(admin_module, "_b2b_hertz_filesystem_records", lambda: [])
+    for sort in ["date_asc", "date_desc", "invalid"]:
+        assert [record["filename"] for record in admin_module._b2b_hertz_file_records(sort=sort)] == [
+            "Alpha.xlsx", "alpha.xlsx", "beta.xlsx", "unknown.xlsx",
+        ]
+    assert [record["filename"] for record in admin_module._b2b_hertz_file_records(sort="name_desc")] == [
+        "unknown.xlsx", "beta.xlsx", "alpha.xlsx", "Alpha.xlsx",
+    ]
+
+
+def test_admin_b2b_hertz_sort_empty_and_auth(monkeypatch):
+    monkeypatch.setattr(settings, "admin_password", "secret-pass")
+    monkeypatch.setattr(admin_module, "_b2b_hertz_db_file_records", lambda: [])
+    monkeypatch.setattr(admin_module, "_b2b_hertz_filesystem_records", lambda: [])
+    monkeypatch.setattr(admin_module, "_b2b_hertz_period_payload", lambda: {})
+    client = TestClient(app)
+    page = client.get("/admin/b2b/hertz?sort=name_asc&lang=fr")
+    assert "Mot de passe" in page.text
+    assert 'name="sort"' not in page.text
+    download = client.get("/admin/b2b/hertz/files/test.xlsx", follow_redirects=False)
+    assert download.status_code == 200
+    assert "Mot de passe" in download.text
+    client.cookies.set(admin_module._SESSION_COOKIE, admin_module._make_session_token())
+    for sort in ["name_asc", "name_desc", "date_asc", "date_desc"]:
+        page = client.get("/admin/b2b/hertz", params={"sort": sort, "lang": "fr"})
+        assert page.status_code == 200
+        assert "Aucun fichier disponible." in page.text
+        assert 'name="lang" value="fr"' in page.text
+        assert f'value="{sort}" selected' in page.text
+    monkeypatch.setattr(settings, "admin_password", "")
+    assert client.get("/admin/b2b/hertz?sort=name_asc").status_code == 503
 
 
 def test_admin_b2b_hertz_page_lists_files_and_vehicle_rows(monkeypatch, tmp_path):
